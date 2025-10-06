@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/
+
+# Node
+node_modules/
+.next/
+
+# Data (don't commit large files)
+data/tmp/
+data/parsed/
+data/embeddings/
+data/canonicalization/
+
+# Secrets
+.env
+*.key
+
+# Neo4j
+neo4j/data/
+neo4j/logs/
+
+# LLM response cache (optional - might want to commit for tests)
+.llm_cache/
+
+# OS
+.DS_Store

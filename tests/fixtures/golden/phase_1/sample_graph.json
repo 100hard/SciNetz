@@ -1,0 +1,78 @@
+{
+  "metadata": {
+    "doc_id": "sample_graph",
+    "title": "Graph Embeddings for Scientific Literature",
+    "authors": [
+      "Alice Johnson",
+      "Bob Lee"
+    ],
+    "year": 2023,
+    "venue": "ACL",
+    "doi": "10.5678/graph.2023.010"
+  },
+  "elements": [
+    {
+      "doc_id": "sample_graph",
+      "element_id": "sample_graph:0",
+      "section": "_auto_",
+      "content": "Alice Johnson, Bob Lee ACL 2023",
+      "content_hash": "bf3d768e8d44415e007fbc44f3a455883f19cc4c317b6337c01a3e8f6e4aa8e6",
+      "start_char": 0,
+      "end_char": 31
+    },
+    {
+      "doc_id": "sample_graph",
+      "element_id": "sample_graph:1",
+      "section": "_auto_",
+      "content": "Published: 2023",
+      "content_hash": "2721bd36dfefd3e9e16662d35f39b6ad380dd12152eb2d7630b8c6ac8203ed71",
+      "start_char": 31,
+      "end_char": 46
+    },
+    {
+      "doc_id": "sample_graph",
+      "element_id": "sample_graph:2",
+      "section": "_auto_",
+      "content": "DOI: 10.5678/graph.2023.010",
+      "content_hash": "e99084f06ee09a6c7db391e55012346c59909b011f5e4f74b1f4eb624a2bc560",
+      "start_char": 46,
+      "end_char": 73
+    },
+    {
+      "doc_id": "sample_graph",
+      "element_id": "sample_graph:3",
+      "section": "Abstract",
+      "content": "We present a graph embedding approach for linking scientific papers using metadata and cit",
+      "content_hash": "60c0df602af134aeb0504a28cc913f919a5ff8d6f6d8335d55d9978877bc58cb",
+      "start_char": 73,
+      "end_char": 163
+    },
+    {
+      "doc_id": "sample_graph",
+      "element_id": "sample_graph:4",
+      "section": "Introduction",
+      "content": "Graph embeddings capture structural information useful for recommendation.",
+      "content_hash": "f1057f834cf4e0fcbceb430ce01eebe0da41a87d37ea0ca2f4d0d571a340dbae",
+      "start_char": 163,
+      "end_char": 237
+    },
+    {
+      "doc_id": "sample_graph",
+      "element_id": "sample_graph:5",
+      "section": "Methods",
+      "content": "We extend DeepWalk with contextual metadata features and evaluate on arXiv.",
+      "content_hash": "3a57d43b0be1278cae449be1b8f5f3dc8863ccc0add3a616e87c7bd3a2c5633c",
+      "start_char": 237,
+      "end_char": 312
+    },
+    {
+      "doc_id": "sample_graph",
+      "element_id": "sample_graph:6",
+      "section": "Conclusion",
+      "content": "Embedding-based similarity improves retrieval precision by 10%.",
+      "content_hash": "e9cc5cc3c958cf534cdf52b11c3f7836a49511c0dcf832ebcef06b6a45cb2c1b",
+      "start_char": 312,
+      "end_char": 375
+    }
+  ]
+}

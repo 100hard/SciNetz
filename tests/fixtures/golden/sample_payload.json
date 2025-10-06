@@ -1,0 +1,76 @@
+{
+  "paper_metadata": {
+    "doc_id": "doc123",
+    "title": "Sample Paper",
+    "authors": ["Doe, Jane", "Smith, John"],
+    "year": 2024,
+    "venue": "NeurIPS",
+    "doi": "10.1234/example.doi"
+  },
+  "elements": [
+    {
+      "doc_id": "doc123",
+      "element_id": "doc123:0",
+      "section": "Introduction",
+      "content": "Transformer models are effective for NLP tasks.",
+      "content_hash": "f1d2d2f924e986ac86fdf7b36c94bcdf32beec15c4b0d6db1edc3a0dd3f0e546",
+      "start_char": 0,
+      "end_char": 51
+    }
+  ],
+  "triplets": [
+    {
+      "subject": "Transformer models",
+      "predicate": "improve",
+      "object": "NLP tasks",
+      "confidence": 0.92,
+      "evidence": {
+        "element_id": "doc123:0",
+        "text_span": {
+          "start": 0,
+          "end": 51
+        },
+        "full_sentence": "Transformer models are effective for NLP tasks.",
+        "doc_id": "doc123"
+      },
+      "pipeline_version": "1.0.0"
+    }
+  ],
+  "nodes": [
+    {
+      "node_id": "node-123",
+      "name": "Transformer models",
+      "type": "Method",
+      "aliases": [
+        "Transformers"
+      ],
+      "section_distribution": {
+        "Introduction": 1
+      },
+      "times_seen": 1,
+      "source_document_ids": [
+        "doc123"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "src_id": "node-123",
+      "dst_id": "node-456",
+      "relation": "improves",
+      "evidence": {
+        "element_id": "doc123:0",
+        "text_span": {
+          "start": 0,
+          "end": 51
+        },
+        "full_sentence": "Transformer models are effective for NLP tasks.",
+        "doc_id": "doc123"
+      },
+      "confidence": 0.92,
+      "pipeline_version": "1.0.0",
+      "conflicting": false,
+      "created_at": "2025-01-01T00:00:00+00:00"
+    }
+  ]
+}

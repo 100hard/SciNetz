@@ -1,0 +1,87 @@
+{
+  "metadata": {
+    "doc_id": "sample_transformer",
+    "title": "Exploring Transformer Architectures for NLP",
+    "authors": [
+      "Jane Doe",
+      "John Smith"
+    ],
+    "year": 2024,
+    "venue": "NeurIPS",
+    "doi": "10.1234/transformers.2024.001"
+  },
+  "elements": [
+    {
+      "doc_id": "sample_transformer",
+      "element_id": "sample_transformer:0",
+      "section": "_auto_",
+      "content": "Jane Doe, John Smith Proceedings of NeurIPS 2024",
+      "content_hash": "4f4ba45f87e8ea4eaa112b41483cd59500646757b0063fd7cb7cb89716be0131",
+      "start_char": 0,
+      "end_char": 48
+    },
+    {
+      "doc_id": "sample_transformer",
+      "element_id": "sample_transformer:1",
+      "section": "_auto_",
+      "content": "Published: 2024",
+      "content_hash": "4713486738c11d413a87803242c0d17aadb5b7965fad8d1a5fac1098b6dbea12",
+      "start_char": 48,
+      "end_char": 63
+    },
+    {
+      "doc_id": "sample_transformer",
+      "element_id": "sample_transformer:2",
+      "section": "_auto_",
+      "content": "DOI: 10.1234/transformers.2024.001",
+      "content_hash": "7051c821b238f6b074a70829499ccc56d7a3e88d0b2414efa4b670f71fe05d66",
+      "start_char": 63,
+      "end_char": 97
+    },
+    {
+      "doc_id": "sample_transformer",
+      "element_id": "sample_transformer:3",
+      "section": "Abstract",
+      "content": "We explore transformer models for natural language processing tasks and analyze their perf",
+      "content_hash": "fed1ffeca1351a228905fc5ebd3602ba8b8a56513653b9cf7bad8041e2c2d766",
+      "start_char": 97,
+      "end_char": 187
+    },
+    {
+      "doc_id": "sample_transformer",
+      "element_id": "sample_transformer:4",
+      "section": "Introduction",
+      "content": "Transformers have reshaped NLP by enabling parallel training and long-range dependencies.",
+      "content_hash": "da7bbfe25f59ea76ff69dabcecf72ab3f7a0bd8acfdb29a10161f8fcf9844003",
+      "start_char": 187,
+      "end_char": 276
+    },
+    {
+      "doc_id": "sample_transformer",
+      "element_id": "sample_transformer:5",
+      "section": "Methods",
+      "content": "We evaluate encoder-only and encoder-decoder variants on translation and question answerin",
+      "content_hash": "7f58f30377cb4ab9f48562007edc6e38c5a86a2f162b001a2d4185048b1c461b",
+      "start_char": 276,
+      "end_char": 366
+    },
+    {
+      "doc_id": "sample_transformer",
+      "element_id": "sample_transformer:6",
+      "section": "Results",
+      "content": "Transformer Large outperforms baselines by 5% BLEU on WMT14 and achieves 90% accuracy on S",
+      "content_hash": "dddc96483cdd5635f619633629b748bd63b0c54f987dd749238c4f01a88dcf8c",
+      "start_char": 366,
+      "end_char": 456
+    },
+    {
+      "doc_id": "sample_transformer",
+      "element_id": "sample_transformer:7",
+      "section": "Discussion",
+      "content": "We discuss limitations including compute costs and data bias.",
+      "content_hash": "974aee91bf92522fe0dfe5db3d1dc9fe97e6dc43800c92f259fee417e9b25cb7",
+      "start_char": 456,
+      "end_char": 517
+    }
+  ]
+}
