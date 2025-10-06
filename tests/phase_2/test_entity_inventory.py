@@ -194,3 +194,62 @@ def test_biomedical_content_triggers_scispacy_and_expands_abbreviations(config) 
     assert "Tumor Necrosis Factor" in inventory
     assert "TNF" in inventory
     assert all(candidate in element.content for candidate in inventory)
+
+
+def test_inventory_deduplicates_and_prioritizes_repeated_chunks(config) -> None:
+    text = (
+        "Graph neural networks advance representation learning. Graph neural networks "
+        "are abbreviated as GNNs in modern literature."
+    )
+    stopwords = {"are", "as", "in"}
+    proper_nouns = {"GNNs"}
+
+    def loader(_: str) -> Callable[[str], _FakeDoc]:
+        def pipeline(content: str) -> _FakeDoc:
+            tokens = _tokenize(content, stopwords, proper_nouns)
+            noun_chunks = [
+                _FakeSpan("Graph neural networks"),
+                _FakeSpan("Graph neural networks"),
+                _FakeSpan("representation learning"),
+            ]
+            ents: list[_FakeSpan] = []
+            return _FakeDoc(content, ents=ents, noun_chunks=noun_chunks, tokens=tokens)
+
+        return pipeline
+
+    builder = EntityInventoryBuilder(config, nlp_loader=loader)
+    element = ParsedElement(
+        doc_id="doc-4",
+        element_id="doc-4:0",
+        section="Background",
+        content=text,
+        content_hash="c" * 64,
+        start_char=0,
+        end_char=len(text),
+    )
+
+    inventory = builder.build_inventory(element)
+
+    assert inventory[0].lower() == "graph neural networks"
+    assert inventory.count("Graph neural networks") == 1
+    assert all(candidate in element.content for candidate in inventory)
+
+
+def test_builder_uses_fallback_pipeline_when_loader_fails(config) -> None:
+    def loader(_: str) -> Callable[[str], _FakeDoc]:
+        raise RuntimeError("boom")
+
+    builder = EntityInventoryBuilder(config, nlp_loader=loader)
+    element = ParsedElement(
+        doc_id="doc-5",
+        element_id="doc-5:0",
+        section="Methods",
+        content="Isolated token",  # minimal content to exercise fallback
+        content_hash="d" * 64,
+        start_char=0,
+        end_char=13,
+    )
+
+    inventory = builder.build_inventory(element)
+
+    assert inventory == []
