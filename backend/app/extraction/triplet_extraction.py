@@ -6,9 +6,6 @@ import logging
 import math
 import os
 import re
-import time
-import urllib.error
-import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -23,7 +20,7 @@ except ModuleNotFoundError:  # pragma: no cover - tests rely on stub client inst
 
 json_module = json
 
-from backend.app.config import AppConfig, OpenAIConfig
+from backend.app.config import AppConfig
 from backend.app.contracts import Evidence, ParsedElement, TextSpan, Triplet
 
 LOGGER = logging.getLogger(__name__)

@@ -37,20 +37,6 @@ class ParsingConfig(_FrozenModel):
     section_aliases: Dict[str, List[str]] = Field(default_factory=dict)
 
 
-class OpenAIConfig(_FrozenModel):
-    """Settings required for the OpenAI LLM adapter."""
-
-    model: str = Field(..., min_length=1)
-    api_base: str = Field(..., min_length=1)
-    timeout_seconds: float = Field(..., gt=0)
-    max_retries: int = Field(..., ge=0)
-    temperature: float = Field(0.0, ge=0.0, le=2.0)
-    max_output_tokens: int = Field(..., ge=1)
-    backoff_initial_seconds: float = Field(..., gt=0)
-    backoff_max_seconds: float = Field(..., gt=0)
-    retry_statuses: List[int] = Field(default_factory=list)
-
-
 class ExtractionConfig(_FrozenModel):
     """Extraction parameters for Phase 3 pipeline."""
 
