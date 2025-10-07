@@ -1,15 +1,20 @@
 """Two-pass triplet extraction pipeline for Phase 3."""
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import re
+import time
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from backend.app.config import AppConfig
+from backend.app.config import AppConfig, OpenAIConfig
 from backend.app.contracts import Evidence, ParsedElement, TextSpan, Triplet
 
 LOGGER = logging.getLogger(__name__)
@@ -24,6 +29,18 @@ class RawLLMTriple:
     object_text: str
     supportive_sentence: str
     confidence: float
+
+
+@dataclass(frozen=True)
+class _HTTPResponse:
+    """Minimal HTTP response wrapper used by the OpenAI extractor."""
+
+    status_code: int
+    text: str
+    body: Optional[Dict[str, Any]] = None
+
+
+HTTPPostFn = Callable[[str, Dict[str, Any], Dict[str, str]], _HTTPResponse]
 
 
 class LLMExtractor(ABC):
@@ -49,10 +66,37 @@ class LLMExtractor(ABC):
 
 
 class OpenAIExtractor(LLMExtractor):
-    """Adapter placeholder for OpenAI-based extraction."""
+    """Adapter for invoking OpenAI chat completions to extract triples."""
 
-    def __init__(self, *_: object, **__: object) -> None:
-        """Initialize the extractor."""
+    _SYSTEM_PROMPT = (
+        "You are a structured information extraction service for research papers. "
+        "Return relation triples grounded in the provided text."
+    )
+
+    def __init__(
+        self,
+        settings: OpenAIConfig,
+        http_post: Optional[HTTPPostFn] = None,
+        api_key: Optional[str] = None,
+    ) -> None:
+        """Initialize the OpenAI extractor.
+
+        Args:
+            settings: Configuration options for the OpenAI adapter.
+            http_post: Optional callable used to perform HTTP POST requests.
+            api_key: Optional override for the OpenAI API key; defaults to environment.
+
+        Raises:
+            RuntimeError: If the API key is missing.
+        """
+
+        self._settings = settings
+        resolved_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not resolved_key:
+            raise RuntimeError("OPENAI_API_KEY is not set; cannot call OpenAI API")
+        self._api_key = resolved_key
+        self._http_post = http_post or self._default_post
+        self._retry_statuses = set(settings.retry_statuses)
 
     def extract_triples(
         self,
@@ -69,12 +113,195 @@ class OpenAIExtractor(LLMExtractor):
 
         Returns:
             Sequence[RawLLMTriple]: Raw triples emitted by the language model.
-
-        Raises:
-            NotImplementedError: Always raised until the adapter is implemented.
         """
 
-        raise NotImplementedError("OpenAI extractor requires API integration")
+        payload = self._build_request(element, candidate_entities, max_triples)
+        response_json = self._post_with_retries(payload)
+        return self._parse_response(response_json, max_triples)
+
+    def _build_request(
+        self,
+        element: ParsedElement,
+        candidate_entities: Optional[Sequence[str]],
+        max_triples: int,
+    ) -> Dict[str, Any]:
+        """Construct the JSON payload for the OpenAI chat completion request.
+
+        Args:
+            element: Parsed element describing the chunk to analyze.
+            candidate_entities: Optional ordered list of candidate entity strings.
+            max_triples: Maximum number of triples requested from the model.
+
+        Returns:
+            Dict[str, Any]: Payload that instructs the model to emit structured triples.
+        """
+
+        entity_hint = ""
+        if candidate_entities:
+            formatted_entities = "\n".join(f"- {entity}" for entity in candidate_entities)
+            entity_hint = (
+                "Candidate entities that may appear in the chunk:\n"
+                f"{formatted_entities}\n\n"
+            )
+        user_prompt = (
+            "Extract up to {limit} relation triples from the following research paper chunk. "
+            "Return a JSON object with a `triples` array. Each triple must contain the fields "
+            "`subject_text`, `relation_verbatim`, `object_text`, `supportive_sentence`, and `confidence` "
+            "(a value between 0 and 1). Ensure all subjects, objects, and supportive sentences "
+            "are copied verbatim from the text.\n\n"
+            "Section: {section}\n"
+            "Chunk:\n{chunk}\n\n"
+            "{entity_hint}Only include triples that are directly supported by the text."
+        ).format(
+            limit=max_triples,
+            section=element.section,
+            chunk=element.content,
+            entity_hint=entity_hint,
+        )
+        return {
+            "model": self._settings.model,
+            "temperature": self._settings.temperature,
+            "max_tokens": self._settings.max_output_tokens,
+            "messages": [
+                {"role": "system", "content": self._SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+
+    def _post_with_retries(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Send the request to OpenAI with retry semantics for transient errors.
+
+        Args:
+            payload: JSON request body to send to the chat completions endpoint.
+
+        Returns:
+            Dict[str, Any]: Parsed JSON response from the API.
+
+        Raises:
+            RuntimeError: If the request ultimately fails or the response is invalid.
+        """
+
+        attempt = 0
+        backoff = self._settings.backoff_initial_seconds
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        while True:
+            attempt += 1
+            response = self._http_post("/chat/completions", payload, headers)
+            if response.status_code == 200:
+                if response.body is not None:
+                    return response.body
+                try:
+                    return json.loads(response.text)
+                except json.JSONDecodeError as exc:
+                    LOGGER.error("OpenAI response was not valid JSON: %s", response.text)
+                    raise RuntimeError("OpenAI response decoding failed") from exc
+            if (
+                response.status_code in self._retry_statuses
+                and attempt <= self._settings.max_retries
+            ):
+                LOGGER.warning(
+                    "OpenAI request failed with status %s; retrying in %.2f seconds",
+                    response.status_code,
+                    backoff,
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, self._settings.backoff_max_seconds)
+                continue
+            LOGGER.error(
+                "OpenAI request failed after %s attempts with status %s: %s",
+                attempt,
+                response.status_code,
+                response.text,
+            )
+            raise RuntimeError("OpenAI request failed")
+
+    def _default_post(
+        self, path: str, payload: Dict[str, Any], headers: Dict[str, str]
+    ) -> _HTTPResponse:
+        """Perform an HTTP POST using urllib for the given payload."""
+
+        url = f"{self._settings.api_base.rstrip('/')}{path}"
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            url=url,
+            data=data,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._settings.timeout_seconds) as response:
+                body_bytes = response.read()
+                text = body_bytes.decode("utf-8")
+                try:
+                    body = json.loads(text) if text else {}
+                except json.JSONDecodeError:
+                    body = None
+                return _HTTPResponse(status_code=response.getcode(), text=text, body=body)
+        except urllib.error.HTTPError as exc:
+            error_text = ""
+            if exc.fp:
+                try:
+                    error_text = exc.fp.read().decode("utf-8")
+                except Exception:  # pragma: no cover - defensive
+                    error_text = str(exc)
+            return _HTTPResponse(status_code=exc.code, text=error_text or str(exc))
+        except urllib.error.URLError as exc:
+            LOGGER.error("OpenAI network error: %s", exc)
+            raise RuntimeError("OpenAI network error") from exc
+
+    def _parse_response(
+        self, response_json: Dict[str, Any], max_triples: int
+    ) -> Sequence[RawLLMTriple]:
+        """Convert the OpenAI chat completion response into raw triples.
+
+        Args:
+            response_json: Parsed JSON body from the OpenAI API.
+            max_triples: Maximum number of triples requested for the chunk.
+
+        Returns:
+            Sequence[RawLLMTriple]: Parsed triples emitted by the model.
+        """
+
+        choices = response_json.get("choices")
+        if not choices:
+            LOGGER.error("OpenAI response missing choices field: %s", response_json)
+            return []
+        message = choices[0].get("message", {})
+        content = message.get("content")
+        if not content:
+            LOGGER.error("OpenAI response missing content: %s", response_json)
+            return []
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            LOGGER.error("OpenAI response content was not JSON: %s", content)
+            return []
+        triples_payload = payload.get("triples", [])
+        if not isinstance(triples_payload, list):
+            LOGGER.error("OpenAI response triples payload invalid: %s", triples_payload)
+            return []
+        triples: List[RawLLMTriple] = []
+        for raw in triples_payload:
+            if not isinstance(raw, dict):
+                LOGGER.info("Skipping malformed triple payload: %s", raw)
+                continue
+            try:
+                triples.append(
+                    RawLLMTriple(
+                        subject_text=str(raw["subject_text"]),
+                        relation_verbatim=str(raw["relation_verbatim"]),
+                        object_text=str(raw["object_text"]),
+                        supportive_sentence=str(raw["supportive_sentence"]),
+                        confidence=float(raw["confidence"]),
+                    )
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                LOGGER.info("Dropping triple due to missing fields: %s", exc)
+        return triples[:max_triples]
 
 
 class TwoPassTripletExtractor:

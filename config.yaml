@@ -37,6 +37,21 @@ extraction:
   use_entity_inventory: false
   llm_provider: "openai"
   fuzzy_match_threshold: 0.9
+  openai:
+    model: "gpt-4o-mini"
+    api_base: "https://api.openai.com/v1"
+    timeout_seconds: 30.0
+    max_retries: 3
+    temperature: 0.0
+    max_output_tokens: 800
+    backoff_initial_seconds: 1.0
+    backoff_max_seconds: 10.0
+    retry_statuses:
+      - 429
+      - 500
+      - 502
+      - 503
+      - 504
 
 canonicalization:
   base_threshold: 0.86
