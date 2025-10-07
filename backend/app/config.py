@@ -61,7 +61,10 @@ class ExtractionConfig(_FrozenModel):
     use_entity_inventory: bool = False
     llm_provider: str = Field(..., min_length=1)
     fuzzy_match_threshold: float = Field(..., ge=0.0, le=1.0)
-    openai: Optional[OpenAIConfig] = None
+    openai_model: str = Field(..., min_length=1)
+    openai_base_url: str = Field(..., min_length=1)
+    openai_timeout_seconds: float = Field(..., gt=0)
+    openai_prompt_version: str = Field(..., min_length=1)
 
 
 class CanonicalizationConfig(_FrozenModel):

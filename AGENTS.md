@@ -67,6 +67,6 @@ Read PLAN.md for full architecture. We're building a research paper knowledge gr
 
 ## Current Phase
 [Update this as you progress]
-Phase: 3 - Triplet Extraction
-Status: In progress
+Phase: 4 - Canonicalization
+Status: Ready to start
 Blockers: None

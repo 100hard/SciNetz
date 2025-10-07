@@ -64,5 +64,16 @@
       },
       "pipeline_version": "1.0.0"
     }
-  ]
+  ],
+  "expected_section_distribution": {
+    "The Reinforcement Learning agent": {
+      "Results": 2
+    },
+    "the PPO algorithm": {
+      "Results": 1
+    },
+    "baseline methods": {
+      "Results": 1
+    }
+  }
 }
