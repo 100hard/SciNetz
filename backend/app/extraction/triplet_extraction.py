@@ -6,9 +6,6 @@ import logging
 import math
 import os
 import re
-import time
-import urllib.error
-import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -23,7 +20,7 @@ except ModuleNotFoundError:  # pragma: no cover - tests rely on stub client inst
 
 json_module = json
 
-from backend.app.config import AppConfig, OpenAIConfig
+from backend.app.config import AppConfig
 from backend.app.contracts import Evidence, ParsedElement, TextSpan, Triplet
 
 LOGGER = logging.getLogger(__name__)
@@ -247,70 +244,6 @@ class OpenAIExtractor(LLMExtractor):
 
         Returns:
             Sequence[RawLLMTriple]: Raw triples emitted by the language model.
-        """
-
-        payload = self._build_request(element, candidate_entities, max_triples)
-        response_json = self._post_with_retries(payload)
-        return self._parse_response(response_json, max_triples)
-
-    def _build_request(
-        self,
-        element: ParsedElement,
-        candidate_entities: Optional[Sequence[str]],
-        max_triples: int,
-    ) -> Dict[str, Any]:
-        """Construct the JSON payload for the OpenAI chat completion request.
-
-        Args:
-            element: Parsed element describing the chunk to analyze.
-            candidate_entities: Optional ordered list of candidate entity strings.
-            max_triples: Maximum number of triples requested from the model.
-
-        Returns:
-            Dict[str, Any]: Payload that instructs the model to emit structured triples.
-        """
-
-        entity_hint = ""
-        if candidate_entities:
-            formatted_entities = "\n".join(f"- {entity}" for entity in candidate_entities)
-            entity_hint = (
-                "Candidate entities that may appear in the chunk:\n"
-                f"{formatted_entities}\n\n"
-            )
-        user_prompt = (
-            "Extract up to {limit} relation triples from the following research paper chunk. "
-            "Return a JSON object with a `triples` array. Each triple must contain the fields "
-            "`subject_text`, `relation_verbatim`, `object_text`, `supportive_sentence`, and `confidence` "
-            "(a value between 0 and 1). Ensure all subjects, objects, and supportive sentences "
-            "are copied verbatim from the text.\n\n"
-            "Section: {section}\n"
-            "Chunk:\n{chunk}\n\n"
-            "{entity_hint}Only include triples that are directly supported by the text."
-        ).format(
-            limit=max_triples,
-            section=element.section,
-            chunk=element.content,
-            entity_hint=entity_hint,
-        )
-        return {
-            "model": self._settings.model,
-            "temperature": self._settings.temperature,
-            "max_tokens": self._settings.max_output_tokens,
-            "messages": [
-                {"role": "system", "content": self._SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response_format": {"type": "json_object"},
-        }
-
-    def _post_with_retries(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Send the request to OpenAI with retry semantics for transient errors.
-
-        Args:
-            payload: JSON request body to send to the chat completions endpoint.
-
-        Returns:
-            Dict[str, Any]: Parsed JSON response from the API.
 
         Raises:
             RuntimeError: If the OpenAI API returns an error or malformed response.
