@@ -75,6 +75,27 @@ class ExtractionConfig(_FrozenModel):
     openai_backoff_max_seconds: float = Field(..., gt=0)
     openai_retry_statuses: List[int] = Field(default_factory=list)
 
+    @property
+    def openai(self) -> OpenAIConfig:
+        """Return the OpenAI adapter configuration.
+
+        Returns:
+            OpenAIConfig: Immutable settings for the OpenAI adapter.
+        """
+
+        return OpenAIConfig(
+            model=self.openai_model,
+            api_base=self.openai_base_url,
+            timeout_seconds=self.openai_timeout_seconds,
+            max_retries=self.openai_max_retries,
+            temperature=self.openai_temperature,
+            max_output_tokens=self.openai_max_output_tokens,
+            prompt_version=self.openai_prompt_version,
+            backoff_initial_seconds=self.openai_backoff_initial_seconds,
+            backoff_max_seconds=self.openai_backoff_max_seconds,
+            retry_statuses=list(self.openai_retry_statuses),
+        )
+
 
     @property
     def openai(self) -> OpenAIConfig:

@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -20,7 +21,7 @@ except ModuleNotFoundError:  # pragma: no cover - tests rely on stub client inst
 
 json_module = json
 
-from backend.app.config import AppConfig
+from backend.app.config import AppConfig, OpenAIConfig
 from backend.app.contracts import Evidence, ParsedElement, TextSpan, Triplet
 
 LOGGER = logging.getLogger(__name__)
@@ -138,6 +139,10 @@ class LLMExtractor(ABC):
         """
 
 
+_HTTPPostCallable = Callable[[str, Dict[str, Any], Dict[str, str]], Any]
+
+
+
 class OpenAIExtractor(LLMExtractor):
     """Adapter that calls the OpenAI chat completions API for extraction."""
 
@@ -192,20 +197,9 @@ class OpenAIExtractor(LLMExtractor):
         settings: OpenAIConfig,
         api_key: Optional[str] = None,
         client: Optional[_HTTPClient] = None,
-        http_post: Optional[Callable[[str, Dict[str, Any], Dict[str, str]], Any]] = None,
+        http_post: Optional[_HTTPPostCallable] = None,
     ) -> None:
-        """Initialise the extractor with configuration and networking hooks.
-
-        Args:
-            settings: OpenAI-specific configuration sourced from ``config.yaml``.
-            api_key: Explicit API key; falls back to ``OPENAI_API_KEY`` environment variable.
-            client: Optional HTTP client implementing the ``_HTTPClient`` protocol.
-            http_post: Optional callable used for unit tests to capture payloads directly.
-
-        Raises:
-            RuntimeError: If an API key cannot be resolved.
-            ValueError: If both ``client`` and ``http_post`` are supplied.
-        """
+        """Initialise the extractor with configuration and networking hooks."""
 
         if client is not None and http_post is not None:
             raise ValueError("Provide either a client or http_post, not both")
@@ -215,6 +209,7 @@ class OpenAIExtractor(LLMExtractor):
         self._settings = settings
         self._api_key = resolved_key
         self._http_post = http_post
+
         self._client: Optional[_HTTPClient]
         self._owns_client = False
         if http_post is None:
@@ -225,6 +220,7 @@ class OpenAIExtractor(LLMExtractor):
                 self._client = client
         else:
             self._client = None
+
         self._base_headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -250,18 +246,7 @@ class OpenAIExtractor(LLMExtractor):
         candidate_entities: Optional[Sequence[str]],
         max_triples: int,
     ) -> Sequence[RawLLMTriple]:
-        """Invoke the OpenAI API and parse triples from the response.
-
-        Args:
-            element: Parsed element describing the chunk to analyse.
-            candidate_entities: Optional candidate entity list used as hints.
-            max_triples: Maximum number of triples expected from the model.
-
-        Returns:
-
-            Sequence[RawLLMTriple]: Raw triples emitted by the LLM.
-
-        """
+        """Invoke the OpenAI API and parse triples from the response."""
 
         payload = self._build_payload(element, candidate_entities, max_triples)
         response_json = self._post_with_retries(payload)
@@ -380,7 +365,7 @@ class OpenAIExtractor(LLMExtractor):
         if hasattr(response, "json") and callable(response.json):
             try:
                 data = response.json()
-            except Exception:  # pragma: no cover - defensive
+            except Exception:  # pragma: no cover - defensive guard
                 data = None
             else:
                 if isinstance(data, (dict, list)):
@@ -477,6 +462,7 @@ class OpenAIExtractor(LLMExtractor):
         if isinstance(error, dict) and "message" in error:
             return str(error["message"])
         return json.dumps(payload)
+
 class TwoPassTripletExtractor:
     """Perform two-pass extraction with deterministic span linking."""
 

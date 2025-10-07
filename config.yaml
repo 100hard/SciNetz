@@ -44,12 +44,14 @@ extraction:
   openai_max_retries: 2
   openai_temperature: 0.0
   openai_max_output_tokens: 800
-  openai_backoff_initial_seconds: 1.0
-  openai_backoff_max_seconds: 8.0
+  openai_backoff_initial_seconds: 0.5
+  openai_backoff_max_seconds: 4.0
   openai_retry_statuses:
     - 429
     - 500
+    - 502
     - 503
+    - 504
 
 canonicalization:
   base_threshold: 0.86
