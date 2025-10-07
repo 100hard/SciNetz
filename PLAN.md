@@ -221,11 +221,10 @@ For each triple from Pass A:
 
 **Start with:**
 - GPT-4o-mini (good offset reliability, fast)
-- OR Claude 3.5 Sonnet (excellent instruction following)
 
 **Build an adapter interface:**
 - Abstract class `LLMExtractor` with method `extract_triples(chunk, entities) -> List[RawTriple]`
-- Implementations: `OpenAIExtractor`, `ClaudeExtractor`, `LocalLLMExtractor`
+- Implementations: `OpenAIExtractor`, `LocalLLMExtractor`
 - Config flag to switch: `extraction.llm_provider: "openai"`
 - This allows zero-code swap to Llama-3.1-8B later
 
@@ -249,10 +248,9 @@ For each triple from Pass A:
 - Assert exact match on accepted triples after span linking
 
 **Offset reliability benchmark:**
-- Run same 50 chunks through GPT-4o-mini vs Claude Sonnet
+- Run 50 representative chunks through GPT-4o-mini
 - Measure: % triples that pass span validation
-- Choose model with ≥85% pass rate
-- If both fail, adjust fuzzy threshold or add better prompting
+- Target ≥85% pass rate (tune fuzzy threshold or prompts if below)
 
 **Load test:**
 - Process 200 chunks in <5 minutes (with batching)
@@ -1090,7 +1088,7 @@ Before declaring MVP complete:
 - NLP: spaCy (en_core_web_sm), scispaCy (en_core_sci_md) optional
 - Embeddings: E5-base via sentence-transformers
 - Similarity: FAISS (IndexFlatIP)
-- LLM: OpenAI GPT-4o-mini OR Anthropic Claude 3.5 Sonnet (adapter pattern)
+- LLM: OpenAI GPT-4o-mini (adapter pattern ready for future providers)
 - Graph DB: Neo4j
 - Task queue: (optional) Celery + Redis for post-MVP
 

@@ -35,6 +35,8 @@ extraction:
   chunk_size_tokens: 512
   chunk_overlap_tokens: 50
   use_entity_inventory: false
+  llm_provider: "openai"
+  fuzzy_match_threshold: 0.9
 
 canonicalization:
   base_threshold: 0.86

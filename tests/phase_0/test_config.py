@@ -12,6 +12,8 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.parsing.section_fuzzy_threshold == 0.85
     assert "NeurIPS" in config.parsing.metadata_known_venues
     assert config.extraction.max_triples_per_chunk_base == 15
+    assert config.extraction.llm_provider == "openai"
+    assert config.extraction.fuzzy_match_threshold == 0.9
     assert config.canonicalization.base_threshold == 0.86
     assert config.canonicalization.polysemy_section_diversity == 3
     assert config.qa.entity_match_threshold == 0.83
