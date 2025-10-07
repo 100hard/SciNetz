@@ -5,9 +5,12 @@ from .entity_canonicalizer import (
     EntityCandidate,
     EntityCanonicalizer,
 )
+from .pipeline import CanonicalizationPipeline, EntityAggregator
 
 __all__ = [
     "CanonicalizationResult",
     "EntityCandidate",
     "EntityCanonicalizer",
+    "EntityAggregator",
+    "CanonicalizationPipeline",
 ]
