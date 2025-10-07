@@ -8,8 +8,11 @@ from typing import Dict, Iterable
 import numpy as np
 import pytest
 
+import backend.app.canonicalization.entity_canonicalizer as canonicalizer_module
 from backend.app.canonicalization import (
+    CanonicalizationResult,
     CanonicalizationPipeline,
+    E5EmbeddingBackend,
     EntityAggregator,
     EntityCandidate,
     EntityCanonicalizer,
@@ -49,6 +52,58 @@ def fixture_storage_dirs(tmp_path: Path) -> Dict[str, Path]:
     embeddings = tmp_path / "embeddings"
     reports = tmp_path / "canonicalization"
     return {"embeddings": embeddings, "reports": reports}
+
+
+def test_e5_backend_formats_queries_and_caches(monkeypatch) -> None:
+    calls: Dict[str, object] = {"encode": 0}
+
+    class DummyModel:
+        def __init__(self, model_name: str, device: str | None = None) -> None:
+            calls["model_name"] = model_name
+            calls["device"] = device
+
+        def encode(self, sentences, **kwargs):
+            calls["encode"] = int(calls["encode"]) + 1
+            calls["sentences"] = list(sentences)
+            calls["kwargs"] = kwargs
+            return np.array([[3.0, 4.0, 0.0]], dtype=np.float32)
+
+    monkeypatch.setattr(canonicalizer_module, "SentenceTransformer", DummyModel)
+    backend = E5EmbeddingBackend(model_name="intfloat/e5-base", device="cpu")
+
+    vector = backend.embed("Reinforcement Learning")
+    assert np.isclose(np.linalg.norm(vector), 1.0)
+    assert calls["sentences"] == ["query: Reinforcement Learning"]
+
+    cached = backend.embed("Reinforcement Learning")
+    assert calls["encode"] == 1
+    np.testing.assert_allclose(vector, cached)
+
+
+def test_canonicalizer_prefers_e5_backend_by_default(monkeypatch, config, storage_dirs) -> None:
+    class DummyBackend(canonicalizer_module.EmbeddingBackend):
+        instances = 0
+
+        @classmethod
+        def is_available(cls) -> bool:
+            return True
+
+        def __init__(self) -> None:
+            DummyBackend.instances += 1
+
+        def embed(self, text: str) -> np.ndarray:
+            return np.array([1.0], dtype=np.float32)
+
+    monkeypatch.setattr(canonicalizer_module, "E5EmbeddingBackend", DummyBackend)
+
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_dir=storage_dirs["embeddings"],
+        report_dir=storage_dirs["reports"],
+    )
+
+    assert isinstance(canonicalizer._embedding_backend, DummyBackend)
+    assert DummyBackend.instances == 1
 
 
 def _candidate(
@@ -334,3 +389,58 @@ def test_canonicalization_pipeline_end_to_end(config, storage_dirs) -> None:
     assert result.merge_map_path.exists()
     assert result.merge_report_path.exists()
     assert result.merge_report_path.name == "merge_report_20240101T000000Z.json"
+
+
+def test_canonicalizer_is_idempotent(config, storage_dirs) -> None:
+    backend = StubEmbeddingBackend(
+        {
+            "reinforcement learning": [1.0, 0.0, 0.0],
+            "rl": [1.0, 0.0, 0.0],
+        }
+    )
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=backend,
+        embedding_dir=storage_dirs["embeddings"],
+        report_dir=storage_dirs["reports"],
+    )
+    candidates = [
+        _candidate(
+            "Reinforcement Learning",
+            times_seen=5,
+            section_distribution={"Methods": 5},
+            doc_ids=["doc1"],
+        ),
+        _candidate(
+            "RL",
+            times_seen=2,
+            section_distribution={"Methods": 2},
+            doc_ids=["doc2"],
+        ),
+    ]
+
+    first = canonicalizer.canonicalize(candidates)
+    first_embeddings = sorted(path.name for path in storage_dirs["embeddings"].glob("*.npy"))
+
+    second = canonicalizer.canonicalize(candidates)
+    second_embeddings = sorted(path.name for path in storage_dirs["embeddings"].glob("*.npy"))
+
+    def _normalize_nodes(result: CanonicalizationResult) -> list[dict[str, object]]:
+        simplified = []
+        for node in result.nodes:
+            simplified.append(
+                {
+                    "id": node.node_id,
+                    "name": node.name,
+                    "type": node.type,
+                    "aliases": tuple(sorted(node.aliases)),
+                    "times_seen": node.times_seen,
+                    "sections": tuple(sorted(node.section_distribution.items())),
+                    "docs": tuple(sorted(node.source_document_ids)),
+                }
+            )
+        return sorted(simplified, key=lambda item: item["id"])
+
+    assert _normalize_nodes(first) == _normalize_nodes(second)
+    assert first.merge_map == second.merge_map
+    assert first_embeddings == second_embeddings
