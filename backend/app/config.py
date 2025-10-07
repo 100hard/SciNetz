@@ -44,6 +44,7 @@ class ExtractionConfig(_FrozenModel):
     tokens_per_triple: int = Field(..., ge=1)
     chunk_size_tokens: int = Field(..., ge=1)
     chunk_overlap_tokens: int = Field(..., ge=0)
+    use_entity_inventory: bool = False
 
 
 class CanonicalizationConfig(_FrozenModel):

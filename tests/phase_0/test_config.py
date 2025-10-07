@@ -16,6 +16,7 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.canonicalization.polysemy_section_diversity == 3
     assert config.qa.entity_match_threshold == 0.83
     assert config.export.max_size_mb == 5
+    assert config.extraction.use_entity_inventory is False
 
 
 def test_config_strict_fields_match_yaml() -> None:
