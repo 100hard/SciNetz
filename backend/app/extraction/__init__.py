@@ -2,6 +2,7 @@
 
 from backend.app.extraction.entity_inventory import EntityInventoryBuilder
 from backend.app.extraction.triplet_extraction import (
+    ExtractionResult,
     LLMExtractor,
     OpenAIExtractor,
     RawLLMTriple,
@@ -12,6 +13,7 @@ from backend.app.extraction.triplet_extraction import (
 
 __all__ = [
     "EntityInventoryBuilder",
+    "ExtractionResult",
     "LLMExtractor",
     "OpenAIExtractor",
     "RawLLMTriple",

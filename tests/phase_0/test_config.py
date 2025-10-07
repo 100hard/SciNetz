@@ -14,6 +14,10 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.extraction.max_triples_per_chunk_base == 15
     assert config.extraction.llm_provider == "openai"
     assert config.extraction.fuzzy_match_threshold == 0.9
+    assert config.extraction.openai_model == "gpt-4o-mini"
+    assert config.extraction.openai_base_url == "https://api.openai.com/v1"
+    assert config.extraction.openai_timeout_seconds == 60
+    assert config.extraction.openai_prompt_version == "phase3-v1"
     assert config.canonicalization.base_threshold == 0.86
     assert config.canonicalization.polysemy_section_diversity == 3
     assert config.qa.entity_match_threshold == 0.83
