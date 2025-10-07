@@ -210,9 +210,11 @@ def test_openai_extractor_parses_valid_response(config) -> None:
     fixture = _load_golden("sample_chunk")
     element = _element_from_fixture(fixture["element"])
 
+    settings = config.extraction.openai
+
     def handler(path: str, headers: dict, payload: dict) -> _FakeResponse:
-        assert path == "chat/completions"
-        assert payload["model"] == config.extraction.openai_model
+        assert path == "/chat/completions"
+        assert payload["model"] == settings.model
         assert payload["messages"][0]["role"] == "system"
         assert "at most" in payload["messages"][0]["content"]
         assert headers["Authorization"] == "Bearer test-key"
@@ -231,11 +233,8 @@ def test_openai_extractor_parses_valid_response(config) -> None:
 
     client = _FakeHTTPClient(handler)
     extractor = OpenAIExtractor(
+        settings=settings,
         api_key="test-key",
-        model=config.extraction.openai_model,
-        base_url=config.extraction.openai_base_url,
-        timeout_seconds=config.extraction.openai_timeout_seconds,
-        prompt_version=config.extraction.openai_prompt_version,
         client=client,
     )
     pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
@@ -262,17 +261,16 @@ def test_openai_extractor_raises_on_error_response(config) -> None:
         end_char=11,
     )
 
+    settings = config.extraction.openai
+
     def handler(path: str, headers: dict, payload: dict) -> _FakeResponse:
-        assert path == "chat/completions"
+        assert path == "/chat/completions"
         return _FakeResponse(status_code=500, payload={"error": {"message": "boom"}})
 
     client = _FakeHTTPClient(handler)
     extractor = OpenAIExtractor(
+        settings=settings,
         api_key="test-key",
-        model=config.extraction.openai_model,
-        base_url=config.extraction.openai_base_url,
-        timeout_seconds=config.extraction.openai_timeout_seconds,
-        prompt_version=config.extraction.openai_prompt_version,
         client=client,
     )
     pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)

@@ -9,7 +9,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple, runtime_checkable
+from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple, runtime_checkable
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -141,6 +141,14 @@ class LLMExtractor(ABC):
 class OpenAIExtractor(LLMExtractor):
     """Adapter that calls the OpenAI chat completions API for extraction."""
 
+    _ENDPOINT = "/chat/completions"
+    _SYSTEM_PROMPT_TEMPLATE = (
+        "You are an expert scientific information extractor. "
+        "Follow prompt version {prompt_version}. Extract factual relationships and return at most {max_triples} triples. "
+        "Subjects and objects must be explicit entity mentions. "
+        "Return full supportive sentences verbatim and include a confidence between 0.0 and 1.0. "
+        "Normalize relations to the allowed set and convert passive voice to active voice."
+    )
     _RESPONSE_SCHEMA = {
         "type": "json_schema",
         "json_schema": {
@@ -180,53 +188,60 @@ class OpenAIExtractor(LLMExtractor):
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
         *,
-        model: str = "gpt-4o-mini",
-        base_url: str = "https://api.openai.com/v1",
-        timeout_seconds: float = 60.0,
-        prompt_version: str = "phase3-v1",
+        settings: OpenAIConfig,
+        api_key: Optional[str] = None,
         client: Optional[_HTTPClient] = None,
+        http_post: Optional[Callable[[str, Dict[str, Any], Dict[str, str]], Any]] = None,
     ) -> None:
-        """Initialize the extractor with OpenAI credentials and options.
+        """Initialise the extractor with configuration and networking hooks.
 
         Args:
-            api_key: Explicit API key; falls back to ``OPENAI_API_KEY`` env var.
-            model: Model name to invoke for extraction.
-            base_url: Base URL for the OpenAI REST API.
-            timeout_seconds: Request timeout in seconds.
-            prompt_version: Version identifier for the prompt template.
-            client: Optional pre-configured HTTP client (used in tests).
+            settings: OpenAI-specific configuration sourced from ``config.yaml``.
+            api_key: Explicit API key; falls back to ``OPENAI_API_KEY`` environment variable.
+            client: Optional HTTP client implementing the ``_HTTPClient`` protocol.
+            http_post: Optional callable used for unit tests to capture payloads directly.
 
         Raises:
-            ValueError: If no API key is provided.
+            RuntimeError: If an API key cannot be resolved.
+            ValueError: If both ``client`` and ``http_post`` are supplied.
         """
 
+        if client is not None and http_post is not None:
+            raise ValueError("Provide either a client or http_post, not both")
         resolved_key = api_key or os.getenv("OPENAI_API_KEY")
         if not resolved_key:
-            raise ValueError("OpenAI API key must be provided via argument or OPENAI_API_KEY")
+            raise RuntimeError("OpenAI API key must be provided via argument or OPENAI_API_KEY")
+        self._settings = settings
         self._api_key = resolved_key
-        self._model = model
-        self._prompt_version = prompt_version
-        if client is None:
-            if _httpx is not None:
-                self._client: _HTTPClient = _HTTPXClientWrapper(base_url, timeout_seconds)
+        self._http_post = http_post
+        self._client: Optional[_HTTPClient]
+        self._owns_client = False
+        if http_post is None:
+            if client is None:
+                self._client = self._build_client(settings)
+                self._owns_client = True
             else:
-                self._client = _UrllibHTTPClient(base_url, timeout_seconds)
-            self._owns_client = True
+                self._client = client
         else:
-            self._client = client
-            self._owns_client = False
-        self._endpoint = "chat/completions"
+            self._client = None
         self._base_headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
+        self._retry_statuses = set(settings.retry_statuses)
+
+    def _build_client(self, settings: OpenAIConfig) -> _HTTPClient:
+        """Create an HTTP client for communicating with the OpenAI API."""
+
+        if _httpx is not None:
+            return _HTTPXClientWrapper(settings.api_base, settings.timeout_seconds)
+        return _UrllibHTTPClient(settings.api_base, settings.timeout_seconds)
 
     def close(self) -> None:
-        """Close the underlying HTTP client if owned by the adapter."""
+        """Close underlying HTTP resources if this instance owns them."""
 
-        if getattr(self, "_owns_client", False):
+        if self._owns_client and self._client is not None:
             self._client.close()
 
     def extract_triples(
@@ -235,52 +250,37 @@ class OpenAIExtractor(LLMExtractor):
         candidate_entities: Optional[Sequence[str]],
         max_triples: int,
     ) -> Sequence[RawLLMTriple]:
-        """Invoke the OpenAI API for extraction.
+        """Invoke the OpenAI API and parse triples from the response.
 
         Args:
-            element: Parsed element describing the chunk to analyze.
-            candidate_entities: Optional ordered list of candidate entity strings.
-            max_triples: Maximum number of triples to return.
+            element: Parsed element describing the chunk to analyse.
+            candidate_entities: Optional candidate entity list used as hints.
+            max_triples: Maximum number of triples expected from the model.
 
         Returns:
-            Sequence[RawLLMTriple]: Raw triples emitted by the language model.
 
-        Raises:
-            RuntimeError: If the OpenAI API returns an error or malformed response.
+            Sequence[RawLLMTriple]: Raw triples emitted by the LLM.
+
         """
 
         payload = self._build_payload(element, candidate_entities, max_triples)
-        LOGGER.debug("Requesting OpenAI extraction for element %s", element.element_id)
-        response = self._client.post(
-            self._endpoint,
-            headers=self._base_headers,
-            json=payload,
-        )
-        if response.status_code >= 400:
-            message = self._extract_error_message(response)
-            LOGGER.error("OpenAI extraction failed: %s", message)
-            raise RuntimeError(f"OpenAI extraction failed with status {response.status_code}: {message}")
-        try:
-            content = response.json()
-        except json.JSONDecodeError as exc:
-            LOGGER.error("OpenAI response was not valid JSON: %s", exc)
-            raise RuntimeError("OpenAI response was not valid JSON") from exc
-        return self._parse_response(content, max_triples)
+        response_json = self._post_with_retries(payload)
+        return self._parse_response(response_json, max_triples)
 
     def _build_payload(
         self,
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]],
         max_triples: int,
-    ) -> Dict[str, object]:
+    ) -> Dict[str, Any]:
         """Construct the chat completion payload sent to OpenAI."""
 
         system_prompt = self._render_system_prompt(max_triples)
         user_prompt = self._render_user_prompt(element, candidate_entities)
-        payload: Dict[str, object] = {
-            "model": self._model,
-            "temperature": 0.0,
-            "max_tokens": 800,
+        payload: Dict[str, Any] = {
+            "model": self._settings.model,
+            "temperature": self._settings.temperature,
+            "max_tokens": self._settings.max_output_tokens,
             "response_format": self._RESPONSE_SCHEMA,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -292,13 +292,9 @@ class OpenAIExtractor(LLMExtractor):
     def _render_system_prompt(self, max_triples: int) -> str:
         """Render the system prompt used for extraction."""
 
-        return (
-            "You are an expert scientific information extractor. "
-            f"Follow prompt version {self._prompt_version}. "
-            f"Extract factual relationships and return at most {max_triples} triples. "
-            "Subjects and objects must be explicit entity mentions. "
-            "Return full supportive sentences verbatim and include a confidence between 0.0 and 1.0. "
-            "Normalize relations to the allowed set and convert passive voice to active voice."
+        return self._SYSTEM_PROMPT_TEMPLATE.format(
+            prompt_version=self._settings.prompt_version,
+            max_triples=max_triples,
         )
 
     def _render_user_prompt(
@@ -315,15 +311,111 @@ class OpenAIExtractor(LLMExtractor):
             element.content,
         ]
         if candidate_entities:
-            lines.append("Candidate entities (focus on these if relevant):")
+            lines.append("Candidate entities that may appear in the chunk:")
             for entity in candidate_entities:
                 lines.append(f"- {entity}")
         lines.append("Return JSON matching the requested schema.")
         return "\n".join(lines)
 
+    def _post_with_retries(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Send the payload to OpenAI with retry semantics for transient errors."""
+
+        attempt = 0
+        delay = self._settings.backoff_initial_seconds
+        while True:
+            response = self._dispatch_request(payload)
+            if response.status_code < 400:
+                try:
+                    return response.json()
+                except json.JSONDecodeError as exc:
+                    LOGGER.error("OpenAI response was not valid JSON: %s", exc)
+                    raise RuntimeError("OpenAI response was not valid JSON") from exc
+            if not self._should_retry(response.status_code, attempt):
+                message = self._extract_error_message(response)
+                LOGGER.error(
+                    "OpenAI extraction failed with status %s: %s",
+                    response.status_code,
+                    message,
+                )
+                raise RuntimeError(
+                    f"OpenAI extraction failed with status {response.status_code}: {message}"
+                )
+            attempt += 1
+            LOGGER.warning(
+                "OpenAI extraction received status %s; retrying (attempt %s)",
+                response.status_code,
+                attempt,
+            )
+            sleep_seconds = min(delay, self._settings.backoff_max_seconds)
+            time.sleep(sleep_seconds)
+            delay = min(delay * 2, self._settings.backoff_max_seconds)
+
+    def _should_retry(self, status_code: int, attempt: int) -> bool:
+        """Return whether the request should be retried."""
+
+        if status_code not in self._retry_statuses:
+            return False
+        return attempt < self._settings.max_retries
+
+    def _dispatch_request(self, payload: Dict[str, Any]) -> _SimpleHTTPResponse:
+        """Dispatch the HTTP request via the configured client or hook."""
+
+        headers = dict(self._base_headers)
+        if self._http_post is not None:
+            raw_response = self._http_post(self._ENDPOINT, payload, headers)
+            return self._coerce_response(raw_response)
+        if self._client is None:
+            raise RuntimeError("No HTTP client configured for OpenAIExtractor")
+        response = self._client.post(self._ENDPOINT, headers=headers, json=payload)
+        if isinstance(response, _SimpleHTTPResponse):
+            return response
+        return self._coerce_response(response)
+
+    def _coerce_response(self, response: Any) -> _SimpleHTTPResponse:
+        """Convert various response types into ``_SimpleHTTPResponse``."""
+
+        if isinstance(response, _SimpleHTTPResponse):
+            return response
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        if hasattr(response, "json") and callable(response.json):
+            try:
+                data = response.json()
+            except Exception:  # pragma: no cover - defensive
+                data = None
+            else:
+                if isinstance(data, (dict, list)):
+                    return _SimpleHTTPResponse(
+                        status_code=status_code,
+                        _content=json.dumps(data).encode("utf-8"),
+                    )
+        if hasattr(response, "body"):
+            body = getattr(response, "body")
+            if isinstance(body, (bytes, bytearray)):
+                return _SimpleHTTPResponse(status_code=status_code, _content=bytes(body))
+            if isinstance(body, (dict, list)):
+                return _SimpleHTTPResponse(
+                    status_code=status_code,
+                    _content=json.dumps(body).encode("utf-8"),
+                )
+            if body is not None:
+                return _SimpleHTTPResponse(
+                    status_code=status_code,
+                    _content=str(body).encode("utf-8"),
+                )
+        text = getattr(response, "text", "")
+        if isinstance(text, bytes):
+            content = text
+        elif isinstance(text, str):
+            content = text.encode("utf-8")
+        elif text:
+            content = json.dumps(text).encode("utf-8")
+        else:
+            content = b"{}"
+        return _SimpleHTTPResponse(status_code=status_code, _content=content)
+
     def _parse_response(
         self,
-        payload: Dict[str, object],
+        payload: Dict[str, Any],
         max_triples: int,
     ) -> Sequence[RawLLMTriple]:
         """Parse the OpenAI response into ``RawLLMTriple`` objects."""
@@ -385,8 +477,6 @@ class OpenAIExtractor(LLMExtractor):
         if isinstance(error, dict) and "message" in error:
             return str(error["message"])
         return json.dumps(payload)
-
-
 class TwoPassTripletExtractor:
     """Perform two-pass extraction with deterministic span linking."""
 

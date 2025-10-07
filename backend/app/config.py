@@ -37,6 +37,23 @@ class ParsingConfig(_FrozenModel):
     section_aliases: Dict[str, List[str]] = Field(default_factory=dict)
 
 
+
+class OpenAIConfig(_FrozenModel):
+    """Settings required for the OpenAI LLM adapter."""
+
+    model: str = Field(..., min_length=1)
+    api_base: str = Field(..., min_length=1)
+    timeout_seconds: float = Field(..., gt=0)
+    max_retries: int = Field(..., ge=0)
+    temperature: float = Field(0.0, ge=0.0, le=2.0)
+    max_output_tokens: int = Field(..., ge=1)
+    prompt_version: str = Field(..., min_length=1)
+    backoff_initial_seconds: float = Field(..., gt=0)
+    backoff_max_seconds: float = Field(..., gt=0)
+    retry_statuses: List[int] = Field(default_factory=list)
+
+
+
 class ExtractionConfig(_FrozenModel):
     """Extraction parameters for Phase 3 pipeline."""
 
@@ -51,7 +68,34 @@ class ExtractionConfig(_FrozenModel):
     openai_base_url: str = Field(..., min_length=1)
     openai_timeout_seconds: float = Field(..., gt=0)
     openai_prompt_version: str = Field(..., min_length=1)
+    openai_max_retries: int = Field(..., ge=0)
+    openai_temperature: float = Field(..., ge=0.0, le=2.0)
+    openai_max_output_tokens: int = Field(..., ge=1)
+    openai_backoff_initial_seconds: float = Field(..., gt=0)
+    openai_backoff_max_seconds: float = Field(..., gt=0)
+    openai_retry_statuses: List[int] = Field(default_factory=list)
 
+
+    @property
+    def openai(self) -> OpenAIConfig:
+        """Return the OpenAI adapter configuration.
+
+        Returns:
+            OpenAIConfig: Immutable settings for the OpenAI adapter.
+        """
+
+        return OpenAIConfig(
+            model=self.openai_model,
+            api_base=self.openai_base_url,
+            timeout_seconds=self.openai_timeout_seconds,
+            max_retries=self.openai_max_retries,
+            temperature=self.openai_temperature,
+            max_output_tokens=self.openai_max_output_tokens,
+            prompt_version=self.openai_prompt_version,
+            backoff_initial_seconds=self.openai_backoff_initial_seconds,
+            backoff_max_seconds=self.openai_backoff_max_seconds,
+            retry_statuses=list(self.openai_retry_statuses),
+        )
 
 class CanonicalizationConfig(_FrozenModel):
     """Canonicalization thresholds and parameters."""
