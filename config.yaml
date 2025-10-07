@@ -37,6 +37,10 @@ extraction:
   use_entity_inventory: false
   llm_provider: "openai"
   fuzzy_match_threshold: 0.9
+  openai_model: "gpt-4o-mini"
+  openai_base_url: "https://api.openai.com/v1"
+  openai_timeout_seconds: 60
+  openai_prompt_version: "phase3-v1"
 
 canonicalization:
   base_threshold: 0.86

@@ -1,18 +1,100 @@
 """Two-pass triplet extraction pipeline for Phase 3."""
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple, runtime_checkable
+from urllib import error as urllib_error
+from urllib import request as urllib_request
+
+try:  # pragma: no cover - optional dependency
+    import httpx as _httpx
+except ModuleNotFoundError:  # pragma: no cover - tests rely on stub client instead
+    _httpx = None
+
+json_module = json
 
 from backend.app.config import AppConfig
 from backend.app.contracts import Evidence, ParsedElement, TextSpan, Triplet
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _SimpleHTTPResponse:
+    """Minimal HTTP response wrapper with JSON helpers."""
+
+    status_code: int
+    _content: bytes
+
+    def json(self) -> Any:
+        """Parse the response body as JSON."""
+
+        return json.loads(self.text)
+
+    @property
+    def text(self) -> str:
+        """Return the decoded text body."""
+
+        return self._content.decode("utf-8", errors="replace")
+
+
+@runtime_checkable
+class _HTTPClient(Protocol):
+    """Protocol for minimal HTTP client used by the extractor."""
+
+    def post(self, path: str, *, headers: Dict[str, str], json: Dict[str, Any]) -> _SimpleHTTPResponse:
+        """Send a POST request and return a simplified response."""
+
+    def close(self) -> None:
+        """Close any underlying resources."""
+
+
+class _HTTPXClientWrapper:
+    """Wrap an httpx.Client to satisfy the _HTTPClient protocol."""
+
+    def __init__(self, base_url: str, timeout_seconds: float) -> None:
+        if _httpx is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("httpx is not available")
+        self._client = _httpx.Client(base_url=base_url, timeout=timeout_seconds)
+
+    def post(self, path: str, *, headers: Dict[str, str], json: Dict[str, Any]) -> _SimpleHTTPResponse:
+        response = self._client.post(path, headers=headers, json=json)
+        return _SimpleHTTPResponse(status_code=response.status_code, _content=response.content)
+
+    def close(self) -> None:
+        self._client.close()
+
+
+class _UrllibHTTPClient:
+    """Fallback HTTP client implemented with urllib for environments without httpx."""
+
+    def __init__(self, base_url: str, timeout_seconds: float) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout_seconds
+
+    def post(self, path: str, *, headers: Dict[str, str], json: Dict[str, Any]) -> _SimpleHTTPResponse:
+        url = f"{self._base_url}/{path.lstrip('/')}"
+        payload = json_module.dumps(json).encode("utf-8")
+        combined_headers = {"Content-Type": "application/json", **headers}
+        request = urllib_request.Request(url, data=payload, headers=combined_headers, method="POST")
+        try:
+            with urllib_request.urlopen(request, timeout=self._timeout) as response:
+                content = response.read()
+                status = response.getcode() or 0
+                return _SimpleHTTPResponse(status_code=status, _content=content)
+        except urllib_error.HTTPError as exc:  # pragma: no cover - exercised via mocked clients in tests
+            body = exc.read()
+            return _SimpleHTTPResponse(status_code=exc.code, _content=body)
+
+    def close(self) -> None:  # pragma: no cover - urllib has no persistent resources
+        return None
 
 
 @dataclass(frozen=True)
@@ -24,6 +106,14 @@ class RawLLMTriple:
     object_text: str
     supportive_sentence: str
     confidence: float
+
+
+@dataclass(frozen=True)
+class ExtractionResult:
+    """Collection of validated triples and entity section statistics."""
+
+    triplets: List[Triplet]
+    section_distribution: Dict[str, Dict[str, int]]
 
 
 class LLMExtractor(ABC):
@@ -49,10 +139,95 @@ class LLMExtractor(ABC):
 
 
 class OpenAIExtractor(LLMExtractor):
-    """Adapter placeholder for OpenAI-based extraction."""
+    """Adapter that calls the OpenAI chat completions API for extraction."""
 
-    def __init__(self, *_: object, **__: object) -> None:
-        """Initialize the extractor."""
+    _RESPONSE_SCHEMA = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "triplet_extraction_response",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "triples": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "subject_text": {"type": "string"},
+                                "relation_verbatim": {"type": "string"},
+                                "object_text": {"type": "string"},
+                                "supportive_sentence": {"type": "string"},
+                                "confidence": {"type": "number"},
+                            },
+                            "required": [
+                                "subject_text",
+                                "relation_verbatim",
+                                "object_text",
+                                "supportive_sentence",
+                                "confidence",
+                            ],
+                            "additionalProperties": False,
+                        },
+                        "default": [],
+                    },
+                    "prompt_version": {"type": "string"},
+                },
+                "required": ["triples"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        *,
+        model: str = "gpt-4o-mini",
+        base_url: str = "https://api.openai.com/v1",
+        timeout_seconds: float = 60.0,
+        prompt_version: str = "phase3-v1",
+        client: Optional[_HTTPClient] = None,
+    ) -> None:
+        """Initialize the extractor with OpenAI credentials and options.
+
+        Args:
+            api_key: Explicit API key; falls back to ``OPENAI_API_KEY`` env var.
+            model: Model name to invoke for extraction.
+            base_url: Base URL for the OpenAI REST API.
+            timeout_seconds: Request timeout in seconds.
+            prompt_version: Version identifier for the prompt template.
+            client: Optional pre-configured HTTP client (used in tests).
+
+        Raises:
+            ValueError: If no API key is provided.
+        """
+
+        resolved_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not resolved_key:
+            raise ValueError("OpenAI API key must be provided via argument or OPENAI_API_KEY")
+        self._api_key = resolved_key
+        self._model = model
+        self._prompt_version = prompt_version
+        if client is None:
+            if _httpx is not None:
+                self._client: _HTTPClient = _HTTPXClientWrapper(base_url, timeout_seconds)
+            else:
+                self._client = _UrllibHTTPClient(base_url, timeout_seconds)
+            self._owns_client = True
+        else:
+            self._client = client
+            self._owns_client = False
+        self._endpoint = "chat/completions"
+        self._base_headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def close(self) -> None:
+        """Close the underlying HTTP client if owned by the adapter."""
+
+        if getattr(self, "_owns_client", False):
+            self._client.close()
 
     def extract_triples(
         self,
@@ -71,10 +246,145 @@ class OpenAIExtractor(LLMExtractor):
             Sequence[RawLLMTriple]: Raw triples emitted by the language model.
 
         Raises:
-            NotImplementedError: Always raised until the adapter is implemented.
+            RuntimeError: If the OpenAI API returns an error or malformed response.
         """
 
-        raise NotImplementedError("OpenAI extractor requires API integration")
+        payload = self._build_payload(element, candidate_entities, max_triples)
+        LOGGER.debug("Requesting OpenAI extraction for element %s", element.element_id)
+        response = self._client.post(
+            self._endpoint,
+            headers=self._base_headers,
+            json=payload,
+        )
+        if response.status_code >= 400:
+            message = self._extract_error_message(response)
+            LOGGER.error("OpenAI extraction failed: %s", message)
+            raise RuntimeError(f"OpenAI extraction failed with status {response.status_code}: {message}")
+        try:
+            content = response.json()
+        except json.JSONDecodeError as exc:
+            LOGGER.error("OpenAI response was not valid JSON: %s", exc)
+            raise RuntimeError("OpenAI response was not valid JSON") from exc
+        return self._parse_response(content, max_triples)
+
+    def _build_payload(
+        self,
+        element: ParsedElement,
+        candidate_entities: Optional[Sequence[str]],
+        max_triples: int,
+    ) -> Dict[str, object]:
+        """Construct the chat completion payload sent to OpenAI."""
+
+        system_prompt = self._render_system_prompt(max_triples)
+        user_prompt = self._render_user_prompt(element, candidate_entities)
+        payload: Dict[str, object] = {
+            "model": self._model,
+            "temperature": 0.0,
+            "max_tokens": 800,
+            "response_format": self._RESPONSE_SCHEMA,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        return payload
+
+    def _render_system_prompt(self, max_triples: int) -> str:
+        """Render the system prompt used for extraction."""
+
+        return (
+            "You are an expert scientific information extractor. "
+            f"Follow prompt version {self._prompt_version}. "
+            f"Extract factual relationships and return at most {max_triples} triples. "
+            "Subjects and objects must be explicit entity mentions. "
+            "Return full supportive sentences verbatim and include a confidence between 0.0 and 1.0. "
+            "Normalize relations to the allowed set and convert passive voice to active voice."
+        )
+
+    def _render_user_prompt(
+        self,
+        element: ParsedElement,
+        candidate_entities: Optional[Sequence[str]],
+    ) -> str:
+        """Render the user prompt containing chunk content and context."""
+
+        lines = [
+            f"Document ID: {element.doc_id}",
+            f"Section: {element.section}",
+            "Chunk:",
+            element.content,
+        ]
+        if candidate_entities:
+            lines.append("Candidate entities (focus on these if relevant):")
+            for entity in candidate_entities:
+                lines.append(f"- {entity}")
+        lines.append("Return JSON matching the requested schema.")
+        return "\n".join(lines)
+
+    def _parse_response(
+        self,
+        payload: Dict[str, object],
+        max_triples: int,
+    ) -> Sequence[RawLLMTriple]:
+        """Parse the OpenAI response into ``RawLLMTriple`` objects."""
+
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            LOGGER.error("OpenAI response missing choices: %s", payload)
+            raise RuntimeError("OpenAI response missing choices")
+        message = choices[0].get("message")  # type: ignore[index]
+        if not isinstance(message, dict) or "content" not in message:
+            LOGGER.error("OpenAI response missing message content: %s", payload)
+            raise RuntimeError("OpenAI response missing message content")
+        content = message.get("content")
+        if isinstance(content, list):
+            content_parts = [part.get("text", "") for part in content if isinstance(part, dict)]
+            response_text = "".join(content_parts)
+        elif isinstance(content, str):
+            response_text = content
+        else:
+            LOGGER.error("OpenAI response content was unexpected: %s", content)
+            raise RuntimeError("OpenAI response content was unexpected")
+        try:
+            parsed = json.loads(response_text)
+        except json.JSONDecodeError as exc:
+            LOGGER.error("OpenAI returned non-JSON content: %s", response_text)
+            raise RuntimeError("OpenAI returned non-JSON content") from exc
+        triples_payload = parsed.get("triples", [])
+        if not isinstance(triples_payload, list):
+            LOGGER.error("OpenAI response triples field malformed: %s", parsed)
+            raise RuntimeError("OpenAI response triples field malformed")
+        triples: List[RawLLMTriple] = []
+        for item in triples_payload[:max_triples]:
+            if not isinstance(item, dict):
+                LOGGER.info("Skipping non-dict triple entry: %s", item)
+                continue
+            try:
+                triple = RawLLMTriple(
+                    subject_text=str(item["subject_text"]),
+                    relation_verbatim=str(item["relation_verbatim"]),
+                    object_text=str(item["object_text"]),
+                    supportive_sentence=str(item["supportive_sentence"]),
+                    confidence=float(item["confidence"]),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                LOGGER.info("Skipping malformed triple payload %s: %s", item, exc)
+                continue
+            triples.append(triple)
+        return triples
+
+    @staticmethod
+    def _extract_error_message(response: _SimpleHTTPResponse) -> str:
+        """Extract an error message from a failed OpenAI response."""
+
+        try:
+            payload = response.json()
+        except json.JSONDecodeError:
+            return response.text
+        error = payload.get("error")
+        if isinstance(error, dict) and "message" in error:
+            return str(error["message"])
+        return json.dumps(payload)
 
 
 class TwoPassTripletExtractor:
@@ -107,6 +417,26 @@ class TwoPassTripletExtractor:
             List[Triplet]: Triples that passed span validation and normalization.
         """
 
+        triplets, _ = self._extract_internal(element, candidate_entities)
+        return triplets
+
+    def extract_with_metadata(
+        self,
+        element: ParsedElement,
+        candidate_entities: Optional[Sequence[str]],
+    ) -> "ExtractionResult":
+        """Extract triples and section distribution metadata for canonicalization."""
+
+        triplets, section_distribution = self._extract_internal(element, candidate_entities)
+        return ExtractionResult(triplets=triplets, section_distribution=section_distribution)
+
+    def _extract_internal(
+        self,
+        element: ParsedElement,
+        candidate_entities: Optional[Sequence[str]],
+    ) -> Tuple[List[Triplet], Dict[str, Dict[str, int]]]:
+        """Run LLM extraction and span validation, returning metadata."""
+
         max_triples = self._compute_max_triples(element.content)
         raw_triples = self._llm_extractor.extract_triples(
             element=element,
@@ -114,6 +444,7 @@ class TwoPassTripletExtractor:
             max_triples=max_triples,
         )
         accepted: List[Triplet] = []
+        section_counts: Dict[str, Dict[str, int]] = {}
         for raw in raw_triples:
             try:
                 normalized_relation, swap = normalize_relation(raw.relation_verbatim)
@@ -170,7 +501,27 @@ class TwoPassTripletExtractor:
                 pipeline_version=self._config.pipeline.version,
             )
             accepted.append(triplet)
-        return accepted
+            self._update_section_counts(
+                section_counts,
+                element.section,
+                subject_text,
+                object_text,
+            )
+        section_distribution = {entity: dict(counts) for entity, counts in section_counts.items()}
+        return accepted, section_distribution
+
+    @staticmethod
+    def _update_section_counts(
+        section_counts: Dict[str, Dict[str, int]],
+        section: str,
+        subject_text: str,
+        object_text: str,
+    ) -> None:
+        """Update section occurrence counts for subject and object entities."""
+
+        for entity in (subject_text, object_text):
+            entity_counts = section_counts.setdefault(entity, {})
+            entity_counts[section] = entity_counts.get(section, 0) + 1
 
     def _compute_max_triples(self, content: str) -> int:
         """Compute the triple limit for an element based on token count.
@@ -323,6 +674,7 @@ _RELATION_PATTERNS: List[Tuple[str, str, bool]] = sorted(
 
 __all__ = [
     "RawLLMTriple",
+    "ExtractionResult",
     "LLMExtractor",
     "OpenAIExtractor",
     "TwoPassTripletExtractor",

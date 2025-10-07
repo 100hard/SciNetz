@@ -219,6 +219,10 @@ For each triple from Pass A:
 
 ### Model Choice & Adapter Pattern
 
+**Implementation status:**
+- ✅ OpenAI GPT-4o-mini adapter wired via chat completions API with JSON schema enforcement
+- ✅ Two-pass validator emits section-distribution stats for Phase 4 canonicalization
+
 **Start with:**
 - GPT-4o-mini (good offset reliability, fast)
 
