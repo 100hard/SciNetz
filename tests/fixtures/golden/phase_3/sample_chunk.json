@@ -1,0 +1,68 @@
+{
+  "element": {
+    "doc_id": "doc-3",
+    "element_id": "doc-3:0",
+    "section": "Results",
+    "content": "The Reinforcement Learning agent uses the PPO algorithm to stabilize training. The Reinforcement Learning agent outperforms baseline methods on Atari games.",
+    "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "start_char": 0,
+    "end_char": 156
+  },
+  "candidate_entities": [
+    "Reinforcement Learning agent",
+    "PPO algorithm",
+    "baseline methods"
+  ],
+  "llm_response": {
+    "triples": [
+      {
+        "subject_text": "The Reinforcement Learning agent",
+        "relation_verbatim": "uses",
+        "object_text": "the PPO algorithm",
+        "supportive_sentence": "The Reinforcement Learning agent uses the PPO algorithm to stabilize training.",
+        "confidence": 0.95
+      },
+      {
+        "subject_text": "The Reinforcement Learning agent",
+        "relation_verbatim": "outperforms",
+        "object_text": "baseline methods",
+        "supportive_sentence": "The Reinforcement Learning agent outperforms baseline methods on Atari games.",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "expected": [
+    {
+      "subject": "The Reinforcement Learning agent",
+      "predicate": "uses",
+      "object": "the PPO algorithm",
+      "confidence": 0.95,
+      "evidence": {
+        "element_id": "doc-3:0",
+        "text_span": {
+          "start": 0,
+          "end": 78
+        },
+        "doc_id": "doc-3",
+        "full_sentence": "The Reinforcement Learning agent uses the PPO algorithm to stabilize training."
+      },
+      "pipeline_version": "1.0.0"
+    },
+    {
+      "subject": "The Reinforcement Learning agent",
+      "predicate": "outperforms",
+      "object": "baseline methods",
+      "confidence": 0.9,
+      "evidence": {
+        "element_id": "doc-3:0",
+        "text_span": {
+          "start": 79,
+          "end": 156
+        },
+        "doc_id": "doc-3",
+        "full_sentence": "The Reinforcement Learning agent outperforms baseline methods on Atari games."
+      },
+      "pipeline_version": "1.0.0"
+    }
+  ]
+}

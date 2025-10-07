@@ -44,6 +44,9 @@ class ExtractionConfig(_FrozenModel):
     tokens_per_triple: int = Field(..., ge=1)
     chunk_size_tokens: int = Field(..., ge=1)
     chunk_overlap_tokens: int = Field(..., ge=0)
+    use_entity_inventory: bool = False
+    llm_provider: str = Field(..., min_length=1)
+    fuzzy_match_threshold: float = Field(..., ge=0.0, le=1.0)
 
 
 class CanonicalizationConfig(_FrozenModel):
