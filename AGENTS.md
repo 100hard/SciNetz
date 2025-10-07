@@ -32,7 +32,7 @@ Read PLAN.md for full architecture. We're building a research paper knowledge gr
 ## Phase-Specific Notes
 
 ### Phase 3 (Extraction)
-- Implement LLM adapter pattern (OpenAIExtractor, ClaudeExtractor base class)
+- Implement LLM adapter pattern (OpenAIExtractor base class for now)
 - Two-pass MANDATORY: LLM returns text, linker finds offsets
 - Fuzzy matching threshold: 0.90 (configurable in config.yaml)
 - Log rejected triples with reasons (for debugging)
@@ -67,6 +67,6 @@ Read PLAN.md for full architecture. We're building a research paper knowledge gr
 
 ## Current Phase
 [Update this as you progress]
-Phase: 1 - Parsing & Metadata
-Status: In progress
+Phase: 4 - Canonicalization
+Status: Ready to start
 Blockers: None
