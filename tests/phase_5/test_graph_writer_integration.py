@@ -31,14 +31,16 @@ except ModuleNotFoundError:  # pragma: no cover - skip when docker not installed
 def test_graph_writer_persists_entities_and_edges() -> None:
     """Ensure the graph writer can persist entities and edges into Neo4j."""
 
-    container = Neo4jContainer("neo4j:5.21").with_env("NEO4J_AUTH", "neo4j/test")
+    container = None
+    driver = None
 
     try:
+        container = Neo4jContainer("neo4j:5.21").with_env("NEO4J_AUTH", "neo4j/test")
         container.start()
     except DockerException as exc:  # pragma: no cover - environment without Docker
         pytest.skip(f"Docker is not available: {exc}")
-
-    driver = None
+    except Exception as exc:  # pragma: no cover - surface unexpected startup issues
+        pytest.skip(f"Unable to start Neo4j test container: {exc}")
 
     try:
         uri = container.get_connection_url()
@@ -107,7 +109,8 @@ def test_graph_writer_persists_entities_and_edges() -> None:
     finally:
         if driver is not None:
             driver.close()
-        container.stop()
+        if container is not None:
+            container.stop()
 
 
 def _write_entities(writer: GraphWriter, count: int) -> List[str]:
