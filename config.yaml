@@ -58,6 +58,17 @@ canonicalization:
   polysemy_threshold: 0.92
   polysemy_section_diversity: 3
 
+graph:
+  relation_semantics:
+    outperforms: directional
+    beats: directional
+    improves: directional
+    causes: directional
+    alleviates: directional
+    related-to: bidirectional
+    compared-to: bidirectional
+    similar-to: bidirectional
+
 co_mention:
   enabled: true
   min_occurrences: 2
