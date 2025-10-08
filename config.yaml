@@ -68,6 +68,7 @@ graph:
     related-to: bidirectional
     compared-to: bidirectional
     similar-to: bidirectional
+    correlates-with: bidirectional
 
 co_mention:
   enabled: true

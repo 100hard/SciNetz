@@ -8,7 +8,7 @@ import os
 import re
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple, runtime_checkable
 from urllib import error as urllib_error
@@ -115,6 +115,7 @@ class ExtractionResult:
 
     triplets: List[Triplet]
     section_distribution: Dict[str, Dict[str, int]]
+    relation_verbatims: List[str] = field(default_factory=list)
 
 
 class LLMExtractor(ABC):
@@ -493,7 +494,7 @@ class TwoPassTripletExtractor:
             List[Triplet]: Triples that passed span validation and normalization.
         """
 
-        triplets, _ = self._extract_internal(element, candidate_entities)
+        triplets, _, _ = self._extract_internal(element, candidate_entities)
         return triplets
 
     def extract_with_metadata(
@@ -503,14 +504,20 @@ class TwoPassTripletExtractor:
     ) -> "ExtractionResult":
         """Extract triples and section distribution metadata for canonicalization."""
 
-        triplets, section_distribution = self._extract_internal(element, candidate_entities)
-        return ExtractionResult(triplets=triplets, section_distribution=section_distribution)
+        triplets, section_distribution, verbatims = self._extract_internal(
+            element, candidate_entities
+        )
+        return ExtractionResult(
+            triplets=triplets,
+            section_distribution=section_distribution,
+            relation_verbatims=verbatims,
+        )
 
     def _extract_internal(
         self,
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]],
-    ) -> Tuple[List[Triplet], Dict[str, Dict[str, int]]]:
+    ) -> Tuple[List[Triplet], Dict[str, Dict[str, int]], List[str]]:
         """Run LLM extraction and span validation, returning metadata."""
 
         max_triples = self._compute_max_triples(element.content)
@@ -521,6 +528,7 @@ class TwoPassTripletExtractor:
         )
         accepted: List[Triplet] = []
         section_counts: Dict[str, Dict[str, int]] = {}
+        relation_verbatims: List[str] = []
         for raw in raw_triples:
             try:
                 normalized_relation, swap = normalize_relation(raw.relation_verbatim)
@@ -577,6 +585,7 @@ class TwoPassTripletExtractor:
                 pipeline_version=self._config.pipeline.version,
             )
             accepted.append(triplet)
+            relation_verbatims.append(raw.relation_verbatim)
             self._update_section_counts(
                 section_counts,
                 element.section,
@@ -584,7 +593,7 @@ class TwoPassTripletExtractor:
                 object_text,
             )
         section_distribution = {entity: dict(counts) for entity, counts in section_counts.items()}
-        return accepted, section_distribution
+        return accepted, section_distribution, relation_verbatims
 
     @staticmethod
     def _update_section_counts(
