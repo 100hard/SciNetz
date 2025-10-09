@@ -186,6 +186,9 @@ def test_golden_triplet_extraction_matches_fixture(config) -> None:
     assert isinstance(result, ExtractionResult)
     assert [trip.model_dump() for trip in result.triplets] == fixture["expected"]
     assert result.section_distribution == fixture["expected_section_distribution"]
+    assert result.relation_verbatims == [
+        item["relation_verbatim"] for item in fixture["llm_response"]["triples"]
+    ]
 
 
 def test_extract_from_element_returns_triplets_only(config) -> None:

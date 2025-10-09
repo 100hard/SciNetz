@@ -10,7 +10,7 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert isinstance(config, AppConfig)
     assert config.pipeline.version == "1.0.0"
     assert config.parsing.section_fuzzy_threshold == 0.85
-    assert "NeurIPS" in config.parsing.metadata_known_venues
+    assert "Nature" in config.parsing.metadata_known_venues
     assert config.extraction.max_triples_per_chunk_base == 15
     assert config.extraction.llm_provider == "openai"
     assert config.extraction.fuzzy_match_threshold == 0.9
@@ -30,6 +30,13 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.qa.entity_match_threshold == 0.83
     assert config.export.max_size_mb == 5
     assert config.extraction.use_entity_inventory is False
+    assert "model" in config.canonicalization.polysemy_blocklist
+    assert "uses" in config.relations.canonical_relation_names()
+    graph_defaults = config.ui.graph_defaults
+    assert graph_defaults.min_confidence == 0.5
+    assert graph_defaults.relations[:2] == ["defined-as", "uses"]
+    assert graph_defaults.sections == ["Results", "Methods"]
+    assert graph_defaults.show_co_mentions is False
 
 
 def test_config_strict_fields_match_yaml() -> None:
@@ -40,3 +47,7 @@ def test_config_strict_fields_match_yaml() -> None:
     assert raw["pipeline"]["version"] == config.pipeline.version
     assert raw["co_mention"]["confidence"] == config.co_mention.confidence
     assert raw["parsing"]["metadata_max_pages"] == config.parsing.metadata_max_pages
+    assert (
+        raw["ui"]["graph_defaults"]["min_confidence"]
+        == config.ui.graph_defaults.min_confidence
+    )
