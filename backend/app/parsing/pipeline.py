@@ -224,21 +224,33 @@ class ParsingPipeline:
         return None
 
     def _find_authors(self, items: List[dict]) -> List[str]:
+        names: List[str] = []
+        collecting = False
         for item in items:
-            text = item["text"]
             if item.get("label") != "text":
                 continue
-            if text.lower().startswith("published") or text.lower().startswith("doi"):
+            text = item["text"].strip()
+            lowered = text.lower()
+            if lowered.startswith("published") or lowered.startswith("doi"):
+                if collecting:
+                    break
                 continue
             candidate = self._strip_after_known_tokens(text)
-            names = [
-                part.strip()
+            new_names = [
+                cleaned
                 for part in re.split(r",| and ", candidate)
-                if self._looks_like_name(part)
+                if (cleaned := self._clean_author_candidate(part))
+                and self._looks_like_name(cleaned)
             ]
-            if names:
-                return names
-        return []
+            if new_names:
+                collecting = True
+                for name in new_names:
+                    if name not in names:
+                        names.append(name)
+                continue
+            if collecting:
+                break
+        return names
 
     def _strip_after_known_tokens(self, text: str) -> str:
         lowered = text.lower()
@@ -251,7 +263,26 @@ class ParsingPipeline:
             idx = lowered.find(token)
             if idx != -1:
                 cutoff = min(cutoff, idx)
+        # Stop before trailing years or numeric footnotes to avoid polluting author names.
+        digit_match = re.search(r"\d", text)
+        if digit_match:
+            cutoff = min(cutoff, digit_match.start())
         return text[:cutoff].strip()
+
+    @staticmethod
+    def _clean_author_candidate(candidate: str) -> str:
+        tokens = candidate.strip().split()
+        cleaned: List[str] = []
+        for token in tokens:
+            normalized = token.strip(",")
+            if not normalized:
+                continue
+            if normalized.isdigit():
+                break
+            if normalized.isupper() and len(normalized) > 1:
+                break
+            cleaned.append(normalized)
+        return " ".join(cleaned)
 
     @staticmethod
     def _looks_like_name(candidate: str) -> bool:
