@@ -11,6 +11,10 @@ parsing:
     - Cell
     - Proceedings of the National Academy of Sciences
     - IEEE Transactions on Pattern Analysis and Machine Intelligence
+    - NeurIPS
+    - ACL
+    - ICML
+    - ICLR
   section_aliases:
     Abstract:
       - Abstract
@@ -178,18 +182,6 @@ graph:
     defined-as: directional
     part-of: directional
     is-a: directional
-    related-to: bidirectional
-    compared-to: bidirectional
-    similar-to: bidirectional
-    correlates-with: bidirectional
-
-graph:
-  relation_semantics:
-    outperforms: directional
-    beats: directional
-    improves: directional
-    causes: directional
-    alleviates: directional
     related-to: bidirectional
     compared-to: bidirectional
     similar-to: bidirectional

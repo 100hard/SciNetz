@@ -202,47 +202,6 @@ class GraphConfig(_FrozenModel):
         ]
 
 
-class GraphConfig(_FrozenModel):
-    """Graph persistence configuration values."""
-
-    relation_semantics: Dict[str, str] = Field(default_factory=dict)
-
-    @field_validator("relation_semantics")
-    @classmethod
-    def _normalize_semantics(cls, values: Dict[str, str]) -> Dict[str, str]:
-        """Normalize and validate relation semantics values."""
-
-        allowed = {"directional", "bidirectional"}
-        normalized: Dict[str, str] = {}
-        for relation, semantics in values.items():
-            normalized_value = semantics.lower()
-            if normalized_value not in allowed:
-                msg = (
-                    "relation semantics for '%s' must be either 'directional' or"
-                    " 'bidirectional'"
-                ) % relation
-                raise ValueError(msg)
-            normalized[relation] = normalized_value
-        return normalized
-
-    def is_directional(self, relation: str) -> bool:
-        """Return whether the given relation should be treated as directional."""
-
-        semantics = self.relation_semantics.get(relation)
-        if semantics is None:
-            return True
-        return semantics == "directional"
-
-    def directional_relations(self) -> List[str]:
-        """Return the list of directional relation labels."""
-
-        return [
-            relation
-            for relation, semantics in self.relation_semantics.items()
-            if semantics == "directional"
-        ]
-
-
 class CoMentionConfig(_FrozenModel):
     """Co-mention edge configuration."""
 
