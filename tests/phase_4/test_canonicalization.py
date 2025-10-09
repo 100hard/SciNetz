@@ -192,6 +192,34 @@ def test_synonyms_merge_into_single_node(config, storage_dirs) -> None:
     assert result.merge_map["RL"] == node.node_id
 
 
+def test_blocklisted_terms_require_matching_sections(config, storage_dirs) -> None:
+    backend = StubEmbeddingBackend({"model": [1.0, 0.0, 0.0]})
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=backend,
+        embedding_dir=storage_dirs["embeddings"],
+        report_dir=storage_dirs["reports"],
+    )
+    candidates = [
+        _candidate(
+            "Model",
+            times_seen=4,
+            section_distribution={"Methods": 4},
+            doc_ids=["doc-a"],
+        ),
+        _candidate(
+            "Model",
+            times_seen=3,
+            section_distribution={"Results": 3},
+            doc_ids=["doc-b"],
+        ),
+    ]
+
+    result = canonicalizer.canonicalize(candidates)
+
+    assert len(result.nodes) == 2
+
+
 def test_distinct_terms_do_not_merge(config, storage_dirs) -> None:
     backend = StubEmbeddingBackend(
         {

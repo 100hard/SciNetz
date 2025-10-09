@@ -30,19 +30,6 @@ from ..contracts import Node
 
 LOGGER = logging.getLogger(__name__)
 
-_POLYSEMY_BLOCKLIST = {
-    "transformer",
-    "regression",
-    "model",
-    "network",
-    "system",
-    "algorithm",
-    "method",
-    "approach",
-    "framework",
-    "attention",
-}
-
 _BLOCKLIST_THRESHOLD = 0.94
 _NAMESPACE_UUID = UUID("2d6bb3b6-4be3-4f98-a18a-0a49de2a5d88")
 _TOP_SECTION_OVERLAP_THRESHOLD = 0.5
@@ -369,6 +356,12 @@ class EntityCanonicalizer:
             self._embedding_backend = embedding_backend
         else:
             self._embedding_backend = self._create_default_backend()
+        blocklisted: Set[str] = set()
+        for value in self._config.canonicalization.polysemy_blocklist:
+            normalized_value = _normalize_name(value)
+            if normalized_value:
+                blocklisted.add(normalized_value)
+        self._blocklist = blocklisted
         root = Path(__file__).resolve().parents[2]
         self._embedding_dir = embedding_dir or (root / "data" / "embeddings")
         self._report_dir = report_dir or (root / "data" / "canonicalization")
@@ -429,7 +422,7 @@ class EntityCanonicalizer:
 
         normalized = _normalize_name(candidate.name)
         embedding = self._load_or_create_embedding(normalized)
-        blocklisted = normalized in _POLYSEMY_BLOCKLIST
+        blocklisted = normalized in self._blocklist
         polysemous = self._is_polysemous_candidate(candidate)
         return _PreparedCandidate(
             original=candidate,

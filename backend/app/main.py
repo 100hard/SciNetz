@@ -16,6 +16,7 @@ from backend.app.graph import GraphWriter
 from backend.app.orchestration import ExtractionOrchestrator, OrchestrationResult
 from backend.app.orchestration.orchestrator import ProcessedChunkStore
 from backend.app.parsing import ParsingPipeline
+from backend.app.qa import Neo4jQARepository, QAService
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,6 +30,12 @@ class ExtractionRequest(BaseModel):
     """Request payload for the extraction endpoint."""
 
     pdf_path: str = Field(..., min_length=1, description="Absolute path to the PDF file")
+
+
+class QARequest(BaseModel):
+    """Question answering request payload."""
+
+    question: str = Field(..., min_length=1, description="Natural language question to answer")
 
 
 def create_app(
@@ -57,6 +64,8 @@ def create_app(
         orchestrator_instance, neo4j_driver = _build_default_orchestrator(resolved_config)
     app.state.orchestrator = orchestrator_instance
     app.state.neo4j_driver = neo4j_driver
+    qa_service = _build_default_qa_service(resolved_config, neo4j_driver)
+    app.state.qa_service = qa_service
 
     @app.get("/health", tags=["system"], summary="Service health probe")
     def health() -> dict[str, str]:
@@ -89,6 +98,16 @@ def create_app(
             "errors": result.errors,
         }
         return response
+
+    @app.post("/api/qa/ask", tags=["qa"], summary="Answer question using the knowledge graph")
+    def ask(request: QARequest) -> dict[str, object]:
+        """Answer a user question using the graph-first QA pipeline."""
+
+        qa_service = getattr(app.state, "qa_service", None)
+        if qa_service is None:
+            raise HTTPException(status_code=503, detail="QA service unavailable")
+        result = qa_service.answer(request.question)
+        return result.model_dump()
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:  # pragma: no cover - network resource cleanup
@@ -135,6 +154,19 @@ def _build_default_orchestrator(
     except Exception:  # noqa: BLE001 - safeguard during startup
         LOGGER.exception("Failed to initialize extraction orchestrator")
         return None, None
+
+
+def _build_default_qa_service(config: AppConfig, driver: Optional[object]) -> Optional[QAService]:
+    """Instantiate the QA service when a Neo4j driver is available."""
+
+    if driver is None:
+        return None
+    try:
+        repository = Neo4jQARepository(driver, config=config)  # type: ignore[arg-type]
+        return QAService(config=config, repository=repository)
+    except Exception:  # noqa: BLE001 - QA should fail softly
+        LOGGER.exception("Failed to initialize QA service")
+        return None
 
 
 def _create_llm_extractor(config: AppConfig) -> Optional[OpenAIExtractor]:

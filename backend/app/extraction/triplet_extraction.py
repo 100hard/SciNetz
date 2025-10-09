@@ -7,6 +7,7 @@ import math
 import os
 import re
 import time
+from functools import lru_cache
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -21,7 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - tests rely on stub client inst
 
 json_module = json
 
-from backend.app.config import AppConfig, OpenAIConfig
+from backend.app.config import AppConfig, OpenAIConfig, load_config
 from backend.app.contracts import Evidence, ParsedElement, TextSpan, Triplet
 
 LOGGER = logging.getLogger(__name__)
@@ -695,11 +696,28 @@ def spans_overlap(first: Tuple[int, int], second: Tuple[int, int]) -> bool:
     return max(first[0], second[0]) < min(first[1], second[1])
 
 
-def normalize_relation(relation_text: str) -> Tuple[str, bool]:
+@lru_cache(maxsize=1)
+def _default_relation_patterns() -> Tuple[Tuple[str, str, bool], ...]:
+    """Return cached relation patterns derived from the configuration."""
+
+    config = load_config()
+    return tuple(config.relations.normalized_patterns())
+
+
+def _relation_patterns(config: Optional[AppConfig]) -> Sequence[Tuple[str, str, bool]]:
+    """Return relation normalization patterns for the provided configuration."""
+
+    if config is not None:
+        return config.relations.normalized_patterns()
+    return _default_relation_patterns()
+
+
+def normalize_relation(relation_text: str, *, config: Optional[AppConfig] = None) -> Tuple[str, bool]:
     """Normalize a relation phrase to the canonical predicate name.
 
     Args:
         relation_text: Relation phrase returned by the LLM.
+        config: Optional configuration overriding the global defaults.
 
     Returns:
         Tuple[str, bool]: Canonical predicate and whether subject/object should swap.
@@ -710,51 +728,10 @@ def normalize_relation(relation_text: str) -> Tuple[str, bool]:
 
     cleaned = re.sub(r"[^a-z]+", " ", relation_text.lower()).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
-    for phrase, normalized, swap in _RELATION_PATTERNS:
+    for phrase, normalized, swap in _relation_patterns(config):
         if phrase in cleaned:
             return normalized, swap
     raise ValueError(f"Unsupported relation phrase: {relation_text}")
-
-
-_RELATION_PATTERNS: List[Tuple[str, str, bool]] = sorted(
-    [
-        ("is used by", "uses", True),
-        ("was used by", "uses", True),
-        ("uses", "uses", False),
-        ("utilizes", "uses", False),
-        ("employs", "uses", False),
-        ("trained on", "trained-on", False),
-        ("is trained on", "trained-on", False),
-        ("was trained on", "trained-on", False),
-        ("evaluated on", "evaluated-on", False),
-        ("tested on", "evaluated-on", False),
-        ("assessed on", "evaluated-on", False),
-        ("compared to", "compared-to", False),
-        ("compared with", "compared-to", False),
-        ("outperforms", "outperforms", False),
-        ("performs better than", "outperforms", False),
-        ("increases", "increases", False),
-        ("improves", "increases", False),
-        ("boosts", "increases", False),
-        ("decreases", "decreases", False),
-        ("reduces", "decreases", False),
-        ("lowers", "decreases", False),
-        ("causes", "causes", False),
-        ("results in", "causes", False),
-        ("leads to", "causes", False),
-        ("correlates with", "correlates-with", False),
-        ("correlates to", "correlates-with", False),
-        ("associated with", "correlates-with", False),
-        ("defined as", "defined-as", False),
-        ("is defined as", "defined-as", False),
-        ("part of", "part-of", False),
-        ("component of", "part-of", False),
-        ("is a", "is-a", False),
-        ("is an", "is-a", False),
-    ],
-    key=lambda item: len(item[0]),
-    reverse=True,
-)
 
 
 __all__ = [

@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import logging
+import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -124,6 +125,81 @@ class CanonicalizationConfig(_FrozenModel):
     base_threshold: float = Field(..., ge=0.0, le=1.0)
     polysemy_threshold: float = Field(..., ge=0.0, le=1.0)
     polysemy_section_diversity: int = Field(..., ge=1)
+    polysemy_blocklist: List[str] = Field(default_factory=list)
+
+
+class RelationPatternConfig(_FrozenModel):
+    """Configuration describing how to normalize relation phrases."""
+
+    canonical: str = Field(..., min_length=1)
+    phrases: List[str] = Field(default_factory=list)
+    swap: bool = False
+
+
+class RelationsConfig(_FrozenModel):
+    """Relation normalization and metadata configuration."""
+
+    normalization_patterns: List[RelationPatternConfig] = Field(default_factory=list)
+
+    def canonical_relation_names(self) -> List[str]:
+        """Return the unique canonical relation identifiers."""
+
+        return sorted({pattern.canonical for pattern in self.normalization_patterns})
+
+    def normalized_patterns(self) -> List[Tuple[str, str, bool]]:
+        """Return normalized phrase patterns for relation mapping."""
+
+        patterns: List[Tuple[str, str, bool]] = []
+        for entry in self.normalization_patterns:
+            for phrase in entry.phrases:
+                cleaned = re.sub(r"[^a-z]+", " ", phrase.lower()).strip()
+                cleaned = re.sub(r"\s+", " ", cleaned)
+                if not cleaned:
+                    continue
+                patterns.append((cleaned, entry.canonical, entry.swap))
+        patterns.sort(key=lambda item: len(item[0]), reverse=True)
+        return patterns
+
+
+class GraphConfig(_FrozenModel):
+    """Graph persistence configuration values."""
+
+    relation_semantics: Dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("relation_semantics")
+    @classmethod
+    def _normalize_semantics(cls, values: Dict[str, str]) -> Dict[str, str]:
+        """Normalize and validate relation semantics values."""
+
+        allowed = {"directional", "bidirectional"}
+        normalized: Dict[str, str] = {}
+        for relation, semantics in values.items():
+            normalized_value = semantics.lower()
+            if normalized_value not in allowed:
+                msg = (
+                    "relation semantics for '%s' must be either 'directional' or"
+                    " 'bidirectional'"
+                ) % relation
+                raise ValueError(msg)
+            normalized[relation] = normalized_value
+        return normalized
+
+    def is_directional(self, relation: str) -> bool:
+        """Return whether the given relation should be treated as directional."""
+
+        semantics = self.relation_semantics.get(relation)
+        if semantics is None:
+            return True
+        return semantics == "directional"
+
+    def directional_relations(self) -> List[str]:
+        """Return the list of directional relation labels."""
+
+        return [
+            relation
+            for relation, semantics in self.relation_semantics.items()
+            if semantics == "directional"
+        ]
 
 
 class GraphConfig(_FrozenModel):
@@ -201,6 +277,7 @@ class AppConfig(_FrozenModel):
     parsing: ParsingConfig
     extraction: ExtractionConfig
     canonicalization: CanonicalizationConfig
+    relations: RelationsConfig
     graph: GraphConfig
     co_mention: CoMentionConfig
     qa: QAConfig
