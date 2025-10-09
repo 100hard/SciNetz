@@ -24,6 +24,22 @@ def _load_golden(name: str) -> dict:
         return json.load(handle)
 
 
+def _require_docling_assets(result: ParseResult) -> None:
+    """Skip tests when Docling models are unavailable in the environment."""
+
+    for error in result.errors:
+        lowered = error.lower()
+        if "docling conversion error" in lowered and (
+            "huggingface" in lowered
+            or "localentrynotfounderror" in lowered
+            or "cannot find the requested files in the local cache" in lowered
+            or "403" in lowered
+        ):
+            pytest.skip(
+                "Docling models unavailable – requires Hugging Face access for parsing tests."
+            )
+
+
 def test_parse_sample_transformer_matches_golden(tmp_path: Path, pipeline: ParsingPipeline) -> None:
     pdf_path = PDF_DIR / "sample_transformer.pdf"
     golden = _load_golden("sample_transformer")
@@ -34,6 +50,7 @@ def test_parse_sample_transformer_matches_golden(tmp_path: Path, pipeline: Parsi
         output_dir=tmp_path,
     )
 
+    _require_docling_assets(result)
     assert not result.errors
     assert result.metadata.model_dump(exclude_none=False) == golden["metadata"]
     elements_dump = [element.model_dump() for element in result.elements]
@@ -50,6 +67,7 @@ def test_parse_sample_graph_matches_golden(tmp_path: Path, pipeline: ParsingPipe
         output_dir=tmp_path,
     )
 
+    _require_docling_assets(result)
     assert not result.errors
     assert result.metadata.model_dump(exclude_none=False) == golden["metadata"]
     elements_dump = [element.model_dump() for element in result.elements]
@@ -62,6 +80,7 @@ def test_parsed_elements_have_non_overlapping_offsets(tmp_path: Path, pipeline: 
         pdf_path=PDF_DIR / "sample_transformer.pdf",
         output_dir=tmp_path,
     )
+    _require_docling_assets(result)
     last_end = 0
     for element in result.elements:
         assert element.start_char >= last_end
@@ -85,11 +104,13 @@ def test_content_hash_stability(pipeline: ParsingPipeline, tmp_path: Path) -> No
         pdf_path=PDF_DIR / "sample_graph.pdf",
         output_dir=tmp_path,
     )
+    _require_docling_assets(first)
     second = pipeline.parse_document(
         doc_id="sample_graph",
         pdf_path=PDF_DIR / "sample_graph.pdf",
         output_dir=tmp_path,
     )
+    _require_docling_assets(second)
     first_hashes = [element.content_hash for element in first.elements]
     second_hashes = [element.content_hash for element in second.elements]
     assert first_hashes == second_hashes
@@ -101,5 +122,6 @@ def test_metadata_includes_title_and_year(tmp_path: Path, pipeline: ParsingPipel
         pdf_path=PDF_DIR / "sample_transformer.pdf",
         output_dir=tmp_path,
     )
+    _require_docling_assets(result)
     assert result.metadata.title
     assert result.metadata.year == 2024

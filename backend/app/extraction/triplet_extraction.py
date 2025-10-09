@@ -7,8 +7,9 @@ import math
 import os
 import re
 import time
+from functools import lru_cache
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple, runtime_checkable
 from urllib import error as urllib_error
@@ -21,7 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - tests rely on stub client inst
 
 json_module = json
 
-from backend.app.config import AppConfig, OpenAIConfig
+from backend.app.config import AppConfig, OpenAIConfig, load_config
 from backend.app.contracts import Evidence, ParsedElement, TextSpan, Triplet
 
 LOGGER = logging.getLogger(__name__)
@@ -115,6 +116,7 @@ class ExtractionResult:
 
     triplets: List[Triplet]
     section_distribution: Dict[str, Dict[str, int]]
+    relation_verbatims: List[str] = field(default_factory=list)
 
 
 class LLMExtractor(ABC):
@@ -493,7 +495,7 @@ class TwoPassTripletExtractor:
             List[Triplet]: Triples that passed span validation and normalization.
         """
 
-        triplets, _ = self._extract_internal(element, candidate_entities)
+        triplets, _, _ = self._extract_internal(element, candidate_entities)
         return triplets
 
     def extract_with_metadata(
@@ -503,14 +505,20 @@ class TwoPassTripletExtractor:
     ) -> "ExtractionResult":
         """Extract triples and section distribution metadata for canonicalization."""
 
-        triplets, section_distribution = self._extract_internal(element, candidate_entities)
-        return ExtractionResult(triplets=triplets, section_distribution=section_distribution)
+        triplets, section_distribution, verbatims = self._extract_internal(
+            element, candidate_entities
+        )
+        return ExtractionResult(
+            triplets=triplets,
+            section_distribution=section_distribution,
+            relation_verbatims=verbatims,
+        )
 
     def _extract_internal(
         self,
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]],
-    ) -> Tuple[List[Triplet], Dict[str, Dict[str, int]]]:
+    ) -> Tuple[List[Triplet], Dict[str, Dict[str, int]], List[str]]:
         """Run LLM extraction and span validation, returning metadata."""
 
         max_triples = self._compute_max_triples(element.content)
@@ -521,6 +529,7 @@ class TwoPassTripletExtractor:
         )
         accepted: List[Triplet] = []
         section_counts: Dict[str, Dict[str, int]] = {}
+        relation_verbatims: List[str] = []
         for raw in raw_triples:
             try:
                 normalized_relation, swap = normalize_relation(raw.relation_verbatim)
@@ -577,6 +586,7 @@ class TwoPassTripletExtractor:
                 pipeline_version=self._config.pipeline.version,
             )
             accepted.append(triplet)
+            relation_verbatims.append(raw.relation_verbatim)
             self._update_section_counts(
                 section_counts,
                 element.section,
@@ -584,7 +594,7 @@ class TwoPassTripletExtractor:
                 object_text,
             )
         section_distribution = {entity: dict(counts) for entity, counts in section_counts.items()}
-        return accepted, section_distribution
+        return accepted, section_distribution, relation_verbatims
 
     @staticmethod
     def _update_section_counts(
@@ -686,11 +696,28 @@ def spans_overlap(first: Tuple[int, int], second: Tuple[int, int]) -> bool:
     return max(first[0], second[0]) < min(first[1], second[1])
 
 
-def normalize_relation(relation_text: str) -> Tuple[str, bool]:
+@lru_cache(maxsize=1)
+def _default_relation_patterns() -> Tuple[Tuple[str, str, bool], ...]:
+    """Return cached relation patterns derived from the configuration."""
+
+    config = load_config()
+    return tuple(config.relations.normalized_patterns())
+
+
+def _relation_patterns(config: Optional[AppConfig]) -> Sequence[Tuple[str, str, bool]]:
+    """Return relation normalization patterns for the provided configuration."""
+
+    if config is not None:
+        return config.relations.normalized_patterns()
+    return _default_relation_patterns()
+
+
+def normalize_relation(relation_text: str, *, config: Optional[AppConfig] = None) -> Tuple[str, bool]:
     """Normalize a relation phrase to the canonical predicate name.
 
     Args:
         relation_text: Relation phrase returned by the LLM.
+        config: Optional configuration overriding the global defaults.
 
     Returns:
         Tuple[str, bool]: Canonical predicate and whether subject/object should swap.
@@ -701,51 +728,10 @@ def normalize_relation(relation_text: str) -> Tuple[str, bool]:
 
     cleaned = re.sub(r"[^a-z]+", " ", relation_text.lower()).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
-    for phrase, normalized, swap in _RELATION_PATTERNS:
+    for phrase, normalized, swap in _relation_patterns(config):
         if phrase in cleaned:
             return normalized, swap
     raise ValueError(f"Unsupported relation phrase: {relation_text}")
-
-
-_RELATION_PATTERNS: List[Tuple[str, str, bool]] = sorted(
-    [
-        ("is used by", "uses", True),
-        ("was used by", "uses", True),
-        ("uses", "uses", False),
-        ("utilizes", "uses", False),
-        ("employs", "uses", False),
-        ("trained on", "trained-on", False),
-        ("is trained on", "trained-on", False),
-        ("was trained on", "trained-on", False),
-        ("evaluated on", "evaluated-on", False),
-        ("tested on", "evaluated-on", False),
-        ("assessed on", "evaluated-on", False),
-        ("compared to", "compared-to", False),
-        ("compared with", "compared-to", False),
-        ("outperforms", "outperforms", False),
-        ("performs better than", "outperforms", False),
-        ("increases", "increases", False),
-        ("improves", "increases", False),
-        ("boosts", "increases", False),
-        ("decreases", "decreases", False),
-        ("reduces", "decreases", False),
-        ("lowers", "decreases", False),
-        ("causes", "causes", False),
-        ("results in", "causes", False),
-        ("leads to", "causes", False),
-        ("correlates with", "correlates-with", False),
-        ("correlates to", "correlates-with", False),
-        ("associated with", "correlates-with", False),
-        ("defined as", "defined-as", False),
-        ("is defined as", "defined-as", False),
-        ("part of", "part-of", False),
-        ("component of", "part-of", False),
-        ("is a", "is-a", False),
-        ("is an", "is-a", False),
-    ],
-    key=lambda item: len(item[0]),
-    reverse=True,
-)
 
 
 __all__ = [

@@ -5,10 +5,12 @@ parsing:
   section_fuzzy_threshold: 0.85
   metadata_max_pages: 2
   metadata_known_venues:
-    - NeurIPS
-    - ACL
-    - ICML
-    - EMNLP
+    - Nature
+    - Science
+    - The Lancet
+    - Cell
+    - Proceedings of the National Academy of Sciences
+    - IEEE Transactions on Pattern Analysis and Machine Intelligence
   section_aliases:
     Abstract:
       - Abstract
@@ -57,6 +59,129 @@ canonicalization:
   base_threshold: 0.86
   polysemy_threshold: 0.92
   polysemy_section_diversity: 3
+  polysemy_blocklist:
+    - model
+    - method
+    - system
+    - framework
+    - dataset
+    - algorithm
+    - network
+    - approach
+
+relations:
+  normalization_patterns:
+    - canonical: uses
+      swap: false
+      phrases:
+        - uses
+        - utilizes
+        - employs
+        - leverages
+    - canonical: uses
+      swap: true
+      phrases:
+        - is used by
+        - was used by
+        - is leveraged by
+    - canonical: trained-on
+      swap: false
+      phrases:
+        - trained on
+        - is trained on
+        - was trained on
+        - applied to
+        - is applied to
+    - canonical: evaluated-on
+      swap: false
+      phrases:
+        - evaluated on
+        - tested on
+        - assessed on
+        - measured on
+        - validated on
+    - canonical: compared-to
+      swap: false
+      phrases:
+        - compared to
+        - compared with
+        - contrasted with
+    - canonical: outperforms
+      swap: false
+      phrases:
+        - outperforms
+        - performs better than
+        - surpasses
+        - is superior to
+    - canonical: improves
+      swap: false
+      phrases:
+        - improves
+        - increases
+        - enhances
+        - boosts
+        - raises
+    - canonical: reduces
+      swap: false
+      phrases:
+        - reduces
+        - decreases
+        - lowers
+        - mitigates
+        - diminishes
+    - canonical: causes
+      swap: false
+      phrases:
+        - causes
+        - results in
+        - leads to
+        - produces
+        - induces
+    - canonical: correlates-with
+      swap: false
+      phrases:
+        - correlates with
+        - correlates to
+        - associated with
+        - relates to
+        - corresponds with
+    - canonical: defined-as
+      swap: false
+      phrases:
+        - defined as
+        - is defined as
+        - refers to
+    - canonical: part-of
+      swap: false
+      phrases:
+        - part of
+        - component of
+        - belongs to
+    - canonical: is-a
+      swap: false
+      phrases:
+        - is a
+        - is an
+        - represents a
+
+graph:
+  relation_semantics:
+    uses: directional
+    trained-on: directional
+    evaluated-on: directional
+    outperforms: directional
+    beats: directional
+    improves: directional
+    reduces: directional
+    causes: directional
+    alleviates: directional
+    defined-as: directional
+    part-of: directional
+    is-a: directional
+    related-to: bidirectional
+    compared-to: bidirectional
+    similar-to: bidirectional
+    correlates-with: bidirectional
 
 co_mention:
   enabled: true
