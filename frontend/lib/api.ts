@@ -27,15 +27,36 @@ export async function listPapers(): Promise<PaperSummary[]> {
   return handleResponse<PaperSummary[]>(response);
 }
 
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") {
+        reject(new Error("Unexpected file reader result"));
+        return;
+      }
+      const commaIndex = result.indexOf(",");
+      resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export async function uploadPaper(file: File, paperId?: string): Promise<PaperSummary> {
-  const formData = new FormData();
-  formData.append("file", file);
+  const contentBase64 = await fileToBase64(file);
+  const payload: Record<string, unknown> = {
+    filename: file.name,
+    content_base64: contentBase64
+  };
   if (paperId) {
-    formData.append("paper_id", paperId);
+    payload.paper_id = paperId;
   }
   const response = await fetch("/api/ui/upload", {
     method: "POST",
-    body: formData
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
   });
   return handleResponse<PaperSummary>(response);
 }

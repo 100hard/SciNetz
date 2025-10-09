@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+import base64
+import binascii
+
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from backend.app.canonicalization import CanonicalizationPipeline
@@ -60,6 +63,14 @@ class PaperSummary(BaseModel):
     nodes_written: int = 0
     edges_written: int = 0
     co_mention_edges: int = 0
+
+
+class UploadPaperRequest(BaseModel):
+    """Request payload for uploading a paper via the UI."""
+
+    filename: str = Field(..., min_length=1, description="Original filename supplied by the user")
+    content_base64: str = Field(..., min_length=1, description="Base64-encoded PDF content")
+    paper_id: Optional[str] = Field(default=None, description="Optional caller-provided identifier")
 
 
 class GraphNodePayload(BaseModel):
@@ -193,21 +204,21 @@ def create_app(
         tags=["ui"],
         summary="Upload a PDF for extraction",
     )
-    async def upload_paper(
-        file: UploadFile = File(..., description="PDF file to upload"),
-        paper_id: Optional[str] = Form(default=None, description="Optional paper identifier"),
-    ) -> PaperSummary:
+    def upload_paper(request: UploadPaperRequest) -> PaperSummary:
         """Persist an uploaded PDF and register it for processing."""
 
         registry = _require_registry(app)
         upload_dir: Path = getattr(app.state, "upload_dir")
-        candidate_id = paper_id or (file.filename or "paper")
-        derived_id = _derive_paper_id(candidate_id, registry)
+        original_name = request.paper_id or request.filename or "paper"
+        candidate_id = _derive_paper_id(original_name, registry)
+        try:
+            content = base64.b64decode(request.content_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:  # pragma: no cover - validation guard
+            raise HTTPException(status_code=400, detail="Invalid base64 payload") from exc
         upload_dir.mkdir(parents=True, exist_ok=True)
-        pdf_path = upload_dir / f"{derived_id}.pdf"
-        content = await file.read()
+        pdf_path = upload_dir / f"{candidate_id}.pdf"
         pdf_path.write_bytes(content)
-        record = registry.register_upload(derived_id, file.filename or pdf_path.name, pdf_path)
+        record = registry.register_upload(candidate_id, request.filename or pdf_path.name, pdf_path)
         return _record_to_summary(record)
 
     @app.get(

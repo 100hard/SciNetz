@@ -8,3 +8,4 @@
 - generalize relation normalization and polysemy controls via config to support domain-agnostic graphs
 - deliver Phase 8 UI with upload workflow, Cytoscape-powered graph view, evidence drawer, QA panel, and Playwright coverage
 - speed up Docker builds by caching pip downloads, installing via requirements files, and guarding dependency parity with regression tests
+- switch UI upload flow to JSON/base64 payloads to remove the python-multipart dependency and ensure Docker builds succeed behind restricted proxies
