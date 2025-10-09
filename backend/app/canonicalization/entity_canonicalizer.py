@@ -9,28 +9,26 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
+from threading import Lock
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 from uuid import UUID, uuid5
 
 import numpy as np
 
+try:  # pragma: no cover - optional dependency
+    import faiss  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    faiss = None
+
+try:  # pragma: no cover - optional dependency
+    from sentence_transformers import SentenceTransformer
+except Exception:  # pragma: no cover - optional dependency
+    SentenceTransformer = None
+
 from ..config import AppConfig, load_config
 from ..contracts import Node
 
 LOGGER = logging.getLogger(__name__)
-
-_POLYSEMY_BLOCKLIST = {
-    "transformer",
-    "regression",
-    "model",
-    "network",
-    "system",
-    "algorithm",
-    "method",
-    "approach",
-    "framework",
-    "attention",
-}
 
 _BLOCKLIST_THRESHOLD = 0.94
 _NAMESPACE_UUID = UUID("2d6bb3b6-4be3-4f98-a18a-0a49de2a5d88")
@@ -97,6 +95,83 @@ class HashingEmbeddingBackend(EmbeddingBackend):
             return np.zeros(self._dimensions, dtype=np.float32)
         return vector / norm
 
+
+class E5EmbeddingBackend(EmbeddingBackend):
+    """Embedding backend powered by the intfloat/e5-base model."""
+
+    def __init__(
+        self,
+        model_name: str = "intfloat/e5-base",
+        *,
+        device: Optional[str] = None,
+        batch_size: int = 16,
+    ) -> None:
+        self._model_name = model_name
+        self._device = device
+        self._batch_size = max(batch_size, 1)
+        self._model: Optional[SentenceTransformer] = None
+        self._lock = Lock()
+        self._cache: Dict[str, np.ndarray] = {}
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """Return whether sentence-transformers is installed."""
+
+        return SentenceTransformer is not None
+
+    def embed(self, text: str) -> np.ndarray:
+        """Embed text into a normalized vector using the E5 encoder.
+
+        Args:
+            text: Input string to embed.
+
+        Returns:
+            np.ndarray: Unit-normalized embedding vector.
+
+        Raises:
+            RuntimeError: If the sentence-transformers dependency is unavailable.
+        """
+
+        cleaned = text.strip()
+        if cleaned in self._cache:
+            return self._cache[cleaned].copy()
+        model = self._get_model()
+        query = f"query: {cleaned}" if cleaned else "query:"
+        try:
+            embedding = model.encode(  # type: ignore[assignment]
+                [query],
+                batch_size=self._batch_size,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                device=self._device,
+            )
+        except TypeError:
+            embedding = model.encode(
+                [query],
+                batch_size=self._batch_size,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+            )
+        vector = np.array(embedding[0], dtype=np.float32)
+        norm = np.linalg.norm(vector)
+        if norm > 0:
+            vector = vector / norm
+        self._cache[cleaned] = vector
+        return vector.copy()
+
+    def _get_model(self) -> SentenceTransformer:
+        if SentenceTransformer is None:  # pragma: no cover - dependency guard
+            msg = "sentence-transformers must be installed to use the E5 embedding backend"
+            raise RuntimeError(msg)
+        if self._model is None:
+            with self._lock:
+                if self._model is None:
+                    self._model = SentenceTransformer(self._model_name, device=self._device)
+        return self._model
+
+
 def _normalize_name(name: str) -> str:
     normalized = unicodedata.normalize("NFKC", name)
     normalized = " ".join(normalized.split())
@@ -145,7 +220,6 @@ class _Cluster:
 
     def __init__(self, candidate: "_PreparedCandidate") -> None:
         self.members: List["_PreparedCandidate"] = [candidate]
-        self.embeddings: List[np.ndarray] = [candidate.embedding]
         self.alias_counts: Dict[str, int] = {candidate.original.name: candidate.original.times_seen}
         self.section_distribution: Dict[str, int] = dict(candidate.original.section_distribution)
         self.source_documents: Set[str] = set(candidate.original.source_document_ids)
@@ -153,14 +227,15 @@ class _Cluster:
         self.normalized_names: Set[str] = {candidate.normalized_name}
         self.total_times_seen = candidate.original.times_seen
         self.blocklisted = candidate.blocklisted
+        self._embedding_sum = candidate.embedding.astype(np.float32)
+        self._centroid = candidate.embedding.astype(np.float32)
+        self.index_id: Optional[int] = None
 
     def similarity(self, embedding: np.ndarray) -> float:
-        scores = [float(np.dot(embedding, member)) for member in self.embeddings]
-        return max(scores, default=0.0)
+        return float(np.dot(embedding, self._centroid))
 
     def add(self, candidate: "_PreparedCandidate") -> None:
         self.members.append(candidate)
-        self.embeddings.append(candidate.embedding)
         self.total_times_seen += candidate.original.times_seen
         self.alias_counts[candidate.original.name] = (
             self.alias_counts.get(candidate.original.name, 0) + candidate.original.times_seen
@@ -173,9 +248,86 @@ class _Cluster:
         self.source_documents.update(candidate.original.source_document_ids)
         self.normalized_names.add(candidate.normalized_name)
         self.blocklisted = self.blocklisted or candidate.blocklisted
+        self._embedding_sum += candidate.embedding.astype(np.float32)
+        norm = np.linalg.norm(self._embedding_sum)
+        if norm > 0:
+            self._centroid = self._embedding_sum / norm
 
     def is_polysemous(self, threshold: int) -> bool:
         return len([section for section, count in self.section_distribution.items() if count > 0]) >= threshold
+
+    @property
+    def centroid(self) -> np.ndarray:
+        return self._centroid
+
+
+class _SimilarityIndex:
+    """Similarity search helper backed by FAISS when available."""
+
+    def __init__(self, dimensions: int) -> None:
+        self._dimensions = dimensions
+        self._vectors: List[np.ndarray] = []
+        self._use_faiss = faiss is not None and dimensions > 0
+        if self._use_faiss:
+            self._index = faiss.IndexFlatIP(dimensions)  # type: ignore[attr-defined]
+        else:
+            self._index = None
+
+    def add(self, vector: np.ndarray) -> int:
+        normalized = self._normalize(vector)
+        self._vectors.append(normalized)
+        if self._use_faiss and self._index is not None:
+            self._rebuild_index()
+        return len(self._vectors) - 1
+
+    def update(self, idx: int, vector: np.ndarray) -> None:
+        if idx < 0 or idx >= len(self._vectors):
+            msg = "index out of bounds"
+            raise IndexError(msg)
+        self._vectors[idx] = self._normalize(vector)
+        if self._use_faiss and self._index is not None:
+            self._rebuild_index()
+
+    def search(self, vector: np.ndarray, threshold: float) -> List[tuple[int, float]]:
+        if not self._vectors:
+            return []
+        normalized = self._normalize(vector)
+        if self._use_faiss and self._index is not None:
+            sims, indices = self._index.search(normalized.reshape(1, -1), len(self._vectors))
+            results = []
+            for score, idx in zip(sims[0], indices[0]):
+                if idx == -1:
+                    continue
+                if score >= threshold:
+                    results.append((int(idx), float(score)))
+            results.sort(key=lambda item: -item[1])
+            return results
+        results = []
+        for idx, stored in enumerate(self._vectors):
+            score = float(np.dot(normalized, stored))
+            if score >= threshold:
+                results.append((idx, score))
+        results.sort(key=lambda item: -item[1])
+        return results
+
+    def _normalize(self, vector: np.ndarray) -> np.ndarray:
+        if self._dimensions and vector.size != self._dimensions:
+            msg = "embedding dimensionality mismatch"
+            raise ValueError(msg)
+        if vector.size == 0:
+            return vector.astype(np.float32)
+        norm = np.linalg.norm(vector)
+        if norm == 0:
+            return np.zeros_like(vector, dtype=np.float32)
+        return vector.astype(np.float32) / norm
+
+    def _rebuild_index(self) -> None:
+        if not self._use_faiss or self._index is None:
+            return
+        self._index.reset()
+        if self._vectors:
+            stacked = np.stack(self._vectors)
+            self._index.add(stacked)
 
 
 @dataclass(slots=True)
@@ -200,7 +352,16 @@ class EntityCanonicalizer:
         clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self._config = config or load_config()
-        self._embedding_backend = embedding_backend or HashingEmbeddingBackend()
+        if embedding_backend is not None:
+            self._embedding_backend = embedding_backend
+        else:
+            self._embedding_backend = self._create_default_backend()
+        blocklisted: Set[str] = set()
+        for value in self._config.canonicalization.polysemy_blocklist:
+            normalized_value = _normalize_name(value)
+            if normalized_value:
+                blocklisted.add(normalized_value)
+        self._blocklist = blocklisted
         root = Path(__file__).resolve().parents[2]
         self._embedding_dir = embedding_dir or (root / "data" / "embeddings")
         self._report_dir = report_dir or (root / "data" / "canonicalization")
@@ -221,15 +382,23 @@ class EntityCanonicalizer:
         prepared = [self._prepare_candidate(candidate) for candidate in candidates]
         prepared.sort(key=lambda item: (-item.original.times_seen, item.normalized_name))
         clusters: List[_Cluster] = []
+        index = _SimilarityIndex(prepared[0].embedding.size if prepared else 0)
         for candidate in prepared:
             assigned = False
-            for cluster in clusters:
+            for cluster_idx, _ in index.search(
+                candidate.embedding, self._config.canonicalization.base_threshold
+            ):
+                cluster = clusters[cluster_idx]
                 if self._should_merge(candidate, cluster):
                     cluster.add(candidate)
+                    if cluster.index_id is not None:
+                        index.update(cluster.index_id, cluster.centroid)
                     assigned = True
                     break
             if not assigned:
-                clusters.append(_Cluster(candidate))
+                new_cluster = _Cluster(candidate)
+                new_cluster.index_id = index.add(new_cluster.centroid)
+                clusters.append(new_cluster)
         nodes = [self._cluster_to_node(cluster) for cluster in clusters]
         merge_map = self._build_merge_map(clusters)
         merge_map_path = self._write_merge_map(merge_map)
@@ -253,7 +422,7 @@ class EntityCanonicalizer:
 
         normalized = _normalize_name(candidate.name)
         embedding = self._load_or_create_embedding(normalized)
-        blocklisted = normalized in _POLYSEMY_BLOCKLIST
+        blocklisted = normalized in self._blocklist
         polysemous = self._is_polysemous_candidate(candidate)
         return _PreparedCandidate(
             original=candidate,
@@ -432,7 +601,7 @@ class EntityCanonicalizer:
             normalized_name: Normalized entity name used as cache key.
 
         Returns:
-            np.ndarray: Unit-normalized embedding vector.
+            np.ndarray: Unit-normalized embedding vector for the entity name.
         """
 
         filename = f"{sha256(normalized_name.encode('utf-8')).hexdigest()}.npy"
@@ -449,4 +618,24 @@ class EntityCanonicalizer:
         embedding = self._embedding_backend.embed(normalized_name)
         np.save(path, embedding.astype(np.float32))
         return embedding
+
+    def _create_default_backend(self) -> EmbeddingBackend:
+        """Instantiate the default embedding backend respecting dependencies.
+
+        Returns:
+            EmbeddingBackend: Backend implementation to use for embeddings.
+        """
+
+        if E5EmbeddingBackend.is_available():
+            try:
+                return E5EmbeddingBackend()
+            except Exception:  # pragma: no cover - defensive fallback
+                LOGGER.exception(
+                    "Failed to initialize E5 embedding backend; falling back to hashing backend",
+                )
+        else:
+            LOGGER.warning(
+                "sentence-transformers not available; falling back to hashing embeddings",  # pragma: no cover - logging only
+            )
+        return HashingEmbeddingBackend()
 
