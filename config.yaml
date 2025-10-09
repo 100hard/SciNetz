@@ -204,3 +204,21 @@ export:
   max_size_mb: 5
   warn_threshold_mb: 3
   snippet_truncate_length: 200
+
+ui:
+  upload_dir: "data/uploads"
+  paper_registry_path: "data/ui/papers.json"
+  graph_defaults:
+    relations:
+      - defined-as
+      - uses
+      - trained-on
+      - evaluated-on
+      - compared-to
+      - outperforms
+    min_confidence: 0.5
+    sections:
+      - Results
+      - Methods
+    show_co_mentions: false
+    layout: fcose

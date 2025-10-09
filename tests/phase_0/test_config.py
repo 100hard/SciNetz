@@ -32,6 +32,11 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.extraction.use_entity_inventory is False
     assert "model" in config.canonicalization.polysemy_blocklist
     assert "uses" in config.relations.canonical_relation_names()
+    graph_defaults = config.ui.graph_defaults
+    assert graph_defaults.min_confidence == 0.5
+    assert graph_defaults.relations[:2] == ["defined-as", "uses"]
+    assert graph_defaults.sections == ["Results", "Methods"]
+    assert graph_defaults.show_co_mentions is False
 
 
 def test_config_strict_fields_match_yaml() -> None:
@@ -42,3 +47,7 @@ def test_config_strict_fields_match_yaml() -> None:
     assert raw["pipeline"]["version"] == config.pipeline.version
     assert raw["co_mention"]["confidence"] == config.co_mention.confidence
     assert raw["parsing"]["metadata_max_pages"] == config.parsing.metadata_max_pages
+    assert (
+        raw["ui"]["graph_defaults"]["min_confidence"]
+        == config.ui.graph_defaults.min_confidence
+    )

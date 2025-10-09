@@ -216,10 +216,15 @@ class CoMentionAccumulator:
                 section_distribution=section_distribution,
                 relation_verbatims=["co-mentioned"],
             )
+            sections = sorted({occurrence.section for occurrence in occurrences})
             edge = _EdgeRecord(
                 triplet=triplet,
                 relation_verbatim="co-mentioned",
-                attributes={"method": "co-mention", "hidden": "true"},
+                attributes={
+                    "method": "co-mention",
+                    "hidden": "true",
+                    "sections": ",".join(sections),
+                },
                 times_seen=len(occurrences),
             )
             results.append(_CoMentionProduct(extraction=extraction, edge=edge))
@@ -382,7 +387,7 @@ class ExtractionOrchestrator:
                     _EdgeRecord(
                         triplet=triplet,
                         relation_verbatim=relation_verbatim,
-                        attributes={"method": "llm"},
+                        attributes={"method": "llm", "section": element.section},
                         times_seen=1,
                     )
                 )

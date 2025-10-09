@@ -7,6 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from typing_extensions import Literal
+
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -229,6 +231,24 @@ class ExportConfig(_FrozenModel):
     snippet_truncate_length: int = Field(..., ge=1)
 
 
+class UIGraphDefaultsConfig(_FrozenModel):
+    """Default visualization controls for the UI graph view."""
+
+    relations: List[str] = Field(default_factory=list)
+    min_confidence: float = Field(..., ge=0.0, le=1.0)
+    sections: List[str] = Field(default_factory=list)
+    show_co_mentions: bool = False
+    layout: Literal["fcose", "cose-bilkent"] = Field("fcose")
+
+
+class UIConfig(_FrozenModel):
+    """UI-specific configuration values."""
+
+    upload_dir: str = Field(..., min_length=1)
+    paper_registry_path: str = Field(..., min_length=1)
+    graph_defaults: UIGraphDefaultsConfig
+
+
 class AppConfig(_FrozenModel):
     """Top-level application configuration composed from config.yaml."""
 
@@ -241,6 +261,7 @@ class AppConfig(_FrozenModel):
     co_mention: CoMentionConfig
     qa: QAConfig
     export: ExportConfig
+    ui: UIConfig
 
     @staticmethod
     def default_path() -> Path:
