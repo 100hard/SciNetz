@@ -1,14 +1,25 @@
 """Tests for entity canonicalization logic."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable
 
 import numpy as np
 import pytest
 
-from backend.app.canonicalization import EntityCandidate, EntityCanonicalizer
+import backend.app.canonicalization.entity_canonicalizer as canonicalizer_module
+from backend.app.canonicalization import (
+    CanonicalizationResult,
+    CanonicalizationPipeline,
+    E5EmbeddingBackend,
+    EntityAggregator,
+    EntityCandidate,
+    EntityCanonicalizer,
+)
 from backend.app.config import AppConfig, load_config
+from backend.app.contracts import Evidence, TextSpan, Triplet
+from backend.app.extraction import ExtractionResult
 
 
 class StubEmbeddingBackend:
@@ -43,6 +54,58 @@ def fixture_storage_dirs(tmp_path: Path) -> Dict[str, Path]:
     return {"embeddings": embeddings, "reports": reports}
 
 
+def test_e5_backend_formats_queries_and_caches(monkeypatch) -> None:
+    calls: Dict[str, object] = {"encode": 0}
+
+    class DummyModel:
+        def __init__(self, model_name: str, device: str | None = None) -> None:
+            calls["model_name"] = model_name
+            calls["device"] = device
+
+        def encode(self, sentences, **kwargs):
+            calls["encode"] = int(calls["encode"]) + 1
+            calls["sentences"] = list(sentences)
+            calls["kwargs"] = kwargs
+            return np.array([[3.0, 4.0, 0.0]], dtype=np.float32)
+
+    monkeypatch.setattr(canonicalizer_module, "SentenceTransformer", DummyModel)
+    backend = E5EmbeddingBackend(model_name="intfloat/e5-base", device="cpu")
+
+    vector = backend.embed("Reinforcement Learning")
+    assert np.isclose(np.linalg.norm(vector), 1.0)
+    assert calls["sentences"] == ["query: Reinforcement Learning"]
+
+    cached = backend.embed("Reinforcement Learning")
+    assert calls["encode"] == 1
+    np.testing.assert_allclose(vector, cached)
+
+
+def test_canonicalizer_prefers_e5_backend_by_default(monkeypatch, config, storage_dirs) -> None:
+    class DummyBackend(canonicalizer_module.EmbeddingBackend):
+        instances = 0
+
+        @classmethod
+        def is_available(cls) -> bool:
+            return True
+
+        def __init__(self) -> None:
+            DummyBackend.instances += 1
+
+        def embed(self, text: str) -> np.ndarray:
+            return np.array([1.0], dtype=np.float32)
+
+    monkeypatch.setattr(canonicalizer_module, "E5EmbeddingBackend", DummyBackend)
+
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_dir=storage_dirs["embeddings"],
+        report_dir=storage_dirs["reports"],
+    )
+
+    assert isinstance(canonicalizer._embedding_backend, DummyBackend)
+    assert DummyBackend.instances == 1
+
+
 def _candidate(
     name: str,
     *,
@@ -57,6 +120,29 @@ def _candidate(
         times_seen=times_seen,
         section_distribution=section_distribution,
         source_document_ids=list(doc_ids),
+    )
+
+
+def _triplet(
+    subject: str,
+    predicate: str,
+    obj: str,
+    *,
+    doc_id: str,
+    element_id: str,
+) -> Triplet:
+    return Triplet(
+        subject=subject,
+        predicate=predicate,
+        object=obj,
+        confidence=0.9,
+        evidence=Evidence(
+            element_id=element_id,
+            doc_id=doc_id,
+            text_span=TextSpan(start=0, end=9),
+            full_sentence="Sentence.",
+        ),
+        pipeline_version="1.0.0",
     )
 
 
@@ -104,6 +190,34 @@ def test_synonyms_merge_into_single_node(config, storage_dirs) -> None:
     assert set(node.source_document_ids) == {"doc1", "doc2", "doc3"}
     assert result.merge_map["Reinforcement Learning"] == node.node_id
     assert result.merge_map["RL"] == node.node_id
+
+
+def test_blocklisted_terms_require_matching_sections(config, storage_dirs) -> None:
+    backend = StubEmbeddingBackend({"model": [1.0, 0.0, 0.0]})
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=backend,
+        embedding_dir=storage_dirs["embeddings"],
+        report_dir=storage_dirs["reports"],
+    )
+    candidates = [
+        _candidate(
+            "Model",
+            times_seen=4,
+            section_distribution={"Methods": 4},
+            doc_ids=["doc-a"],
+        ),
+        _candidate(
+            "Model",
+            times_seen=3,
+            section_distribution={"Results": 3},
+            doc_ids=["doc-b"],
+        ),
+    ]
+
+    result = canonicalizer.canonicalize(candidates)
+
+    assert len(result.nodes) == 2
 
 
 def test_distinct_terms_do_not_merge(config, storage_dirs) -> None:
@@ -165,3 +279,196 @@ def test_polysemous_entities_require_section_overlap(config, storage_dirs) -> No
     assert keys == ["Transformer::Introduction|Background", "Transformer::Methods|Results"]
     ids = {result.merge_map[key] for key in keys}
     assert len(ids) == 2
+
+
+def test_entity_aggregator_accumulates_entities() -> None:
+    aggregator = EntityAggregator()
+    extraction_a = ExtractionResult(
+        triplets=[
+            _triplet(
+                "Reinforcement Learning",
+                "uses",
+                "Q-learning",
+                doc_id="doc1",
+                element_id="e1",
+            )
+        ],
+        section_distribution={
+            "Reinforcement Learning": {"Methods": 2},
+            "Q-learning": {"Results": 1},
+        },
+    )
+    extraction_b = ExtractionResult(
+        triplets=[
+            _triplet(
+                "Reinforcement Learning",
+                "compared-to",
+                "Dynamic Programming",
+                doc_id="doc2",
+                element_id="e2",
+            )
+        ],
+        section_distribution={
+            "Reinforcement Learning": {"Results": 1},
+            "Dynamic Programming": {"Discussion": 1},
+        },
+    )
+
+    aggregator.extend([extraction_a, extraction_b])
+    candidates = aggregator.build_candidates()
+
+    rl_candidate = next(candidate for candidate in candidates if candidate.name == "Reinforcement Learning")
+    assert rl_candidate.times_seen == 3
+    assert rl_candidate.section_distribution == {"Methods": 2, "Results": 1}
+    assert rl_candidate.source_document_ids == ["doc1", "doc2"]
+    assert rl_candidate.type == "Unknown"
+
+
+def test_entity_aggregator_uses_type_resolver() -> None:
+    def resolver(name: str) -> str | None:
+        if name.lower().startswith("reinforcement"):
+            return "Method"
+        return None
+
+    aggregator = EntityAggregator(type_resolver=resolver)
+    aggregator.ingest(
+        ExtractionResult(
+            triplets=[
+                _triplet(
+                    "Reinforcement Learning",
+                    "uses",
+                    "Q-learning",
+                    doc_id="doc1",
+                    element_id="e1",
+                )
+            ],
+            section_distribution={
+                "Reinforcement Learning": {"Methods": 2},
+                "Q-learning": {"Results": 1},
+            },
+        )
+    )
+
+    candidate = next(candidate for candidate in aggregator.build_candidates() if candidate.name == "Reinforcement Learning")
+    assert candidate.type == "Method"
+
+
+def test_canonicalization_pipeline_end_to_end(config, storage_dirs) -> None:
+    backend = StubEmbeddingBackend(
+        {
+            "reinforcement learning": [1.0, 0.0, 0.0],
+            "rl": [1.0, 0.0, 0.0],
+            "q-learning": [0.0, 1.0, 0.0],
+            "dynamic programming": [0.0, 0.0, 1.0],
+        }
+    )
+    clock = lambda: datetime(2024, 1, 1, tzinfo=timezone.utc)
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=backend,
+        embedding_dir=storage_dirs["embeddings"],
+        report_dir=storage_dirs["reports"],
+        clock=clock,
+    )
+    pipeline = CanonicalizationPipeline(
+        config=config,
+        canonicalizer=canonicalizer,
+        aggregator_factory=lambda: EntityAggregator(default_type="Method"),
+    )
+
+    extraction_primary = ExtractionResult(
+        triplets=[
+            _triplet(
+                "Reinforcement Learning",
+                "uses",
+                "Q-learning",
+                doc_id="doc1",
+                element_id="e1",
+            )
+        ],
+        section_distribution={
+            "Reinforcement Learning": {"Methods": 2},
+            "Q-learning": {"Results": 1},
+        },
+    )
+    extraction_alias = ExtractionResult(
+        triplets=[
+            _triplet(
+                "RL",
+                "compared-to",
+                "Dynamic Programming",
+                doc_id="doc2",
+                element_id="e2",
+            )
+        ],
+        section_distribution={
+            "RL": {"Methods": 1},
+            "Dynamic Programming": {"Discussion": 1},
+        },
+    )
+
+    result = pipeline.run([extraction_primary, extraction_alias])
+
+    rl_node = next(node for node in result.nodes if node.name == "Reinforcement Learning")
+    assert rl_node.type == "Method"
+    assert rl_node.times_seen == 3
+    assert rl_node.aliases == ["RL"]
+    assert rl_node.section_distribution["Methods"] == 3
+    assert result.merge_map_path.exists()
+    assert result.merge_report_path.exists()
+    assert result.merge_report_path.name == "merge_report_20240101T000000Z.json"
+
+
+def test_canonicalizer_is_idempotent(config, storage_dirs) -> None:
+    backend = StubEmbeddingBackend(
+        {
+            "reinforcement learning": [1.0, 0.0, 0.0],
+            "rl": [1.0, 0.0, 0.0],
+        }
+    )
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=backend,
+        embedding_dir=storage_dirs["embeddings"],
+        report_dir=storage_dirs["reports"],
+    )
+    candidates = [
+        _candidate(
+            "Reinforcement Learning",
+            times_seen=5,
+            section_distribution={"Methods": 5},
+            doc_ids=["doc1"],
+        ),
+        _candidate(
+            "RL",
+            times_seen=2,
+            section_distribution={"Methods": 2},
+            doc_ids=["doc2"],
+        ),
+    ]
+
+    first = canonicalizer.canonicalize(candidates)
+    first_embeddings = sorted(path.name for path in storage_dirs["embeddings"].glob("*.npy"))
+
+    second = canonicalizer.canonicalize(candidates)
+    second_embeddings = sorted(path.name for path in storage_dirs["embeddings"].glob("*.npy"))
+
+    def _normalize_nodes(result: CanonicalizationResult) -> list[dict[str, object]]:
+        simplified = []
+        for node in result.nodes:
+            simplified.append(
+                {
+                    "id": node.node_id,
+                    "name": node.name,
+                    "type": node.type,
+                    "aliases": tuple(sorted(node.aliases)),
+                    "times_seen": node.times_seen,
+                    "sections": tuple(sorted(node.section_distribution.items())),
+                    "docs": tuple(sorted(node.source_document_ids)),
+                }
+            )
+        return sorted(simplified, key=lambda item: item["id"])
+
+    assert _normalize_nodes(first) == _normalize_nodes(second)
+    assert first.merge_map == second.merge_map
+    assert first_embeddings == second_embeddings
