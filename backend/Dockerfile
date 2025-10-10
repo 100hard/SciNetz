@@ -9,6 +9,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements ./requirements
+COPY scripts ./scripts
+
+RUN python scripts/check_package_index.py
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
