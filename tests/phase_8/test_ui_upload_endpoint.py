@@ -29,7 +29,10 @@ def _build_test_app(tmp_path: Path) -> TestClient:
             "paper_registry_path": str(tmp_path / "registry.json"),
         }
     )
-    app_config = config.model_copy(update={"ui": ui_config})
+    graph_config = config.graph.model_copy(
+        update={"uri": None, "username": None, "password": None}
+    )
+    app_config = config.model_copy(update={"ui": ui_config, "graph": graph_config})
     app = create_app(config=app_config, orchestrator=_StubOrchestrator())
     return TestClient(app)
 
@@ -66,3 +69,19 @@ def test_upload_endpoint_rejects_invalid_base64(tmp_path: Path) -> None:
     response = client.post("/api/ui/upload", json=payload)
     assert response.status_code == 400
     assert response.json()["detail"] == "Invalid base64 payload"
+
+
+def test_upload_endpoint_handles_cors_preflight(tmp_path: Path) -> None:
+    """CORS preflight requests receive the appropriate response headers."""
+
+    client = _build_test_app(tmp_path)
+    response = client.options(
+        "/api/ui/upload",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:3000"

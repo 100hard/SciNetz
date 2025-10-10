@@ -167,6 +167,9 @@ class GraphConfig(_FrozenModel):
     """Graph persistence configuration values."""
 
     relation_semantics: Dict[str, str] = Field(default_factory=dict)
+    uri: Optional[str] = Field(default=None)
+    username: Optional[str] = Field(default=None)
+    password: Optional[str] = Field(default=None)
 
     @field_validator("relation_semantics")
     @classmethod
@@ -247,6 +250,7 @@ class UIConfig(_FrozenModel):
     upload_dir: str = Field(..., min_length=1)
     paper_registry_path: str = Field(..., min_length=1)
     graph_defaults: UIGraphDefaultsConfig
+    allowed_origins: List[str] = Field(default_factory=list)
 
 
 class AppConfig(_FrozenModel):

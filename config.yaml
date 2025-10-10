@@ -186,6 +186,9 @@ graph:
     compared-to: bidirectional
     similar-to: bidirectional
     correlates-with: bidirectional
+  uri: "bolt://neo4j:7687"
+  username: "neo4j"
+  password: "neo4jpassword"
 
 co_mention:
   enabled: true
@@ -208,6 +211,10 @@ export:
 ui:
   upload_dir: "data/uploads"
   paper_registry_path: "data/ui/papers.json"
+  allowed_origins:
+    - "http://localhost:3000"
+    - "http://127.0.0.1:3000"
+    - "http://0.0.0.0:3000"
   graph_defaults:
     relations:
       - defined-as
