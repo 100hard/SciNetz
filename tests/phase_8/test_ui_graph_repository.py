@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+import contextlib
+
 import pytest
 
 from backend.app.ui.repository import GraphViewFilters, Neo4jGraphViewRepository
@@ -19,8 +21,30 @@ except Exception:  # pragma: no cover
     Neo4jContainer = None  # type: ignore[assignment]
 
 
+def _docker_daemon_available() -> bool:
+    try:
+        import docker
+    except Exception:  # pragma: no cover - docker client optional
+        return False
+    try:
+        client = docker.from_env()
+    except Exception:  # pragma: no cover - environment missing docker socket
+        return False
+    try:
+        client.ping()
+        return True
+    except Exception:  # pragma: no cover - ping failed
+        return False
+    finally:
+        with contextlib.suppress(Exception):
+            client.close()
+
+
+DOCKER_AVAILABLE = _docker_daemon_available()
+
+
 @pytest.mark.skipif(
-    Neo4jContainer is None or GraphDatabase is None,
+    Neo4jContainer is None or GraphDatabase is None or not DOCKER_AVAILABLE,
     reason="neo4j driver and testcontainers are required for integration tests",
 )
 def test_repository_applies_filters() -> None:

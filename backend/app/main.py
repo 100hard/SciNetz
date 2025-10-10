@@ -12,6 +12,7 @@ import base64
 import binascii
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from backend.app.canonicalization import CanonicalizationPipeline
@@ -135,10 +136,22 @@ def create_app(
     resolved_config = config or load_config()
     app = FastAPI(title="SciNets API", version=resolved_config.pipeline.version)
 
+    allowed_origins = resolved_config.ui.allowed_origins
+    if allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allowed_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
     orchestrator_instance = orchestrator
     neo4j_driver = None
     if orchestrator_instance is None:
         orchestrator_instance, neo4j_driver = _build_default_orchestrator(resolved_config)
+    if neo4j_driver is None:
+        neo4j_driver = _create_neo4j_driver(resolved_config)
     app.state.orchestrator = orchestrator_instance
     app.state.neo4j_driver = neo4j_driver
     qa_service = _build_default_qa_service(resolved_config, neo4j_driver)
@@ -347,18 +360,19 @@ def _build_default_orchestrator(
     """Construct the default orchestrator if dependencies are available."""
 
     try:
+        driver = _create_neo4j_driver(config)
+        if driver is None:
+            LOGGER.warning("Graph writer unavailable; extraction endpoint disabled")
+            return None, None
         parsing = ParsingPipeline(config)
         inventory = EntityInventoryBuilder(config)
         llm_extractor = _create_llm_extractor(config)
         if llm_extractor is None:
             LOGGER.warning("LLM extractor unavailable; extraction endpoint disabled")
-            return None, None
+            return None, driver
         triplet_extractor = TwoPassTripletExtractor(config=config, llm_extractor=llm_extractor)
         canonicalization = CanonicalizationPipeline(config=config)
-        graph_writer, driver = _create_graph_writer(config)
-        if graph_writer is None:
-            LOGGER.warning("Graph writer unavailable; extraction endpoint disabled")
-            return None, None
+        graph_writer = GraphWriter(driver=driver, config=config)
         store_path = Path(__file__).resolve().parents[2] / "data" / "pipeline" / "processed_chunks.json"
         chunk_store = ProcessedChunkStore(store_path)
         orchestrator = ExtractionOrchestrator(
@@ -373,7 +387,7 @@ def _build_default_orchestrator(
         return orchestrator, driver
     except Exception:  # noqa: BLE001 - safeguard during startup
         LOGGER.exception("Failed to initialize extraction orchestrator")
-        return None, None
+        return None, driver
 
 
 def _build_default_qa_service(config: AppConfig, driver: Optional[object]) -> Optional[QAService]:
@@ -483,22 +497,19 @@ def _create_llm_extractor(config: AppConfig) -> Optional[OpenAIExtractor]:
         return None
 
 
-def _create_graph_writer(
-    config: AppConfig,
-) -> Tuple[Optional[GraphWriter], Optional[object]]:
-    """Create the graph writer backed by a Neo4j driver if available."""
+def _create_neo4j_driver(config: AppConfig) -> Optional[object]:
+    """Create a Neo4j driver using configured connection details."""
 
     if GraphDatabase is None:
-        return None, None
+        return None
     uri = os.getenv("NEO4J_URI")
     user = os.getenv("NEO4J_USER")
     password = os.getenv("NEO4J_PASSWORD")
     if not (uri and user and password):
-        return None, None
+        return None
     try:
         driver = GraphDatabase.driver(uri, auth=(user, password))
     except Exception:  # noqa: BLE001 - connection issues
         LOGGER.exception("Failed to connect to Neo4j driver")
-        return None, None
-    writer = GraphWriter(driver=driver, config=config)
-    return writer, driver
+        return None
+    return driver
