@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import axios from "axios";
 import {
   AlertCircle,
   FileText,
@@ -11,42 +10,38 @@ import {
   User,
 } from "lucide-react";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-const POLL_INTERVAL_MS = 12000;
-const ACTIVE_STATUSES = new Set(["uploaded", "parsing", "processing", "pending"]);
+import apiClient, { extractErrorMessage } from "../../lib/http";
 
-export type Paper = {
-  id: string;
-  title: string;
-  authors?: string | null;
-  venue?: string | null;
+type PaperMetadata = {
+  doc_id: string;
+  title?: string | null;
+  authors?: string[];
   year?: number | null;
-  status: string;
-  file_name?: string | null;
-  created_at: string;
-  updated_at: string;
+  venue?: string | null;
+  doi?: string | null;
 };
+
+type PaperSummary = {
+  paper_id: string;
+  filename: string;
+  status: string;
+  uploaded_at: string;
+  updated_at: string;
+  metadata?: PaperMetadata | null;
+  errors: string[];
+  nodes_written: number;
+  edges_written: number;
+  co_mention_edges: number;
+};
+
+const POLL_INTERVAL_MS = 12000;
+const ACTIVE_STATUSES = new Set(["uploaded", "processing"]);
 
 const STATUS_STYLES: Record<string, string> = {
-  parsed: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  complete: "border-emerald-200 bg-emerald-50 text-emerald-700",
   uploaded: "border-amber-200 bg-amber-50 text-amber-700",
   processing: "border-sky-200 bg-sky-50 text-sky-700",
-  pending: "border-sky-200 bg-sky-50 text-sky-700",
   failed: "border-rose-200 bg-rose-50 text-rose-700",
-};
-
-const getErrorMessage = (error: unknown) => {
-  if (axios.isAxiosError(error)) {
-    const detail = error.response?.data?.detail;
-    if (typeof detail === "string") {
-      return detail;
-    }
-    return error.message;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return "Unexpected error while fetching papers.";
 };
 
 const formatDate = (value: string) => {
@@ -62,7 +57,7 @@ const formatDate = (value: string) => {
 
 const toStatusLabel = (status: string) =>
   status
-    .split(/[_\s]+/)
+    .split(/[_\s-]+/)
     .filter(Boolean)
     .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase())
     .join(" ") || "Unknown";
@@ -71,16 +66,34 @@ const StatusBadge = ({ status }: { status: string }) => {
   const normalized = status.toLowerCase();
   const variant = STATUS_STYLES[normalized] ?? "border-border bg-muted/40 text-muted-foreground";
   return (
-    <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium capitalize transition ${variant}`}
-    >
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium capitalize transition ${variant}`}>
       {toStatusLabel(status)}
     </span>
   );
 };
 
+const summariseMetadata = (metadata?: PaperMetadata | null) => {
+  if (!metadata) {
+    return "Metadata pending";
+  }
+  const pieces: string[] = [];
+  if (metadata.title) {
+    pieces.push(metadata.title);
+  }
+  if (metadata.authors && metadata.authors.length > 0) {
+    pieces.push(metadata.authors.join(", "));
+  }
+  if (metadata.venue || metadata.year) {
+    pieces.push([metadata.venue, metadata.year].filter(Boolean).join(" · "));
+  }
+  if (metadata.doi) {
+    pieces.push(metadata.doi);
+  }
+  return pieces.filter(Boolean).join("\n");
+};
+
 export default function PapersPage() {
-  const [papers, setPapers] = useState<Paper[]>([]);
+  const [papers, setPapers] = useState<PaperSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -98,16 +111,12 @@ export default function PapersPage() {
       }
 
       try {
-        const response = await axios.get<Paper[]>(`${API_BASE_URL}/api/papers`, {
-          params: {
-            limit: 100,
-          },
-        });
+        const response = await apiClient.get<PaperSummary[]>("/api/ui/papers");
         setPapers(response.data);
         setLastUpdated(new Date());
         setError(null);
       } catch (err) {
-        const message = getErrorMessage(err);
+        const message = extractErrorMessage(err, "Unexpected error while fetching papers.");
         setError(message);
       } finally {
         if (mode === "loading") {
@@ -117,7 +126,7 @@ export default function PapersPage() {
         }
       }
     },
-    []
+    [],
   );
 
   useEffect(() => {
@@ -167,10 +176,13 @@ export default function PapersPage() {
     const normalizedStatus = statusFilter.toLowerCase();
 
     return papers.filter((paper) => {
+      const metadataSummary = summariseMetadata(paper.metadata).toLowerCase();
       const matchesTitle =
-        !normalizedTitle || paper.title.toLowerCase().includes(normalizedTitle);
+        !normalizedTitle ||
+        paper.filename.toLowerCase().includes(normalizedTitle) ||
+        metadataSummary.includes(normalizedTitle);
       const matchesAuthor =
-        !normalizedAuthor || (paper.authors ?? "").toLowerCase().includes(normalizedAuthor);
+        !normalizedAuthor || metadataSummary.includes(normalizedAuthor);
       const matchesStatus =
         normalizedStatus === "all" || paper.status.toLowerCase() === normalizedStatus;
 
@@ -180,14 +192,14 @@ export default function PapersPage() {
 
   const summary = useMemo(() => {
     const total = papers.length;
-    const parsed = papers.filter((paper) => paper.status.toLowerCase() === "parsed").length;
+    const complete = papers.filter((paper) => paper.status.toLowerCase() === "complete").length;
     const failed = papers.filter((paper) => paper.status.toLowerCase() === "failed").length;
-    const queued = total - parsed - failed;
+    const inFlight = papers.filter((paper) => ACTIVE_STATUSES.has(paper.status.toLowerCase())).length;
 
     return [
       { label: "Total papers", value: total },
-      { label: "Parsed", value: parsed },
-      { label: "Queued", value: Math.max(queued, 0) },
+      { label: "Complete", value: complete },
+      { label: "In progress", value: inFlight },
       { label: "Failed", value: failed },
     ];
   }, [papers]);
@@ -202,9 +214,7 @@ export default function PapersPage() {
     setStatusFilter("all");
   };
 
-  const lastUpdatedLabel = lastUpdated
-    ? `Last updated ${lastUpdated.toLocaleTimeString()}`
-    : "Awaiting first sync";
+  const lastUpdatedLabel = lastUpdated ? `Last updated ${lastUpdated.toLocaleTimeString()}` : "Awaiting first sync";
 
   return (
     <div className="space-y-8">
@@ -238,7 +248,7 @@ export default function PapersPage() {
               type="search"
               value={titleQuery}
               onChange={(event) => setTitleQuery(event.target.value)}
-              placeholder="Search by title"
+              placeholder="Search by filename or title"
               className="h-10 w-60 rounded-md border border-input bg-background px-3 py-2 pl-9 text-sm shadow-sm outline-none transition focus:border-transparent focus:ring-2 focus:ring-primary/40"
             />
           </div>
@@ -249,7 +259,7 @@ export default function PapersPage() {
               type="search"
               value={authorQuery}
               onChange={(event) => setAuthorQuery(event.target.value)}
-              placeholder="Filter by author"
+              placeholder="Filter by author or venue"
               className="h-10 w-56 rounded-md border border-input bg-background px-3 py-2 pl-9 text-sm shadow-sm outline-none transition focus:border-transparent focus:ring-2 focus:ring-primary/40"
             />
           </div>
@@ -261,7 +271,7 @@ export default function PapersPage() {
             aria-label="Filter by status"
           >
             <option value="all">All statuses</option>
-            <option value="parsed">Parsed</option>
+            <option value="complete">Complete</option>
             <option value="uploaded">Uploaded</option>
             <option value="processing">Processing</option>
             <option value="failed">Failed</option>
@@ -281,9 +291,7 @@ export default function PapersPage() {
               type="button"
               onClick={handleRefresh}
               disabled={isRefreshing}
-              className={`inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 ${
-                isRefreshing ? "opacity-80" : "hover:bg-primary/90"
-              } disabled:cursor-not-allowed disabled:opacity-60`}
+              className={`inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 ${isRefreshing ? "opacity-80" : "hover:bg-primary/90"} disabled:cursor-not-allowed disabled:opacity-60`}
             >
               {isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Refresh
             </button>
@@ -305,10 +313,10 @@ export default function PapersPage() {
             <thead className="bg-muted/60 text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th scope="col" className="px-4 py-3 text-left font-medium">
-                  Title
+                  Filename
                 </th>
                 <th scope="col" className="px-4 py-3 text-left font-medium">
-                  Authors
+                  Metadata
                 </th>
                 <th scope="col" className="px-4 py-3 text-left font-medium">
                   Status
@@ -344,30 +352,38 @@ export default function PapersPage() {
                     </tr>
                   ))
                 : filteredPapers.length > 0
-                ? filteredPapers.map((paper) => (
-                    <tr key={paper.id} className="fade-in transition-colors duration-200 hover:bg-muted/40">
-                      <td className="px-4 py-4">
-                        <div className="font-medium text-foreground">{paper.title}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {paper.venue ? `${paper.venue} · ` : ""}
-                          {paper.year ?? "Year unknown"}
-                        </div>
-                        {paper.file_name ? (
-                          <div className="mt-1 text-xs text-muted-foreground">File: {paper.file_name}</div>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-4">
-                        <div className="max-w-xs text-sm text-foreground">
-                          {paper.authors ? paper.authors : <span className="italic text-muted-foreground">Not provided</span>}
-                        </div>
-                      </td>
-                      <td className="px-4 py-4">
-                        <StatusBadge status={paper.status} />
-                      </td>
-                      <td className="px-4 py-4 text-sm text-muted-foreground">{formatDate(paper.created_at)}</td>
-                      <td className="px-4 py-4 text-sm text-muted-foreground">{formatDate(paper.updated_at)}</td>
-                    </tr>
-                  ))
+                ? filteredPapers.map((paper) => {
+                    const metadataSummary = summariseMetadata(paper.metadata);
+                    return (
+                      <tr key={paper.paper_id} className="fade-in transition-colors duration-200 hover:bg-muted/40">
+                        <td className="px-4 py-4">
+                          <div className="font-medium text-foreground">{paper.filename}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">Paper ID: {paper.paper_id}</div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Nodes: {paper.nodes_written} · Edges: {paper.edges_written} · Co-mentions: {paper.co_mention_edges}
+                          </div>
+                          {paper.errors.length > 0 ? (
+                            <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+                              <p className="font-semibold text-foreground">Pipeline warnings</p>
+                              <ul className="list-inside list-disc space-y-1">
+                                {paper.errors.map((item) => (
+                                  <li key={item}>{item}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-4 whitespace-pre-wrap text-sm text-muted-foreground">
+                          {metadataSummary}
+                        </td>
+                        <td className="px-4 py-4">
+                          <StatusBadge status={paper.status} />
+                        </td>
+                        <td className="px-4 py-4 text-sm text-muted-foreground">{formatDate(paper.uploaded_at)}</td>
+                        <td className="px-4 py-4 text-sm text-muted-foreground">{formatDate(paper.updated_at)}</td>
+                      </tr>
+                    );
+                  })
                 : (
                     <tr className="fade-in-up">
                       <td colSpan={5} className="px-6 py-12">
