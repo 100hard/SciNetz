@@ -54,23 +54,9 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
 
     _QUERY = """
         MATCH (src:Entity)-[rel:RELATION]->(dst:Entity)
-        WITH
-            src,
-            dst,
-            rel,
-            CASE
-                WHEN rel.attributes IS NULL THEN []
-                WHEN rel.attributes['section'] IS NOT NULL THEN [rel.attributes['section']]
-                WHEN rel.attributes['sections'] IS NOT NULL THEN split(rel.attributes['sections'], ',')
-                ELSE []
-            END AS relation_sections
         WHERE rel.confidence >= $min_confidence
           AND ($relations = [] OR rel.relation_norm IN $relations)
           AND ($include_co_mentions OR coalesce(rel.attributes['method'], '') <> 'co-mention')
-          AND (
-                $sections = []
-                OR ANY(section IN relation_sections WHERE trim(section) IN $sections)
-            )
           AND (
                 $papers = []
                 OR rel.evidence['doc_id'] IN $papers
@@ -87,13 +73,90 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
         params = {
             "min_confidence": filters.min_confidence,
             "relations": list(filters.relations),
-            "sections": [section.strip() for section in filters.sections if section.strip()],
             "include_co_mentions": bool(filters.include_co_mentions),
             "papers": list(filters.papers),
-            "limit": int(filters.limit),
+            "limit": self._query_limit(filters),
         }
         records = self._run_query(params)
-        return [self._record_to_edge(record) for record in records]
+        edges = [self._record_to_edge(record) for record in records]
+        filtered = self._apply_section_filter(edges, filters.sections)
+        limit = max(int(filters.limit), 0)
+        return filtered[:limit] if limit else []
+
+    @staticmethod
+    def _query_limit(filters: GraphViewFilters) -> int:
+        base_limit = max(int(filters.limit), 0)
+        if not base_limit:
+            return 0
+        section_filter_active = any(section.strip() for section in filters.sections)
+        multiplier = 3 if section_filter_active else 1
+        expanded = base_limit * multiplier
+        return min(expanded, 3000)
+
+    @staticmethod
+    def _apply_section_filter(
+        edges: Sequence[GraphEdgeRecord], sections: Sequence[str]
+    ) -> List[GraphEdgeRecord]:
+        trimmed = [section.strip() for section in sections if section.strip()]
+        if not trimmed:
+            return list(edges)
+        allowed = {section for section in trimmed}
+        filtered: List[GraphEdgeRecord] = []
+        for edge in edges:
+            relation_sections = Neo4jGraphViewRepository._extract_sections(
+                edge.relation.get("attributes")
+            )
+            if any(section in allowed for section in relation_sections):
+                filtered.append(edge)
+        return filtered
+
+    @staticmethod
+    def _extract_sections(attributes: object) -> List[str]:
+        sections: List[str] = []
+        if isinstance(attributes, Mapping):
+            sections.extend(
+                Neo4jGraphViewRepository._normalise_section_values(
+                    attributes.get("section")
+                )
+            )
+            sections.extend(
+                Neo4jGraphViewRepository._normalise_section_values(
+                    attributes.get("sections")
+                )
+            )
+        elif isinstance(attributes, Sequence) and not isinstance(attributes, (str, bytes)):
+            for item in attributes:
+                if isinstance(item, Mapping):
+                    key = (item.get("key") or item.get("name") or "").lower()
+                    if key in {"section", "sections"}:
+                        sections.extend(
+                            Neo4jGraphViewRepository._normalise_section_values(
+                                item.get("value")
+                            )
+                        )
+                elif isinstance(item, str):
+                    sections.extend(
+                        Neo4jGraphViewRepository._normalise_section_values(item)
+                    )
+        return [section for section in (section.strip() for section in sections) if section]
+
+    @staticmethod
+    def _normalise_section_values(value: object) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            collected: List[str] = []
+            for item in value:
+                if isinstance(item, str):
+                    collected.extend(
+                        Neo4jGraphViewRepository._normalise_section_values(item)
+                    )
+                elif item is not None:
+                    collected.append(str(item).strip())
+            return [section for section in collected if section]
+        return [str(value).strip()]
 
     def _run_query(self, params: Mapping[str, object]) -> List[Record]:
         def _execute(tx):  # type: ignore[no-untyped-def]
