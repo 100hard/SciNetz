@@ -502,10 +502,11 @@ def _create_neo4j_driver(config: AppConfig) -> Optional[object]:
 
     if GraphDatabase is None:
         return None
-    uri = os.getenv("NEO4J_URI")
-    user = os.getenv("NEO4J_USER")
-    password = os.getenv("NEO4J_PASSWORD")
+    uri = os.getenv("NEO4J_URI") or config.graph.uri
+    user = os.getenv("NEO4J_USER") or config.graph.username
+    password = os.getenv("NEO4J_PASSWORD") or config.graph.password
     if not (uri and user and password):
+        LOGGER.warning("Neo4j connection details missing; graph-dependent features disabled")
         return None
     try:
         driver = GraphDatabase.driver(uri, auth=(user, password))

@@ -167,6 +167,9 @@ class GraphConfig(_FrozenModel):
     """Graph persistence configuration values."""
 
     relation_semantics: Dict[str, str] = Field(default_factory=dict)
+    uri: Optional[str] = Field(default=None)
+    username: Optional[str] = Field(default=None)
+    password: Optional[str] = Field(default=None)
 
     @field_validator("relation_semantics")
     @classmethod

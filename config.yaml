@@ -186,6 +186,9 @@ graph:
     compared-to: bidirectional
     similar-to: bidirectional
     correlates-with: bidirectional
+  uri: "bolt://neo4j:7687"
+  username: "neo4j"
+  password: "neo4jpassword"
 
 co_mention:
   enabled: true

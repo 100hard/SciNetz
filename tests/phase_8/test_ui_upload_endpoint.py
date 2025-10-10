@@ -29,7 +29,10 @@ def _build_test_app(tmp_path: Path) -> TestClient:
             "paper_registry_path": str(tmp_path / "registry.json"),
         }
     )
-    app_config = config.model_copy(update={"ui": ui_config})
+    graph_config = config.graph.model_copy(
+        update={"uri": None, "username": None, "password": None}
+    )
+    app_config = config.model_copy(update={"ui": ui_config, "graph": graph_config})
     app = create_app(config=app_config, orchestrator=_StubOrchestrator())
     return TestClient(app)
 
