@@ -6,7 +6,9 @@ import {
   Users,
 } from "lucide-react";
 
-import SemanticSearch from "../components/semantic-search";
+import dynamic from "next/dynamic";
+
+const QaPanel = dynamic(() => import("../components/qa-panel"), { ssr: false });
 
 const stats = [
   {
@@ -56,7 +58,7 @@ const activityFeed = [
 export default function Home() {
   return (
     <div className="space-y-6">
-      <SemanticSearch />
+      <QaPanel />
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {stats.map((stat) => {
