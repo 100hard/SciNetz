@@ -247,6 +247,7 @@ class UIConfig(_FrozenModel):
     upload_dir: str = Field(..., min_length=1)
     paper_registry_path: str = Field(..., min_length=1)
     graph_defaults: UIGraphDefaultsConfig
+    allowed_origins: List[str] = Field(default_factory=list)
 
 
 class AppConfig(_FrozenModel):

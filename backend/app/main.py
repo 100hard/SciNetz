@@ -12,6 +12,7 @@ import base64
 import binascii
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from backend.app.canonicalization import CanonicalizationPipeline
@@ -134,6 +135,16 @@ def create_app(
 
     resolved_config = config or load_config()
     app = FastAPI(title="SciNets API", version=resolved_config.pipeline.version)
+
+    allowed_origins = resolved_config.ui.allowed_origins
+    if allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=allowed_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     orchestrator_instance = orchestrator
     neo4j_driver = None
