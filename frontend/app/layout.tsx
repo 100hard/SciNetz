@@ -1,25 +1,30 @@
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
 
-export const metadata = {
-  title: "SciNets Graph Explorer",
-  description: "Explore research knowledge graphs with evidence-backed insights"
+import Header from "../components/header";
+import Sidebar from "../components/sidebar";
+import { Toaster } from "sonner";
+
+const inter = Inter({ subsets: ["latin"] });
+
+export const metadata: Metadata = {
+  title: "SciNets Dashboard",
+  description: "Operational console for the SciNets research knowledge graph.",
 };
 
-export default function RootLayout({
-  children
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-slate-950 text-slate-100">
-        <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur">
-          <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-            <h1 className="text-lg font-semibold tracking-wide">SciNets Knowledge Graph</h1>
-            <span className="text-sm text-slate-400">Phase 8 · Graph + Evidence</span>
+      <body className={`${inter.className} min-h-screen bg-background text-foreground antialiased`}>
+        <div className="flex min-h-screen w-full bg-muted/10">
+          <Sidebar />
+          <div className="flex flex-1 flex-col">
+            <Header />
+            <main className="flex-1 overflow-y-auto bg-background p-6">{children}</main>
           </div>
-        </header>
-        <main className="mx-auto max-w-7xl px-6 py-6">{children}</main>
+        </div>
+        <Toaster richColors position="top-right" closeButton />
       </body>
     </html>
   );

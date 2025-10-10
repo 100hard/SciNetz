@@ -1,173 +1,160 @@
-"use client";
+import {
+  Activity,
+  Database,
+  FileText,
+  LineChart,
+  Users,
+} from "lucide-react";
 
-import { useEffect, useMemo, useState } from "react";
+import SemanticSearch from "../components/semantic-search";
 
-import { GraphCanvas } from "../components/GraphCanvas";
-import { EvidenceDrawer } from "../components/EvidenceDrawer";
-import { FiltersPanel } from "../components/FiltersPanel";
-import { PaperList } from "../components/PaperList";
-import { QAPanel } from "../components/QAPanel";
-import { UploadPanel } from "../components/UploadPanel";
-import { extractPaper, fetchGraph, fetchSettings, listPapers, type GraphFilters } from "../lib/api";
-import type { GraphEdge, GraphResponse, PaperSummary, QAPathEdge, UISettings } from "../lib/types";
+const stats = [
+  {
+    title: "Knowledge Graph Nodes",
+    value: "18,245",
+    change: "+3.4% vs last week",
+    icon: Database,
+  },
+  {
+    title: "Published Papers",
+    value: "612",
+    change: "+28 new",
+    icon: FileText,
+  },
+  {
+    title: "Collaborating Researchers",
+    value: "134",
+    change: "+12 active this month",
+    icon: Users,
+  },
+  {
+    title: "Pipeline Health",
+    value: "Stable",
+    change: "Last run 2 hours ago",
+    icon: Activity,
+  },
+];
 
-export default function DashboardPage() {
-  const [settings, setSettings] = useState<UISettings | null>(null);
-  const [papers, setPapers] = useState<PaperSummary[]>([]);
-  const [filters, setFilters] = useState<GraphFilters | null>(null);
-  const [graph, setGraph] = useState<GraphResponse | null>(null);
-  const [graphError, setGraphError] = useState<string | null>(null);
-  const [loadingGraph, setLoadingGraph] = useState(false);
-  const [extracting, setExtracting] = useState<string | null>(null);
-  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+const activityFeed = [
+  {
+    title: "Ingestion completed",
+    description: "ArXiv computer vision papers batch",
+    time: "10 minutes ago",
+  },
+  {
+    title: "Dataset validated",
+    description: "Protein folding simulation set",
+    time: "45 minutes ago",
+  },
+  {
+    title: "New collaborator joined",
+    description: "Dr. Li Wei added to Quantum Materials project",
+    time: "2 hours ago",
+  },
+];
 
-  useEffect(() => {
-    fetchSettings()
-      .then((config) => {
-        setSettings(config);
-        const defaults: GraphFilters = {
-          relations: config.graph_defaults.relations,
-          min_confidence: config.graph_defaults.min_confidence,
-          sections: config.graph_defaults.sections,
-          include_co_mentions: config.graph_defaults.show_co_mentions,
-          papers: []
-        };
-        setFilters(defaults);
-      })
-      .catch((err) => setGraphError(err instanceof Error ? err.message : String(err)));
-    listPapers()
-      .then(setPapers)
-      .catch((err) => setGraphError(err instanceof Error ? err.message : String(err)));
-  }, []);
-
-  useEffect(() => {
-    if (!filters) {
-      return;
-    }
-    setLoadingGraph(true);
-    setGraphError(null);
-    fetchGraph(filters)
-      .then(setGraph)
-      .catch((err) => setGraphError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoadingGraph(false));
-  }, [filters]);
-
-  const selectedEdge = useMemo<GraphEdge | null>(() => {
-    if (!graph || !selectedEdgeId) {
-      return null;
-    }
-    return graph.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
-  }, [graph, selectedEdgeId]);
-
-  const relationOptions = useMemo(() => {
-    if (!settings) {
-      return [];
-    }
-    const canonical = settings.graph_defaults.relations;
-    const derived = graph?.edges.map((edge) => edge.relation) ?? [];
-    return Array.from(new Set([...canonical, ...derived])).sort();
-  }, [settings, graph]);
-
-  const sectionOptions = useMemo(() => {
-    if (!graph) {
-      return settings?.graph_defaults.sections ?? [];
-    }
-    const sections = new Set<string>();
-    graph.nodes.forEach((node) => {
-      Object.keys(node.section_distribution).forEach((section) => sections.add(section));
-    });
-    return Array.from(sections);
-  }, [graph, settings]);
-
-  const paperOptions = useMemo(() => papers.map((paper) => paper.paper_id), [papers]);
-
-  const handleUploaded = (summary: PaperSummary) => {
-    setPapers((current) => [summary, ...current.filter((item) => item.paper_id !== summary.paper_id)]);
-  };
-
-  const handleExtract = async (paperId: string) => {
-    setExtracting(paperId);
-    try {
-      await extractPaper(paperId);
-      const refreshed = await listPapers();
-      setPapers(refreshed);
-    } catch (err) {
-      setGraphError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setExtracting(null);
-    }
-  };
-
-  const handleRefreshPapers = async () => {
-    const refreshed = await listPapers();
-    setPapers(refreshed);
-  };
-
-  const handleFiltersChange = (next: GraphFilters) => {
-    setFilters(next);
-  };
-
-  const handleEdgeSelect = (edge: GraphEdge) => {
-    setSelectedEdgeId(edge.id);
-  };
-
-  const handleHighlightEdge = (edge: QAPathEdge) => {
-    if (!graph) {
-      return;
-    }
-    const match = graph.edges.find(
-      (candidate) =>
-        candidate.source === edge.src_id &&
-        candidate.target === edge.dst_id &&
-        candidate.relation === edge.relation
-    );
-    if (match) {
-      setSelectedEdgeId(match.id);
-    }
-  };
-
+export default function Home() {
   return (
-    <div className="grid gap-6">
-      <section className="grid gap-4 md:grid-cols-2">
-        <UploadPanel onUploaded={handleUploaded} />
-        <QAPanel onHighlightEdge={handleHighlightEdge} />
-      </section>
-      <PaperList papers={papers} onExtract={handleExtract} extracting={extracting} onRefresh={handleRefreshPapers} />
-      {filters && (
-        <FiltersPanel
-          filters={filters}
-          relations={relationOptions}
-          sections={sectionOptions}
-          papers={paperOptions}
-          onChange={handleFiltersChange}
-        />
-      )}
-      <section className="grid gap-4 md:grid-cols-[2fr,1fr]">
-        <div className="space-y-3">
-          <div className="flex items-center justify-between text-sm text-slate-400">
-            <span>
-              {loadingGraph
-                ? "Loading graph…"
-                : graph
-                  ? `${graph.node_count} ${graph.node_count === 1 ? "node" : "nodes"} · ${graph.edge_count} ${graph.edge_count === 1 ? "edge" : "edges"}`
-                  : "Graph unavailable"}
-            </span>
-            {graphError && <span className="text-rose-400">{graphError}</span>}
-          </div>
-          {graph && filters ? (
-            <GraphCanvas
-              nodes={graph.nodes}
-              edges={graph.edges}
-              layout={settings?.graph_defaults.layout ?? "fcose"}
-              onSelectEdge={handleEdgeSelect}
-            />
-          ) : (
-            <div className="rounded-lg border border-dashed border-slate-800 bg-slate-900/50 p-6 text-sm text-slate-400">
-              Configure filters to load the graph.
+    <div className="space-y-6">
+      <SemanticSearch />
+
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {stats.map((stat) => {
+          const Icon = stat.icon;
+          return (
+            <div
+              key={stat.title}
+              className="rounded-lg border bg-card p-5 shadow-sm transition hover:shadow-md"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">{stat.title}</p>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">{stat.value}</p>
+                </div>
+                <span className="rounded-md bg-primary/10 p-2 text-primary">
+                  <Icon className="h-5 w-5" />
+                </span>
+              </div>
+              <p className="mt-4 text-xs font-medium uppercase tracking-wide text-primary">
+                {stat.change}
+              </p>
             </div>
-          )}
+          );
+        })}
+      </section>
+
+      <section className="grid gap-6 lg:grid-cols-2">
+        <div className="rounded-lg border bg-card p-6 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-foreground">Ingestion Pipeline</h2>
+              <p className="text-sm text-muted-foreground">Track the latest crawl and enrichment jobs.</p>
+            </div>
+            <LineChart className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div className="mt-6 space-y-5">
+            <div>
+              <div className="flex items-center justify-between text-sm font-medium text-foreground">
+                <span>Metadata aggregation</span>
+                <span className="text-muted-foreground">82%</span>
+              </div>
+              <div className="mt-2 h-2 rounded-full bg-muted">
+                <div className="h-2 rounded-full bg-primary" style={{ width: "82%" }} />
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center justify-between text-sm font-medium text-foreground">
+                <span>Entity resolution</span>
+                <span className="text-muted-foreground">64%</span>
+              </div>
+              <div className="mt-2 h-2 rounded-full bg-muted">
+                <div className="h-2 rounded-full bg-primary/70" style={{ width: "64%" }} />
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center justify-between text-sm font-medium text-foreground">
+                <span>Graph sync</span>
+                <span className="text-muted-foreground">Next run: 03:00 UTC</span>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Automated refresh scheduled overnight to capture newly published research.
+              </p>
+            </div>
+          </div>
         </div>
-        <EvidenceDrawer edge={selectedEdge} onClose={() => setSelectedEdgeId(null)} />
+
+        <div className="flex flex-col gap-6">
+          <div className="rounded-lg border bg-card p-6 shadow-sm">
+            <h2 className="text-lg font-semibold text-foreground">Recent activity</h2>
+            <ul className="mt-4 space-y-4">
+              {activityFeed.map((item) => (
+                <li key={item.title} className="border-l-2 border-primary/30 pl-4">
+                  <p className="text-sm font-semibold text-foreground">{item.title}</p>
+                  <p className="text-sm text-muted-foreground">{item.description}</p>
+                  <p className="text-xs text-muted-foreground">{item.time}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="rounded-lg border bg-card p-6 shadow-sm">
+            <h2 className="text-lg font-semibold text-foreground">Action items</h2>
+            <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
+              <li className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" aria-hidden />
+                Review entity merges proposed for AI Safety papers.
+              </li>
+              <li className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-amber-400" aria-hidden />
+                Approve dataset sync for Materials Project updates.
+              </li>
+              <li className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-sky-400" aria-hidden />
+                Invite collaborators from the National Lab workspace.
+              </li>
+            </ul>
+          </div>
+        </div>
       </section>
     </div>
   );

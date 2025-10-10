@@ -1,9 +1,13 @@
+// frontend/next.config.js
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: true,
+  output: 'standalone',
   experimental: {
-    typedRoutes: true
+    serverComponentsExternalPackages: [],
+  },
+  env: {
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
   }
-};
+}
 
-module.exports = nextConfig;
+module.exports = nextConfig
