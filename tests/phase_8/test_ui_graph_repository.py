@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from typing import Optional
 
+import contextlib
+
 import pytest
 
-from backend.app.ui.repository import GraphViewFilters, Neo4jGraphViewRepository
+from backend.app.ui.repository import (
+    GraphEdgeRecord,
+    GraphNodeRecord,
+    GraphViewFilters,
+    Neo4jGraphViewRepository,
+)
 
 try:  # pragma: no cover - optional dependency in CI
     from neo4j import GraphDatabase
@@ -19,8 +26,30 @@ except Exception:  # pragma: no cover
     Neo4jContainer = None  # type: ignore[assignment]
 
 
+def _docker_daemon_available() -> bool:
+    try:
+        import docker
+    except Exception:  # pragma: no cover - docker client optional
+        return False
+    try:
+        client = docker.from_env()
+    except Exception:  # pragma: no cover - environment missing docker socket
+        return False
+    try:
+        client.ping()
+        return True
+    except Exception:  # pragma: no cover - ping failed
+        return False
+    finally:
+        with contextlib.suppress(Exception):
+            client.close()
+
+
+DOCKER_AVAILABLE = _docker_daemon_available()
+
+
 @pytest.mark.skipif(
-    Neo4jContainer is None or GraphDatabase is None,
+    Neo4jContainer is None or GraphDatabase is None or not DOCKER_AVAILABLE,
     reason="neo4j driver and testcontainers are required for integration tests",
 )
 def test_repository_applies_filters() -> None:
@@ -73,3 +102,56 @@ def test_repository_applies_filters() -> None:
     finally:
         if container is not None:
             container.stop()
+
+
+def _node_stub(identifier: str) -> GraphNodeRecord:
+    return GraphNodeRecord(
+        node_id=identifier,
+        name=identifier,
+        type=None,
+        aliases=[],
+        times_seen=1,
+        section_distribution={},
+    )
+
+
+def test_section_filter_accepts_map_attributes() -> None:
+    node = _node_stub("n1")
+    edges = [
+        GraphEdgeRecord(
+            source=node,
+            target=node,
+            relation={"attributes": {"section": "Results"}},
+        ),
+        GraphEdgeRecord(
+            source=node,
+            target=node,
+            relation={"attributes": {"sections": "Methods,Background"}},
+        ),
+    ]
+    filtered = Neo4jGraphViewRepository._apply_section_filter(edges, ["Results"])
+    assert len(filtered) == 1
+    assert filtered[0].relation["attributes"]["section"] == "Results"
+
+
+def test_section_filter_accepts_sequence_attributes() -> None:
+    node = _node_stub("n1")
+    edges = [
+        GraphEdgeRecord(
+            source=node,
+            target=node,
+            relation={
+                "attributes": [
+                    {"key": "section", "value": "Methods"},
+                    {"name": "sections", "value": "Results,Discussion"},
+                ]
+            },
+        ),
+        GraphEdgeRecord(
+            source=node,
+            target=node,
+            relation={"attributes": ["Introduction", "Appendix"]},
+        ),
+    ]
+    filtered = Neo4jGraphViewRepository._apply_section_filter(edges, ["Results"])
+    assert len(filtered) == 1
