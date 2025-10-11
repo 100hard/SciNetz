@@ -274,9 +274,9 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
         relation: MutableMapping[str, object] = {}
         for key, value in items:
             relation[str(key)] = value
-        attributes = relation.get("attributes")
-        if isinstance(attributes, Mapping):
-            relation["attributes"] = {str(k): str(v) for k, v in attributes.items()}
+        relation["attributes"] = Neo4jGraphViewRepository._attributes_from_payload(
+            relation.get("attributes")
+        )
         evidence = relation.get("evidence")
         if isinstance(evidence, Mapping):
             relation["evidence"] = Neo4jGraphViewRepository._normalise_evidence(evidence)
@@ -356,6 +356,24 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
             LOGGER.warning("Decoded evidence payload is not a mapping in UI repository")
             return {}
         return Neo4jGraphViewRepository._normalise_evidence(data)
+
+    @staticmethod
+    def _attributes_from_payload(value: object) -> Dict[str, str]:
+        if isinstance(value, Mapping):
+            return {str(k): str(v) for k, v in value.items() if k}
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                LOGGER.warning("Failed to decode attributes payload from JSON in UI repository")
+                return {}
+            if isinstance(decoded, Mapping):
+                return {str(k): str(v) for k, v in decoded.items() if k}
+            LOGGER.warning("Decoded attributes payload is not a mapping in UI repository")
+            return {}
+        if value is not None:
+            LOGGER.warning("Unexpected attributes payload type in UI repository: %s", type(value))
+        return {}
 
 
 def _as_float(value: object) -> float:

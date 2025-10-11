@@ -140,9 +140,18 @@ class GraphViewService:
 
     @staticmethod
     def _to_str_map(value: object) -> Dict[str, str]:
-        if not isinstance(value, dict):
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                LOGGER.warning("Failed to decode attributes payload from JSON in UI service")
+                return {}
+            value = decoded if isinstance(decoded, Mapping) else {}
+        if not isinstance(value, Mapping):
+            if value is not None:
+                LOGGER.warning("Unexpected attributes payload type in UI service: %s", type(value))
             return {}
-        return {str(key): str(val) for key, val in value.items()}
+        return {str(key): str(val) for key, val in value.items() if key}
 
     @staticmethod
     def _to_evidence(value: object) -> Dict[str, object]:

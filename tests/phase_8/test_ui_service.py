@@ -69,6 +69,28 @@ def test_graph_view_service_converts_records() -> None:
     assert edge.evidence["doc_id"] == "doc1"
 
 
+def test_graph_view_service_decodes_attribute_strings() -> None:
+    source = _make_node("n1", "Alpha")
+    target = _make_node("n2", "Beta")
+    relation = {
+        "relation_norm": "uses",
+        "confidence": 0.75,
+        "times_seen": 1,
+        "attributes": '{"section":"Results","method":"llm"}',
+    }
+    repo = _StubRepository(edges=[GraphEdgeRecord(source=source, target=target, relation=relation)])
+    service = GraphViewService(repo)
+
+    view = service.fetch_graph(
+        relations=["uses"],
+        min_confidence=0.0,
+        sections=[],
+        include_co_mentions=True,
+    )
+
+    assert view.edges[0].attributes == {"method": "llm", "section": "Results"}
+
+
 def test_graph_view_service_respects_limit() -> None:
     source = _make_node("n1", "Alpha")
     target = _make_node("n2", "Beta")

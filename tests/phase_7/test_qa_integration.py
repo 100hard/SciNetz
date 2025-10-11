@@ -157,7 +157,7 @@ def _seed_graph(driver) -> None:
                     text_span: {start: 0, end: 42},
                     full_sentence: 'Model Alpha outperforms Model Beta.'
                 },
-                attributes: {method: 'llm'}
+                attributes: '{"method":"llm"}'
             }]->(beta)
             """,
             version=config.pipeline.version,
@@ -180,7 +180,7 @@ def _seed_graph(driver) -> None:
                     text_span: {start: 0, end: 35},
                     full_sentence: 'Model Alpha uses Dataset Delta.'
                 },
-                attributes: {method: 'llm'}
+                attributes: '{"method":"llm"}'
             }]->(delta)
             """,
             version=config.pipeline.version,
@@ -203,7 +203,7 @@ def _seed_graph(driver) -> None:
                     text_span: {start: 0, end: 44},
                     full_sentence: 'Dataset Delta is evaluated on Benchmark Gamma.'
                 },
-                attributes: {method: 'llm'}
+                attributes: '{"method":"llm"}'
             }]->(gamma)
             """,
             version=config.pipeline.version,
@@ -226,7 +226,7 @@ def _seed_graph(driver) -> None:
                     text_span: {start: 0, end: 39},
                     full_sentence: 'Model Beta is compared to Model Zeta.'
                 },
-                attributes: {method: 'llm'}
+                attributes: '{"method":"llm"}'
             }]->(zeta)
             """,
             version=config.pipeline.version,

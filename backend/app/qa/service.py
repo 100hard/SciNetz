@@ -333,8 +333,21 @@ class QAService:
         )
 
     @staticmethod
-    def _extract_attributes(payload: Mapping[str, object]) -> Mapping[str, str]:
-        return {str(key): str(value) for key, value in payload.items()}
+    def _extract_attributes(payload: Mapping[str, object] | object) -> Mapping[str, str]:
+        if isinstance(payload, str):
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                LOGGER.warning("Failed to decode attributes payload from JSON in QA service")
+                return {}
+            payload = decoded if isinstance(decoded, Mapping) else {}
+        if not isinstance(payload, Mapping):
+            if payload is not None:
+                LOGGER.warning(
+                    "Unexpected attributes payload type in QA service: %s", type(payload)
+                )
+            return {}
+        return {str(key): str(value) for key, value in payload.items() if key}
 
     def _normalize_node(self, node: Mapping[str, object]) -> Mapping[str, object]:
         return {

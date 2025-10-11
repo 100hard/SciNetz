@@ -83,6 +83,7 @@ class _InMemoryTransaction:
             key = (payload["src_id"], payload["dst_id"], payload["relation_norm"])
             edge = self._store.edges.get(key)
             evidence = self._normalise_evidence(payload["evidence"])
+            attributes = self._normalise_attributes(payload["attributes"])
             if edge is None:
                 edge = _InMemoryEdge(
                     src_id=payload["src_id"],
@@ -94,14 +95,14 @@ class _InMemoryTransaction:
                     pipeline_version=payload["pipeline_version"],
                     times_seen=payload["times_seen"],
                     created_at=payload["created_at"],
-                    attributes=dict(payload["attributes"]),
+                    attributes=attributes,
                     conflicting=False,
                 )
             else:
                 edge.relation_verbatim = payload["relation_verbatim"]
                 edge.pipeline_version = payload["pipeline_version"]
                 if payload["attributes_provided"]:
-                    edge.attributes = dict(payload["attributes"])
+                    edge.attributes = attributes
                 edge.evidence = evidence
                 edge.times_seen += payload["times_seen"]
                 edge.confidence = max(edge.confidence, payload["confidence"])
@@ -150,6 +151,18 @@ class _InMemoryTransaction:
         if full_sentence is not None:
             result["full_sentence"] = full_sentence
         return result
+
+    @staticmethod
+    def _normalise_attributes(payload: Any) -> Dict[str, str]:
+        if isinstance(payload, str):
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                decoded = {}
+            payload = decoded if isinstance(decoded, Mapping) else {}
+        if not isinstance(payload, Mapping):
+            return {}
+        return {str(key): str(value) for key, value in payload.items() if key}
 
 
 class _InMemorySession:
@@ -349,6 +362,28 @@ def test_edge_evidence_serialization(writer: GraphWriter, driver: _InMemoryDrive
     assert stored.evidence["text_span"]["start"] == evidence.text_span.start
     assert stored.evidence["text_span"]["end"] == evidence.text_span.end
     assert stored.evidence["full_sentence"] == evidence.full_sentence
+
+
+def test_edge_attributes_are_serialized_to_json(writer: GraphWriter) -> None:
+    evidence = Evidence(
+        element_id="el-attr",
+        text_span=TextSpan(start=1, end=2),
+        doc_id="doc-attr",
+    )
+    payload = writer._edge_to_parameters(
+        src_id="src",
+        dst_id="dst",
+        relation_norm="uses",
+        relation_verbatim="uses",
+        evidence=evidence,
+        confidence=0.5,
+        attributes={"section": "Results", "method": "llm"},
+        created_at=datetime.now(timezone.utc),
+        times_seen=1,
+    )
+    assert isinstance(payload["attributes"], str)
+    decoded = json.loads(payload["attributes"])
+    assert decoded == {"method": "llm", "section": "Results"}
 
 
 def test_edge_upsert_counts_and_conflicts(writer: GraphWriter, driver: _InMemoryDriver) -> None:

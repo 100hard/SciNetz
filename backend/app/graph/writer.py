@@ -331,11 +331,7 @@ class GraphWriter:
             RETURN node.node_id AS node_id,
                    coalesce(node.aliases, []) AS aliases,
                    coalesce(node.source_document_ids, []) AS docs,
-                   CASE
-                       WHEN "section_distribution" IN keys(node)
-                           THEN node.section_distribution
-                       ELSE {}
-                   END AS legacy_sections,
+                   coalesce(properties(node)['section_distribution'], {}) AS legacy_sections,
                    coalesce(node.section_distribution_keys, []) AS section_keys,
                    coalesce(node.section_distribution_values, []) AS section_values,
                    coalesce(node.times_seen, 0) AS times_seen
@@ -480,7 +476,7 @@ class GraphWriter:
         created_at: datetime,
         times_seen: int,
     ) -> Dict[str, Any]:
-        attribute_map = {key: str(value) for key, value in (attributes or {}).items()}
+        attribute_payload = self._serialize_attributes(attributes)
         evidence_payload = self._serialize_evidence(evidence)
         return {
             "src_id": src_id,
@@ -489,13 +485,26 @@ class GraphWriter:
             "relation_verbatim": relation_verbatim,
             "evidence": evidence_payload,
             "confidence": confidence,
-            "attributes": attribute_map,
+            "attributes": attribute_payload,
             "attributes_provided": attributes is not None,
             "created_at": created_at,
             "times_seen": times_seen,
             "pipeline_version": self._pipeline_version,
             "directional": self._graph_config.is_directional(relation_norm),
         }
+
+    @staticmethod
+    def _serialize_attributes(
+        attributes: Optional[Mapping[str, object]]
+    ) -> Optional[str]:
+        """Convert edge attributes into a Neo4j-safe JSON string."""
+
+        if attributes is None:
+            return None
+        normalized = {str(key): str(value) for key, value in attributes.items() if key}
+        if not normalized:
+            return json.dumps({}, sort_keys=True)
+        return json.dumps(normalized, sort_keys=True)
 
     @staticmethod
     def _serialize_evidence(evidence: Evidence) -> str:
