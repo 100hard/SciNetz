@@ -1,6 +1,7 @@
 """Graph-first QA service orchestrating resolution and path search."""
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -303,7 +304,20 @@ class QAService:
             attributes=self._extract_attributes(record.relationship.get("attributes", {})),
         )
 
-    def _extract_evidence(self, payload: Mapping[str, object]) -> EvidenceModel:
+    def _extract_evidence(self, payload: Mapping[str, object] | object) -> EvidenceModel:
+        if isinstance(payload, str):
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                LOGGER.warning("Failed to decode evidence payload from JSON in QA service")
+                decoded = {}
+            payload = decoded if isinstance(decoded, Mapping) else {}
+        if not isinstance(payload, Mapping):
+            if payload is not None:
+                LOGGER.warning(
+                    "Unexpected evidence payload type in QA service: %s", type(payload)
+                )
+            payload = {}
         raw_span = payload.get("text_span")
         if isinstance(raw_span, Mapping):
             start = int(raw_span.get("start", 0))

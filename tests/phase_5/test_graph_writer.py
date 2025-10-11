@@ -1,6 +1,7 @@
 """Unit tests for the Neo4j graph writer."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
@@ -112,7 +113,7 @@ class _InMemoryTransaction:
                 self._store.edges[reverse_key].conflicting = True
 
     @staticmethod
-    def _normalise_evidence(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    def _normalise_evidence(payload: Any) -> Dict[str, Any]:
         """Convert serialized evidence payloads into nested dictionaries.
 
         Args:
@@ -123,6 +124,14 @@ class _InMemoryTransaction:
         """
 
         text_span: Dict[str, int]
+        if isinstance(payload, str):
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                decoded = {}
+            payload = decoded if isinstance(decoded, Mapping) else {}
+        if not isinstance(payload, Mapping):
+            payload = {}
         raw_span = payload.get("text_span")
         if isinstance(raw_span, Mapping):
             start = int(raw_span.get("start", 0) or 0)

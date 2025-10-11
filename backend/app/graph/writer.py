@@ -1,6 +1,7 @@
 """Neo4j graph writer implementation for Phase 5."""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence
@@ -330,7 +331,11 @@ class GraphWriter:
             RETURN node.node_id AS node_id,
                    coalesce(node.aliases, []) AS aliases,
                    coalesce(node.source_document_ids, []) AS docs,
-                   coalesce(node.section_distribution, {}) AS legacy_sections,
+                   CASE
+                       WHEN "section_distribution" IN keys(node)
+                           THEN node.section_distribution
+                       ELSE {}
+                   END AS legacy_sections,
                    coalesce(node.section_distribution_keys, []) AS section_keys,
                    coalesce(node.section_distribution_values, []) AS section_values,
                    coalesce(node.times_seen, 0) AS times_seen
@@ -493,15 +498,14 @@ class GraphWriter:
         }
 
     @staticmethod
-    def _serialize_evidence(evidence: Evidence) -> Dict[str, Any]:
-        """Convert an evidence contract into Neo4j-safe primitives.
+    def _serialize_evidence(evidence: Evidence) -> str:
+        """Convert an evidence contract into a JSON payload for Neo4j.
 
         Args:
             evidence: Evidence metadata referencing the supporting text.
 
         Returns:
-            Dict[str, Any]: Flattened evidence payload containing only Neo4j-
-            compatible primitive values.
+            str: JSON string containing only Neo4j-compatible primitive values.
         """
 
         payload: Dict[str, Any] = {
@@ -512,7 +516,7 @@ class GraphWriter:
         }
         if evidence.full_sentence is not None:
             payload["full_sentence"] = evidence.full_sentence
-        return payload
+        return json.dumps(payload, sort_keys=True)
 
     def _ensure_entity_label_exists(self) -> bool:
         if self._entity_label_exists:
