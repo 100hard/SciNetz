@@ -304,14 +304,17 @@ class QAService:
         )
 
     def _extract_evidence(self, payload: Mapping[str, object]) -> EvidenceModel:
-        text_span = payload.get("text_span", {})
+        raw_span = payload.get("text_span")
+        if isinstance(raw_span, Mapping):
+            start = int(raw_span.get("start", 0))
+            end = int(raw_span.get("end", 0))
+        else:
+            start = int(payload.get("text_span_start", 0) or 0)
+            end = int(payload.get("text_span_end", 0) or 0)
         return EvidenceModel(
             doc_id=str(payload.get("doc_id", "")),
             element_id=str(payload.get("element_id", "")),
-            text_span={
-                "start": int(text_span.get("start", 0)),
-                "end": int(text_span.get("end", 0)),
-            },
+            text_span={"start": start, "end": end},
             full_sentence=payload.get("full_sentence"),
         )
 
