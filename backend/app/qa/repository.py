@@ -1,9 +1,10 @@
 """Neo4j-backed repository for QA operations."""
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
-from typing import Iterable, List, Mapping, Optional, Sequence
+from typing import Iterable, List, Mapping, MutableMapping, Optional, Sequence
 
 try:  # pragma: no cover - optional dependency in tests
     from neo4j import Driver, Record
@@ -189,6 +190,8 @@ class Neo4jQARepository(QARepositoryProtocol):
             node_data["section_distribution"] = decode_distribution_from_mapping(node_data)
             nodes.append(node_data)
         relationships = [dict(_safe_map(value)) for value in record["relationships"]]
+        for relation in relationships:
+            relation["evidence"] = _parse_evidence(relation.get("evidence"))
         return PathRecord(nodes=nodes, relationships=relationships)
 
     @staticmethod
@@ -197,7 +200,8 @@ class Neo4jQARepository(QARepositoryProtocol):
         source["section_distribution"] = decode_distribution_from_mapping(source)
         target = dict(_safe_map(record["target"]))
         target["section_distribution"] = decode_distribution_from_mapping(target)
-        relationship = dict(_safe_map(record["relationship"]))
+        relationship: MutableMapping[str, object] = dict(_safe_map(record["relationship"]))
+        relationship["evidence"] = _parse_evidence(relationship.get("evidence"))
         return NeighborRecord(source=source, target=target, relationship=relationship)
 
 
@@ -210,3 +214,22 @@ def _safe_map(value: object) -> Iterable[tuple[str, object]]:
         return value._properties.items()  # type: ignore[attr-defined,no-any-return]
     LOGGER.debug("Unexpected value type when converting Neo4j record: %s", type(value))
     return []
+
+
+def _parse_evidence(value: object) -> Mapping[str, object]:
+    """Decode relationship evidence into a mapping."""
+
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            LOGGER.warning("Failed to decode evidence payload from JSON")
+            return {}
+        if isinstance(parsed, Mapping):
+            return parsed
+        LOGGER.warning("Evidence payload JSON did not decode into a mapping")
+    elif value is not None:
+        LOGGER.warning("Unexpected evidence payload type: %s", type(value))
+    return {}

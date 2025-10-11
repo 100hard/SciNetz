@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Mapping, Optional, Sequence
+
+
+LOGGER = logging.getLogger(__name__)
 
 from backend.app.ui.repository import GraphEdgeRecord, GraphNodeRecord, GraphViewFilters, GraphViewRepositoryProtocol
 
@@ -141,17 +146,37 @@ class GraphViewService:
 
     @staticmethod
     def _to_evidence(value: object) -> Dict[str, object]:
-        if not isinstance(value, dict):
-            return {}
-        payload: Dict[str, object] = {}
-        for key, val in value.items():
-            if key == "text_span" and isinstance(val, dict):
-                payload[key] = {
-                    "start": int(val.get("start", 0) or 0),
-                    "end": int(val.get("end", 0) or 0),
-                }
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                LOGGER.warning("Failed to decode evidence payload from JSON in UI service")
+                return {}
+            if isinstance(parsed, Mapping):
+                value = parsed
             else:
-                payload[key] = val
+                LOGGER.warning("Decoded evidence payload is not a mapping in UI service")
+                return {}
+        if not isinstance(value, Mapping):
+            if value is not None:
+                LOGGER.warning("Unexpected evidence payload type in UI service: %s", type(value))
+            return {}
+        doc_id = value.get("doc_id")
+        element_id = value.get("element_id")
+        raw_span = value.get("text_span")
+        if isinstance(raw_span, Mapping):
+            start = int(raw_span.get("start", 0) or 0)
+            end = int(raw_span.get("end", 0) or 0)
+        else:
+            start = int(value.get("text_span_start", 0) or 0)
+            end = int(value.get("text_span_end", 0) or 0)
+        payload: Dict[str, object] = {
+            "doc_id": doc_id,
+            "element_id": element_id,
+            "text_span": {"start": start, "end": end},
+        }
+        if value.get("full_sentence") is not None:
+            payload["full_sentence"] = value["full_sentence"]
         return payload
 
     @staticmethod

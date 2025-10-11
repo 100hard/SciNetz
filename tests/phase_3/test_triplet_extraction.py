@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -444,6 +445,48 @@ def test_openai_extractor_uses_initial_token_multiplier(config) -> None:
         * math.ceil(settings.initial_output_multiplier),
     )
     assert observed_tokens == [expected_tokens]
+
+
+def test_openai_extractor_logs_configured_multiplier_without_retry(caplog, config) -> None:
+    """Extractor should not report a token increase when starting above 1."""
+
+    fixture = _load_golden("sample_chunk")
+    element = _element_from_fixture(fixture["element"])
+    settings = config.extraction.openai
+
+    def handler(path: str, headers: dict, payload: dict) -> _FakeResponse:
+        response_body = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(fixture["llm_response"]),
+                    }
+                }
+            ]
+        }
+        return _FakeResponse(status_code=200, payload=response_body)
+
+    client = _FakeHTTPClient(handler)
+    extractor = OpenAIExtractor(
+        settings=settings,
+        api_key="test-key",
+        client=client,
+        token_budget_per_triple=config.extraction.tokens_per_triple,
+        allowed_relations=config.relations.canonical_relation_names(),
+        max_prompt_entities=config.extraction.max_prompt_entities,
+    )
+
+    with caplog.at_level(logging.INFO, logger="backend.app.extraction.triplet_extraction"):
+        extractor.extract_triples(element, candidate_entities=None, max_triples=3)
+
+    messages = [record.message for record in caplog.records]
+    assert any(
+        "using configured token budget multiplier" in message for message in messages
+    )
+    assert not any(
+        "after increasing token budget multiplier" in message for message in messages
+    )
 
 
 def test_openai_extractor_uses_cached_response(tmp_path, config) -> None:
