@@ -76,7 +76,7 @@ def test_repository_applies_filters() -> None:
                     relation_verbatim: 'uses',
                     confidence: 0.9,
                     times_seen: 1,
-                    attributes: {method: 'llm', section: 'Results'},
+                    attributes: '{"method":"llm","section":"Results"}',
                     evidence: {doc_id: 'doc1', element_id: 'el1', text_span: {start: 0, end: 10}}
                 }]->(b)
                 CREATE (a)-[:RELATION {
@@ -84,7 +84,7 @@ def test_repository_applies_filters() -> None:
                     relation_verbatim: 'uses',
                     confidence: 0.3,
                     times_seen: 1,
-                    attributes: {method: 'llm', section: 'Background'},
+                    attributes: '{"method":"llm","section":"Background"}',
                     evidence: {doc_id: 'doc1', element_id: 'el2', text_span: {start: 0, end: 10}}
                 }]->(b)
                 """
@@ -117,6 +117,12 @@ def _node_stub(identifier: str) -> GraphNodeRecord:
         times_seen=1,
         section_distribution={},
     )
+
+
+def test_to_relation_decodes_string_attributes() -> None:
+    record = {"attributes": '{"section":"Results","method":"llm"}'}
+    relation = Neo4jGraphViewRepository._to_relation(record)
+    assert relation["attributes"] == {"method": "llm", "section": "Results"}
 
 
 def test_section_filter_accepts_map_attributes() -> None:

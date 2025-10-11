@@ -1,9 +1,10 @@
 """Neo4j-backed repository for QA operations."""
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
-from typing import Iterable, List, Mapping, Optional, Sequence
+from typing import Iterable, List, Mapping, MutableMapping, Optional, Sequence
 
 try:  # pragma: no cover - optional dependency in tests
     from neo4j import Driver, Record
@@ -77,7 +78,7 @@ class Neo4jQARepository(QARepositoryProtocol):
                n.name AS name,
                coalesce(n.aliases, []) AS aliases,
                coalesce(n.times_seen, 0) AS times_seen,
-               coalesce(n.section_distribution, {}) AS section_distribution,
+               coalesce(properties(n)['section_distribution'], {}) AS section_distribution,
                coalesce(n.section_distribution_keys, []) AS section_distribution_keys,
                coalesce(n.section_distribution_values, []) AS section_distribution_values
         ORDER BY times_seen DESC, name ASC
@@ -93,7 +94,7 @@ class Neo4jQARepository(QARepositoryProtocol):
                n.name AS name,
                coalesce(n.aliases, []) AS aliases,
                coalesce(n.times_seen, 0) AS times_seen,
-               coalesce(n.section_distribution, {}) AS section_distribution,
+               coalesce(properties(n)['section_distribution'], {}) AS section_distribution,
                coalesce(n.section_distribution_keys, []) AS section_distribution_keys,
                coalesce(n.section_distribution_values, []) AS section_distribution_values
         ORDER BY times_seen DESC, name ASC
@@ -189,6 +190,9 @@ class Neo4jQARepository(QARepositoryProtocol):
             node_data["section_distribution"] = decode_distribution_from_mapping(node_data)
             nodes.append(node_data)
         relationships = [dict(_safe_map(value)) for value in record["relationships"]]
+        for relation in relationships:
+            relation["evidence"] = _parse_evidence(relation.get("evidence"))
+            relation["attributes"] = _parse_attributes(relation.get("attributes"))
         return PathRecord(nodes=nodes, relationships=relationships)
 
     @staticmethod
@@ -197,7 +201,9 @@ class Neo4jQARepository(QARepositoryProtocol):
         source["section_distribution"] = decode_distribution_from_mapping(source)
         target = dict(_safe_map(record["target"]))
         target["section_distribution"] = decode_distribution_from_mapping(target)
-        relationship = dict(_safe_map(record["relationship"]))
+        relationship: MutableMapping[str, object] = dict(_safe_map(record["relationship"]))
+        relationship["evidence"] = _parse_evidence(relationship.get("evidence"))
+        relationship["attributes"] = _parse_attributes(relationship.get("attributes"))
         return NeighborRecord(source=source, target=target, relationship=relationship)
 
 
@@ -210,3 +216,41 @@ def _safe_map(value: object) -> Iterable[tuple[str, object]]:
         return value._properties.items()  # type: ignore[attr-defined,no-any-return]
     LOGGER.debug("Unexpected value type when converting Neo4j record: %s", type(value))
     return []
+
+
+def _parse_evidence(value: object) -> Mapping[str, object]:
+    """Decode relationship evidence into a mapping."""
+
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            LOGGER.warning("Failed to decode evidence payload from JSON")
+            return {}
+        if isinstance(parsed, Mapping):
+            return parsed
+        LOGGER.warning("Evidence payload JSON did not decode into a mapping")
+    elif value is not None:
+        LOGGER.warning("Unexpected evidence payload type: %s", type(value))
+    return {}
+
+
+def _parse_attributes(value: object) -> Mapping[str, str]:
+    """Decode relationship attributes into a string map."""
+
+    if isinstance(value, Mapping):
+        return {str(k): str(v) for k, v in value.items() if k}
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            LOGGER.warning("Failed to decode attributes payload from JSON")
+            return {}
+        if isinstance(decoded, Mapping):
+            return {str(k): str(v) for k, v in decoded.items() if k}
+        LOGGER.warning("Attributes payload JSON did not decode into a mapping")
+    elif value is not None:
+        LOGGER.warning("Unexpected attributes payload type: %s", type(value))
+    return {}

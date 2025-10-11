@@ -312,6 +312,7 @@ class OpenAIExtractor(LLMExtractor):
                 return cached_triples[: max(1, max_triples)]
         attempt_budget = max(1, max_triples)
         token_multiplier = self._resolve_initial_multiplier(element, attempt_budget)
+        bumped_token_budget = False
         last_error: Optional[Exception] = None
         while attempt_budget >= 1:
             cache_key = self._cache_key(element, attempt_budget)
@@ -337,6 +338,7 @@ class OpenAIExtractor(LLMExtractor):
                         attempt_budget,
                     )
                     token_multiplier = next_multiplier
+                    bumped_token_budget = True
                     continue
                 if attempt_budget == 1:
                     raise
@@ -348,6 +350,7 @@ class OpenAIExtractor(LLMExtractor):
                 )
                 attempt_budget = reduced_budget
                 token_multiplier = self._resolve_initial_multiplier(element, attempt_budget)
+                bumped_token_budget = False
                 continue
             except RuntimeError as exc:
                 if str(exc) != self._NON_JSON_ERROR or attempt_budget == 1:
@@ -360,6 +363,7 @@ class OpenAIExtractor(LLMExtractor):
                 last_error = exc
                 attempt_budget = max(1, attempt_budget // 2)
                 token_multiplier = self._resolve_initial_multiplier(element, attempt_budget)
+                bumped_token_budget = False
                 continue
             if attempt_budget < max_triples:
                 LOGGER.info(
@@ -367,9 +371,15 @@ class OpenAIExtractor(LLMExtractor):
                     max_triples,
                     attempt_budget,
                 )
-            if token_multiplier > 1:
+            if bumped_token_budget:
                 LOGGER.info(
                     "Successful extraction after increasing token budget multiplier to %s (triples %s)",
+                    token_multiplier,
+                    attempt_budget,
+                )
+            elif token_multiplier > 1:
+                LOGGER.info(
+                    "Successful extraction using configured token budget multiplier %s (triples %s)",
                     token_multiplier,
                     attempt_budget,
                 )

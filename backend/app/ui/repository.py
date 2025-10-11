@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
@@ -10,6 +12,9 @@ from neo4j import Driver, Record
 from typing_extensions import Protocol
 
 from backend.app.graph.section_distribution import decode_distribution_from_mapping
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -269,12 +274,14 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
         relation: MutableMapping[str, object] = {}
         for key, value in items:
             relation[str(key)] = value
-        attributes = relation.get("attributes")
-        if isinstance(attributes, Mapping):
-            relation["attributes"] = {str(k): str(v) for k, v in attributes.items()}
+        relation["attributes"] = Neo4jGraphViewRepository._attributes_from_payload(
+            relation.get("attributes")
+        )
         evidence = relation.get("evidence")
         if isinstance(evidence, Mapping):
             relation["evidence"] = Neo4jGraphViewRepository._normalise_evidence(evidence)
+        elif isinstance(evidence, str):
+            relation["evidence"] = Neo4jGraphViewRepository._evidence_from_json(evidence)
         return relation
 
     @staticmethod
@@ -318,15 +325,55 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
     @staticmethod
     def _normalise_evidence(evidence: Mapping[str, object]) -> Dict[str, object]:
         payload: Dict[str, object] = {}
-        for key, value in evidence.items():
-            if key == "text_span" and isinstance(value, Mapping):
-                payload[key] = {
-                    "start": int(value.get("start", 0) or 0),
-                    "end": int(value.get("end", 0) or 0),
-                }
-            else:
-                payload[key] = value
+        doc_id = evidence.get("doc_id")
+        if doc_id is not None:
+            payload["doc_id"] = doc_id
+        element_id = evidence.get("element_id")
+        if element_id is not None:
+            payload["element_id"] = element_id
+
+        raw_span = evidence.get("text_span")
+        if isinstance(raw_span, Mapping):
+            start = int(raw_span.get("start", 0) or 0)
+            end = int(raw_span.get("end", 0) or 0)
+        else:
+            start = int(evidence.get("text_span_start", 0) or 0)
+            end = int(evidence.get("text_span_end", 0) or 0)
+        payload["text_span"] = {"start": start, "end": end}
+
+        if "full_sentence" in evidence and evidence["full_sentence"] is not None:
+            payload["full_sentence"] = evidence["full_sentence"]
         return payload
+
+    @staticmethod
+    def _evidence_from_json(payload: str) -> Dict[str, object]:
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            LOGGER.warning("Failed to decode evidence payload from JSON in UI repository")
+            return {}
+        if not isinstance(data, Mapping):
+            LOGGER.warning("Decoded evidence payload is not a mapping in UI repository")
+            return {}
+        return Neo4jGraphViewRepository._normalise_evidence(data)
+
+    @staticmethod
+    def _attributes_from_payload(value: object) -> Dict[str, str]:
+        if isinstance(value, Mapping):
+            return {str(k): str(v) for k, v in value.items() if k}
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                LOGGER.warning("Failed to decode attributes payload from JSON in UI repository")
+                return {}
+            if isinstance(decoded, Mapping):
+                return {str(k): str(v) for k, v in decoded.items() if k}
+            LOGGER.warning("Decoded attributes payload is not a mapping in UI repository")
+            return {}
+        if value is not None:
+            LOGGER.warning("Unexpected attributes payload type in UI repository: %s", type(value))
+        return {}
 
 
 def _as_float(value: object) -> float:

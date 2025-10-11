@@ -1,6 +1,7 @@
 """Neo4j graph writer implementation for Phase 5."""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence
@@ -288,16 +289,32 @@ class GraphWriter:
     def _merge_payload(self, base: Dict[str, Any], addition: Dict[str, Any]) -> None:
         """Merge two staged payloads referring to the same node."""
 
-        base["aliases"] = self._merge_unique_list(base.get("aliases", []), addition.get("aliases", []))
-        base["source_document_ids"] = self._merge_unique_list(
-            base.get("source_document_ids", []), addition.get("source_document_ids", [])
-        )
-        base["section_distribution"] = self._merge_section_maps(
-            base.get("section_distribution", {}), addition.get("section_distribution", {})
-        )
+        existing_aliases = list(base.get("aliases", []))
+        additional_aliases = list(addition.get("aliases", []))
+        existing_docs = list(base.get("source_document_ids", []))
+        additional_docs = list(addition.get("source_document_ids", []))
+        existing_doc_set = {doc for doc in existing_docs if doc}
+        new_docs = [doc for doc in additional_docs if doc and doc not in existing_doc_set]
+        base["aliases"] = self._merge_unique_list(existing_aliases, additional_aliases)
+        base["source_document_ids"] = self._merge_unique_list(existing_docs, additional_docs)
+        existing_sections = dict(base.get("section_distribution", {}))
+        addition_sections = dict(addition.get("section_distribution", {}))
+        if new_docs:
+            base["section_distribution"] = self._merge_section_maps(
+                existing_sections, addition_sections
+            )
+        else:
+            merged_sections = dict(existing_sections)
+            for section, count in addition_sections.items():
+                merged_sections[section] = max(merged_sections.get(section, 0), count)
+            base["section_distribution"] = merged_sections
         base_times = max(int(base.get("times_seen", 0)), 0)
         addition_times = max(int(addition.get("times_seen", 0)), 0)
-        base["times_seen"] = base_times + addition_times
+        if new_docs:
+            increment = max(addition_times, len(new_docs))
+            base["times_seen"] = base_times + increment
+        else:
+            base["times_seen"] = max(base_times, addition_times)
 
     def _load_existing_nodes(self, node_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
         """Fetch existing node state from Neo4j for the supplied identifiers."""
@@ -314,7 +331,7 @@ class GraphWriter:
             RETURN node.node_id AS node_id,
                    coalesce(node.aliases, []) AS aliases,
                    coalesce(node.source_document_ids, []) AS docs,
-                   coalesce(node.section_distribution, {}) AS legacy_sections,
+                   coalesce(properties(node)['section_distribution'], {}) AS legacy_sections,
                    coalesce(node.section_distribution_keys, []) AS section_keys,
                    coalesce(node.section_distribution_values, []) AS section_values,
                    coalesce(node.times_seen, 0) AS times_seen
@@ -459,17 +476,8 @@ class GraphWriter:
         created_at: datetime,
         times_seen: int,
     ) -> Dict[str, Any]:
-        attribute_map = {key: str(value) for key, value in (attributes or {}).items()}
-        evidence_payload = {
-            "doc_id": evidence.doc_id,
-            "element_id": evidence.element_id,
-            "text_span": {
-                "start": evidence.text_span.start,
-                "end": evidence.text_span.end,
-            },
-        }
-        if evidence.full_sentence is not None:
-            evidence_payload["full_sentence"] = evidence.full_sentence
+        attribute_payload = self._serialize_attributes(attributes)
+        evidence_payload = self._serialize_evidence(evidence)
         return {
             "src_id": src_id,
             "dst_id": dst_id,
@@ -477,13 +485,47 @@ class GraphWriter:
             "relation_verbatim": relation_verbatim,
             "evidence": evidence_payload,
             "confidence": confidence,
-            "attributes": attribute_map,
+            "attributes": attribute_payload,
             "attributes_provided": attributes is not None,
             "created_at": created_at,
             "times_seen": times_seen,
             "pipeline_version": self._pipeline_version,
             "directional": self._graph_config.is_directional(relation_norm),
         }
+
+    @staticmethod
+    def _serialize_attributes(
+        attributes: Optional[Mapping[str, object]]
+    ) -> Optional[str]:
+        """Convert edge attributes into a Neo4j-safe JSON string."""
+
+        if attributes is None:
+            return None
+        normalized = {str(key): str(value) for key, value in attributes.items() if key}
+        if not normalized:
+            return json.dumps({}, sort_keys=True)
+        return json.dumps(normalized, sort_keys=True)
+
+    @staticmethod
+    def _serialize_evidence(evidence: Evidence) -> str:
+        """Convert an evidence contract into a JSON payload for Neo4j.
+
+        Args:
+            evidence: Evidence metadata referencing the supporting text.
+
+        Returns:
+            str: JSON string containing only Neo4j-compatible primitive values.
+        """
+
+        payload: Dict[str, Any] = {
+            "doc_id": evidence.doc_id,
+            "element_id": evidence.element_id,
+            "text_span_start": evidence.text_span.start,
+            "text_span_end": evidence.text_span.end,
+        }
+        if evidence.full_sentence is not None:
+            payload["full_sentence"] = evidence.full_sentence
+        return json.dumps(payload, sort_keys=True)
 
     def _ensure_entity_label_exists(self) -> bool:
         if self._entity_label_exists:
