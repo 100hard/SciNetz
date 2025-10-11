@@ -318,14 +318,24 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
     @staticmethod
     def _normalise_evidence(evidence: Mapping[str, object]) -> Dict[str, object]:
         payload: Dict[str, object] = {}
-        for key, value in evidence.items():
-            if key == "text_span" and isinstance(value, Mapping):
-                payload[key] = {
-                    "start": int(value.get("start", 0) or 0),
-                    "end": int(value.get("end", 0) or 0),
-                }
-            else:
-                payload[key] = value
+        doc_id = evidence.get("doc_id")
+        if doc_id is not None:
+            payload["doc_id"] = doc_id
+        element_id = evidence.get("element_id")
+        if element_id is not None:
+            payload["element_id"] = element_id
+
+        raw_span = evidence.get("text_span")
+        if isinstance(raw_span, Mapping):
+            start = int(raw_span.get("start", 0) or 0)
+            end = int(raw_span.get("end", 0) or 0)
+        else:
+            start = int(evidence.get("text_span_start", 0) or 0)
+            end = int(evidence.get("text_span_end", 0) or 0)
+        payload["text_span"] = {"start": start, "end": end}
+
+        if "full_sentence" in evidence and evidence["full_sentence"] is not None:
+            payload["full_sentence"] = evidence["full_sentence"]
         return payload
 
 

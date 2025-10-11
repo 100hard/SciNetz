@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, MutableMapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
 
 import pytest
 
@@ -81,13 +81,14 @@ class _InMemoryTransaction:
         for payload in edges:
             key = (payload["src_id"], payload["dst_id"], payload["relation_norm"])
             edge = self._store.edges.get(key)
+            evidence = self._normalise_evidence(payload["evidence"])
             if edge is None:
                 edge = _InMemoryEdge(
                     src_id=payload["src_id"],
                     dst_id=payload["dst_id"],
                     relation_norm=payload["relation_norm"],
                     relation_verbatim=payload["relation_verbatim"],
-                    evidence=dict(payload["evidence"]),
+                    evidence=evidence,
                     confidence=payload["confidence"],
                     pipeline_version=payload["pipeline_version"],
                     times_seen=payload["times_seen"],
@@ -100,7 +101,7 @@ class _InMemoryTransaction:
                 edge.pipeline_version = payload["pipeline_version"]
                 if payload["attributes_provided"]:
                     edge.attributes = dict(payload["attributes"])
-                edge.evidence = dict(payload["evidence"])
+                edge.evidence = evidence
                 edge.times_seen += payload["times_seen"]
                 edge.confidence = max(edge.confidence, payload["confidence"])
             self._store.edges[key] = edge
@@ -109,6 +110,37 @@ class _InMemoryTransaction:
             if payload["directional"] and reverse_key in self._store.edges:
                 self._store.edges[key].conflicting = True
                 self._store.edges[reverse_key].conflicting = True
+
+    @staticmethod
+    def _normalise_evidence(payload: Mapping[str, Any]) -> Dict[str, Any]:
+        """Convert serialized evidence payloads into nested dictionaries.
+
+        Args:
+            payload: Evidence payload emitted by the graph writer.
+
+        Returns:
+            Dict[str, Any]: Evidence dictionary containing a nested text span map.
+        """
+
+        text_span: Dict[str, int]
+        raw_span = payload.get("text_span")
+        if isinstance(raw_span, Mapping):
+            start = int(raw_span.get("start", 0) or 0)
+            end = int(raw_span.get("end", 0) or 0)
+        else:
+            start = int(payload.get("text_span_start", 0) or 0)
+            end = int(payload.get("text_span_end", 0) or 0)
+        text_span = {"start": start, "end": end}
+
+        result: Dict[str, Any] = {
+            "doc_id": payload.get("doc_id"),
+            "element_id": payload.get("element_id"),
+            "text_span": text_span,
+        }
+        full_sentence = payload.get("full_sentence")
+        if full_sentence is not None:
+            result["full_sentence"] = full_sentence
+        return result
 
 
 class _InMemorySession:
@@ -260,6 +292,54 @@ def test_upsert_edge_requires_evidence(writer: GraphWriter, driver: _InMemoryDri
 
     key = ("node-a", "node-b", "compared-to")
     assert key in driver.edges
+
+
+def test_edge_evidence_serialization(writer: GraphWriter, driver: _InMemoryDriver) -> None:
+    node_src = Node(
+        node_id="node-src",
+        name="Source",
+        type="Concept",
+        aliases=[],
+        section_distribution={"Intro": 1},
+        times_seen=1,
+        source_document_ids=["doc-10"],
+    )
+    node_dst = Node(
+        node_id="node-dst",
+        name="Destination",
+        type="Concept",
+        aliases=[],
+        section_distribution={"Intro": 1},
+        times_seen=1,
+        source_document_ids=["doc-10"],
+    )
+    writer.upsert_entity(node_src)
+    writer.upsert_entity(node_dst)
+    writer.flush()
+
+    evidence = Evidence(
+        element_id="el-1",
+        text_span=TextSpan(start=5, end=25),
+        doc_id="doc-10",
+        full_sentence="Source relates to destination.",
+    )
+    writer.upsert_edge(
+        src_id=node_src.node_id,
+        dst_id=node_dst.node_id,
+        relation_norm="relates-to",
+        relation_verbatim="relates to",
+        evidence=evidence,
+        confidence=0.6,
+    )
+    writer.flush()
+
+    key = (node_src.node_id, node_dst.node_id, "relates-to")
+    stored = driver.edges[key]
+    assert stored.evidence["doc_id"] == evidence.doc_id
+    assert stored.evidence["element_id"] == evidence.element_id
+    assert stored.evidence["text_span"]["start"] == evidence.text_span.start
+    assert stored.evidence["text_span"]["end"] == evidence.text_span.end
+    assert stored.evidence["full_sentence"] == evidence.full_sentence
 
 
 def test_edge_upsert_counts_and_conflicts(writer: GraphWriter, driver: _InMemoryDriver) -> None:
