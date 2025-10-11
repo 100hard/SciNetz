@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -10,6 +11,7 @@ import pytest
 
 from backend.app.config import load_config
 from backend.app.contracts import ParsedElement
+from backend.app.extraction.cache import LLMResponseCache, TokenBudgetCache
 from backend.app.extraction.triplet_extraction import (
     ExtractionResult,
     LLMExtractor,
@@ -131,6 +133,69 @@ def test_triplet_with_missing_span_is_rejected(config) -> None:
     assert triples == []
 
 
+def test_missing_supportive_sentence_falls_back_to_element_content(config) -> None:
+    """Triples without supportive sentences should reuse the element sentence."""
+
+    content = "Model A is compared to Model B in the study. Additional notes on results."
+    element = ParsedElement(
+        doc_id="doc-missing-support",
+        element_id="doc-missing-support:0",
+        section="Results",
+        content=content,
+        content_hash="c" * 64,
+        start_char=0,
+        end_char=len(content),
+    )
+    extractor = _StubExtractor(
+        triples=[
+            RawLLMTriple(
+                subject_text="Model A",
+                relation_verbatim="compared-to",
+                object_text="Model B",
+                supportive_sentence=None,
+                confidence=0.81,
+            )
+        ]
+    )
+    pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
+
+    triples = pipeline.extract_from_element(element, candidate_entities=None)
+
+    assert len(triples) == 1
+    assert triples[0].evidence.full_sentence.strip() == "Model A is compared to Model B in the study."
+
+
+def test_missing_supportive_sentence_is_dropped_when_no_sentence_found(config) -> None:
+    """Triples remain skipped when entities never share a sentence."""
+
+    content = "Model A improves accuracy substantially. Separately, Model B enhances recall."
+    element = ParsedElement(
+        doc_id="doc-missing-support",
+        element_id="doc-missing-support:1",
+        section="Discussion",
+        content=content,
+        content_hash="d" * 64,
+        start_char=0,
+        end_char=len(content),
+    )
+    extractor = _StubExtractor(
+        triples=[
+            RawLLMTriple(
+                subject_text="Model A",
+                relation_verbatim="compared-to",
+                object_text="Model B",
+                supportive_sentence=None,
+                confidence=0.8,
+            )
+        ]
+    )
+    pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
+
+    triples = pipeline.extract_from_element(element, candidate_entities=None)
+
+    assert triples == []
+
+
 def test_passive_voice_flips_subject_and_object(config) -> None:
     """Passive voice relations should swap subject and object."""
 
@@ -239,6 +304,9 @@ def test_openai_extractor_parses_valid_response(config) -> None:
         settings=settings,
         api_key="test-key",
         client=client,
+        token_budget_per_triple=config.extraction.tokens_per_triple,
+        allowed_relations=config.relations.canonical_relation_names(),
+        max_prompt_entities=config.extraction.max_prompt_entities,
     )
     pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
 
@@ -275,9 +343,176 @@ def test_openai_extractor_raises_on_error_response(config) -> None:
         settings=settings,
         api_key="test-key",
         client=client,
+        token_budget_per_triple=config.extraction.tokens_per_triple,
+        allowed_relations=config.relations.canonical_relation_names(),
+        max_prompt_entities=config.extraction.max_prompt_entities,
     )
     pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
 
     with pytest.raises(RuntimeError):
         pipeline.extract_from_element(element, candidate_entities=None)
 
+
+def test_openai_extractor_limits_candidate_entities(config) -> None:
+    """LLM prompt should include at most the configured number of candidate entities."""
+
+    fixture = _load_golden("sample_chunk")
+    element = _element_from_fixture(fixture["element"])
+    settings = config.extraction.openai
+    candidate_entities = [f"Entity {idx}" for idx in range(20)]
+    observed_entities: list[str] = []
+
+    def handler(path: str, headers: dict, payload: dict) -> _FakeResponse:
+        assert path == "/chat/completions"
+        user_lines = payload["messages"][1]["content"].splitlines()
+        try:
+            start = user_lines.index("Candidate entities that may appear in the chunk:") + 1
+        except ValueError:  # pragma: no cover - defensive guard
+            pytest.fail("Candidate entities section missing from user prompt")
+        for line in user_lines[start:]:
+            if not line.startswith("- "):
+                break
+            observed_entities.append(line)
+        response_body = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(fixture["llm_response"]),
+                    }
+                }
+            ]
+        }
+        return _FakeResponse(status_code=200, payload=response_body)
+
+    client = _FakeHTTPClient(handler)
+    extractor = OpenAIExtractor(
+        settings=settings,
+        api_key="test-key",
+        client=client,
+        token_budget_per_triple=config.extraction.tokens_per_triple,
+        allowed_relations=config.relations.canonical_relation_names(),
+        max_prompt_entities=config.extraction.max_prompt_entities,
+    )
+
+    triples = extractor.extract_triples(element, candidate_entities=candidate_entities, max_triples=5)
+
+    assert len(observed_entities) == config.extraction.max_prompt_entities
+    assert observed_entities[0] == "- Entity 0"
+    assert observed_entities[-1] == f"- Entity {config.extraction.max_prompt_entities - 1}"
+    assert len(triples) == len(fixture["llm_response"]["triples"])
+
+
+def test_openai_extractor_uses_initial_token_multiplier(config) -> None:
+    """OpenAI extractor should start with the configured token multiplier."""
+
+    fixture = _load_golden("sample_chunk")
+    element = _element_from_fixture(fixture["element"])
+    settings = config.extraction.openai
+    observed_tokens: list[int] = []
+
+    def handler(path: str, headers: dict, payload: dict) -> _FakeResponse:
+        observed_tokens.append(payload["max_tokens"])
+        response_body = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(fixture["llm_response"]),
+                    }
+                }
+            ]
+        }
+        return _FakeResponse(status_code=200, payload=response_body)
+
+    client = _FakeHTTPClient(handler)
+    extractor = OpenAIExtractor(
+        settings=settings,
+        api_key="test-key",
+        client=client,
+        token_budget_per_triple=config.extraction.tokens_per_triple,
+        allowed_relations=config.relations.canonical_relation_names(),
+        max_prompt_entities=config.extraction.max_prompt_entities,
+    )
+
+    extractor.extract_triples(element, candidate_entities=None, max_triples=3)
+
+    expected_tokens = min(
+        settings.max_output_tokens,
+        config.extraction.tokens_per_triple
+        * 3
+        * math.ceil(settings.initial_output_multiplier),
+    )
+    assert observed_tokens == [expected_tokens]
+
+
+def test_openai_extractor_uses_cached_response(tmp_path, config) -> None:
+    """Repeated extraction should reuse cached LLM responses instead of reissuing requests."""
+
+    fixture = _load_golden("sample_chunk")
+    element = _element_from_fixture(fixture["element"])
+    settings = config.extraction.openai
+
+    cache_dir = tmp_path / "cache"
+    response_cache_path = cache_dir / "responses.json"
+    token_cache_path = cache_dir / "token.json"
+
+    response_cache = LLMResponseCache(response_cache_path)
+    token_cache = TokenBudgetCache(token_cache_path)
+
+    def _payload() -> dict:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(fixture["llm_response"]),
+                    }
+                }
+            ]
+        }
+
+    call_count = 0
+
+    def first_handler(path: str, headers: dict, payload: dict) -> _FakeResponse:
+        nonlocal call_count
+        call_count += 1
+        return _FakeResponse(status_code=200, payload=_payload())
+
+    client_one = _FakeHTTPClient(first_handler)
+    extractor_one = OpenAIExtractor(
+        settings=settings,
+        api_key="test-key",
+        client=client_one,
+        token_budget_per_triple=config.extraction.tokens_per_triple,
+        allowed_relations=config.relations.canonical_relation_names(),
+        max_prompt_entities=config.extraction.max_prompt_entities,
+        response_cache=response_cache,
+        token_cache=token_cache,
+    )
+
+    triples_first = extractor_one.extract_triples(element, candidate_entities=None, max_triples=5)
+    assert call_count == 1
+    assert len(triples_first) == len(fixture["llm_response"]["triples"])
+
+    # Reinstantiate caches to emulate a fresh process reading persisted files.
+    response_cache_reloaded = LLMResponseCache(response_cache_path)
+    token_cache_reloaded = TokenBudgetCache(token_cache_path)
+
+    def second_handler(path: str, headers: dict, payload: dict) -> _FakeResponse:
+        pytest.fail("LLM call should have been served from cache")
+
+    client_two = _FakeHTTPClient(second_handler)
+    extractor_two = OpenAIExtractor(
+        settings=settings,
+        api_key="test-key",
+        client=client_two,
+        token_budget_per_triple=config.extraction.tokens_per_triple,
+        allowed_relations=config.relations.canonical_relation_names(),
+        max_prompt_entities=config.extraction.max_prompt_entities,
+        response_cache=response_cache_reloaded,
+        token_cache=token_cache_reloaded,
+    )
+
+    triples_second = extractor_two.extract_triples(element, candidate_entities=None, max_triples=5)
+    assert len(triples_second) == len(triples_first)

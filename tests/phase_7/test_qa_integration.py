@@ -103,35 +103,40 @@ def _seed_graph(driver) -> None:
                 name: 'Model Alpha',
                 aliases: ['Alpha Model'],
                 times_seen: 5,
-                section_distribution: {Results: 3, Methods: 2}
+                section_distribution_keys: ['Methods', 'Results'],
+                section_distribution_values: [2, 3]
             })
             CREATE (beta:Entity {
                 node_id: 'beta',
                 name: 'Model Beta',
                 aliases: ['Model B'],
                 times_seen: 4,
-                section_distribution: {Results: 2}
+                section_distribution_keys: ['Results'],
+                section_distribution_values: [2]
             })
             CREATE (delta:Entity {
                 node_id: 'delta',
                 name: 'Dataset Delta',
                 aliases: ['Delta Data'],
                 times_seen: 3,
-                section_distribution: {Methods: 2}
+                section_distribution_keys: ['Methods'],
+                section_distribution_values: [2]
             })
             CREATE (gamma:Entity {
                 node_id: 'gamma',
                 name: 'Benchmark Gamma',
                 aliases: ['Gamma Benchmark'],
                 times_seen: 2,
-                section_distribution: {Results: 1}
+                section_distribution_keys: ['Results'],
+                section_distribution_values: [1]
             })
             CREATE (zeta:Entity {
                 node_id: 'zeta',
                 name: 'Model Zeta',
                 aliases: [],
                 times_seen: 1,
-                section_distribution: {Discussion: 1}
+                section_distribution_keys: ['Discussion'],
+                section_distribution_values: [1]
             })
             """
         )

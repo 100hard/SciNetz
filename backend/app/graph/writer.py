@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence
 
 try:  # pragma: no cover - optional dependency for type checking
     from neo4j import Driver
@@ -12,6 +12,10 @@ except Exception:  # pragma: no cover - fallback when driver is unavailable
 
 from ..config import AppConfig, load_config
 from ..contracts import Evidence, Node
+from .section_distribution import (
+    decode_section_distribution,
+    encode_section_distribution,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -22,73 +26,16 @@ class GraphWriter:
     _ENTITY_QUERY = """
     UNWIND $entities AS entity
     MERGE (node:Entity {node_id: entity.node_id})
-    WITH
-        entity,
-        node,
-        coalesce(node.aliases, []) AS existing_aliases,
-        coalesce(node.source_document_ids, []) AS existing_docs,
-        coalesce(node.section_distribution, {}) AS existing_sections,
-        coalesce(node.times_seen, 0) AS existing_times
-    WITH
-        entity,
-        node,
-        existing_aliases,
-        existing_docs,
-        existing_sections,
-        existing_times,
-        [doc IN entity.source_document_ids WHERE NOT doc IN existing_docs] AS new_docs,
-        keys(existing_sections) + keys(entity.section_distribution) AS section_keys
-    WITH
-        entity,
-        node,
-        existing_aliases,
-        existing_docs,
-        existing_sections,
-        existing_times,
-        new_docs,
-        reduce(
-            acc = [],
-            key IN section_keys |
-                CASE
-                    WHEN key IN acc THEN acc
-                    ELSE acc + key
-                END
-        ) AS distinct_section_keys
     SET
         node.name = entity.name,
         node.type = entity.type,
         node.pipeline_version = entity.pipeline_version,
-        node.aliases = reduce(
-            acc = [],
-            alias IN existing_aliases + entity.aliases |
-                CASE
-                    WHEN alias IN acc OR alias = entity.name THEN acc
-                    ELSE acc + alias
-                END
-        ),
-        node.source_document_ids = reduce(
-            acc = [],
-            doc IN existing_docs + entity.source_document_ids |
-                CASE
-                    WHEN doc IN acc THEN acc
-                    ELSE acc + doc
-                END
-        ),
-        node.section_distribution = CASE
-            WHEN size(new_docs) = 0 THEN existing_sections
-            ELSE reduce(
-                acc = {},
-                key IN distinct_section_keys |
-                    acc + {
-                        key: coalesce(existing_sections[key], 0) + coalesce(entity.section_distribution[key], 0)
-                    }
-            )
-        END,
-        node.times_seen = existing_times + CASE
-            WHEN size(new_docs) = 0 THEN 0
-            WHEN entity.times_seen > 0 THEN entity.times_seen
-            ELSE size(new_docs)
-        END
+        node.aliases = entity.aliases,
+        node.source_document_ids = entity.source_document_ids,
+        node.section_distribution_keys = entity.section_distribution_keys,
+        node.section_distribution_values = entity.section_distribution_values,
+        node.section_distribution = null,
+        node.times_seen = entity.times_seen
     RETURN node.node_id AS node_id
     """
 
@@ -148,8 +95,8 @@ class GraphWriter:
         driver: Driver,
         config: Optional[AppConfig] = None,
         *,
-        entity_batch_size: int = 200,
-        edge_batch_size: int = 500,
+        entity_batch_size: Optional[int] = None,
+        edge_batch_size: Optional[int] = None,
         max_retries: int = 1,
     ) -> None:
         """Create a graph writer using the provided Neo4j driver.
@@ -165,10 +112,21 @@ class GraphWriter:
             ValueError: If the batch sizes are not positive.
         """
 
-        if entity_batch_size <= 0:
+        resolved_config = config or load_config()
+        resolved_entity_batch = (
+            entity_batch_size
+            if entity_batch_size is not None
+            else resolved_config.graph.entity_batch_size
+        )
+        resolved_edge_batch = (
+            edge_batch_size
+            if edge_batch_size is not None
+            else resolved_config.graph.edge_batch_size
+        )
+        if resolved_entity_batch <= 0:
             msg = "entity_batch_size must be positive"
             raise ValueError(msg)
-        if edge_batch_size <= 0:
+        if resolved_edge_batch <= 0:
             msg = "edge_batch_size must be positive"
             raise ValueError(msg)
         if max_retries < 0:
@@ -176,14 +134,15 @@ class GraphWriter:
             raise ValueError(msg)
 
         self._driver = driver
-        self._config = config or load_config()
-        self._entity_batch_size = entity_batch_size
-        self._edge_batch_size = edge_batch_size
+        self._config = resolved_config
+        self._entity_batch_size = resolved_entity_batch
+        self._edge_batch_size = resolved_edge_batch
         self._max_retries = max_retries
         self._pipeline_version = self._config.pipeline.version
         self._graph_config = self._config.graph
         self._entity_batch: List[Dict[str, Any]] = []
         self._edge_batch: List[Dict[str, Any]] = []
+        self._entity_label_exists: Optional[bool] = None
 
     def upsert_entity(self, node: Node) -> str:
         """Queue a canonical node for persistence.
@@ -267,7 +226,10 @@ class GraphWriter:
             return
         batch = self._entity_batch
         self._entity_batch = []
-        self._run_with_retry(self._write_entity_batch, batch)
+        prepared = self._prepare_entity_batch(batch)
+        if not prepared:
+            return
+        self._run_with_retry(self._write_entity_batch, prepared)
 
     def _flush_edges(self) -> None:
         if not self._edge_batch:
@@ -302,6 +264,157 @@ class GraphWriter:
     def _write_edge_batch(self, tx: Any, edges: Iterable[MutableMapping[str, Any]]) -> None:
         tx.run(self._EDGE_QUERY, edges=list(edges))
 
+    def _prepare_entity_batch(self, batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Combine staged entity payloads with existing graph state."""
+
+        aggregated: Dict[str, Dict[str, Any]] = {}
+        for payload in batch:
+            node_id = payload["node_id"]
+            existing = aggregated.get(node_id)
+            if existing is None:
+                aggregated[node_id] = dict(payload)
+            else:
+                self._merge_payload(existing, payload)
+
+        node_ids = list(aggregated.keys())
+        existing_records = self._load_existing_nodes(node_ids)
+
+        prepared: List[Dict[str, Any]] = []
+        for node_id, payload in aggregated.items():
+            merged = self._merge_with_existing(payload, existing_records.get(node_id))
+            prepared.append(merged)
+        return prepared
+
+    def _merge_payload(self, base: Dict[str, Any], addition: Dict[str, Any]) -> None:
+        """Merge two staged payloads referring to the same node."""
+
+        base["aliases"] = self._merge_unique_list(base.get("aliases", []), addition.get("aliases", []))
+        base["source_document_ids"] = self._merge_unique_list(
+            base.get("source_document_ids", []), addition.get("source_document_ids", [])
+        )
+        base["section_distribution"] = self._merge_section_maps(
+            base.get("section_distribution", {}), addition.get("section_distribution", {})
+        )
+        base_times = max(int(base.get("times_seen", 0)), 0)
+        addition_times = max(int(addition.get("times_seen", 0)), 0)
+        base["times_seen"] = base_times + addition_times
+
+    def _load_existing_nodes(self, node_ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+        """Fetch existing node state from Neo4j for the supplied identifiers."""
+
+        if not node_ids:
+            return {}
+        if not self._ensure_entity_label_exists():
+            return {}
+
+        def _fetch(tx: Any, ids: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+            query = """
+            MATCH (node:Entity)
+            WHERE node.node_id IN $ids
+            RETURN node.node_id AS node_id,
+                   coalesce(node.aliases, []) AS aliases,
+                   coalesce(node.source_document_ids, []) AS docs,
+                   coalesce(node.section_distribution, {}) AS legacy_sections,
+                   coalesce(node.section_distribution_keys, []) AS section_keys,
+                   coalesce(node.section_distribution_values, []) AS section_values,
+                   coalesce(node.times_seen, 0) AS times_seen
+            """
+            records = tx.run(query, ids=list(ids))
+            result: Dict[str, Dict[str, Any]] = {}
+            for record in records:
+                keys = record["section_keys"]
+                values = record["section_values"]
+                legacy = record["legacy_sections"]
+                result[record["node_id"]] = {
+                    "aliases": list(record["aliases"] or []),
+                    "docs": list(record["docs"] or []),
+                    "sections": decode_section_distribution(legacy, keys, values),
+                    "times_seen": int(record["times_seen"] or 0),
+                }
+            return result
+
+        with self._driver.session() as session:
+            execute_read = getattr(session, "execute_read", None)
+            if callable(execute_read):
+                return execute_read(_fetch, node_ids)
+            store = getattr(session, "_store", None)
+            if store is None:
+                return {}
+            result: Dict[str, Dict[str, Any]] = {}
+            for node_id in node_ids:
+                existing = getattr(store, "nodes", {}).get(node_id)  # type: ignore[attr-defined]
+                if existing is None:
+                    continue
+                result[node_id] = {
+                    "aliases": list(existing.aliases),
+                    "docs": list(existing.source_document_ids),
+                    "sections": dict(existing.section_distribution),
+                    "times_seen": int(existing.times_seen),
+                }
+            return result
+
+    def _merge_with_existing(
+        self,
+        payload: Dict[str, Any],
+        existing: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Merge a staged payload with existing graph state."""
+
+        aliases = self._merge_unique_list(existing.get("aliases", []) if existing else [], payload["aliases"])
+        aliases = [alias for alias in aliases if alias != payload["name"]]
+        docs = self._merge_unique_list(existing.get("docs", []) if existing else [], payload["source_document_ids"])
+        existing_sections = existing.get("sections", {}) if existing else {}
+        merged_sections = self._merge_section_maps(existing_sections, payload["section_distribution"])
+        merged_sections = {
+            section: count
+            for section, count in merged_sections.items()
+            if count > 0
+        }
+
+        existing_times = existing.get("times_seen", 0) if existing else 0
+        existing_doc_list = existing.get("docs", []) if existing else []
+        existing_doc_set = set(existing_doc_list)
+        new_docs = [doc for doc in payload["source_document_ids"] if doc not in existing_doc_set]
+        payload_times = max(int(payload.get("times_seen", 0)), 0)
+        increment = payload_times if payload_times > 0 else len(new_docs)
+        times_seen = existing_times + increment
+        keys, values = encode_section_distribution(merged_sections)
+
+        return {
+            "node_id": payload["node_id"],
+            "name": payload["name"],
+            "type": payload["type"],
+            "aliases": aliases,
+            "section_distribution": merged_sections,
+            "section_distribution_keys": list(keys),
+            "section_distribution_values": list(values),
+            "times_seen": times_seen,
+            "source_document_ids": docs,
+            "pipeline_version": payload["pipeline_version"],
+        }
+
+    @staticmethod
+    def _merge_unique_list(existing: Sequence[str], addition: Sequence[str]) -> List[str]:
+        seen = set()
+        result: List[str] = []
+        for item in list(existing) + list(addition):
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            result.append(item)
+        return result
+
+    @staticmethod
+    def _merge_section_maps(
+        existing: Mapping[str, int],
+        addition: Mapping[str, int],
+    ) -> Dict[str, int]:
+        merged: Dict[str, int] = dict(existing)
+        for section, count in addition.items():
+            value = merged.get(section, 0) + count
+            merged[section] = value
+        return merged
+
     def _node_to_parameters(self, node: Node) -> Dict[str, Any]:
         aliases = [alias for alias in node.aliases if alias and alias != node.name]
         alias_seen = set()
@@ -319,12 +432,15 @@ class GraphWriter:
         section_distribution = {
             section: count for section, count in node.section_distribution.items() if count > 0
         }
+        keys, values = encode_section_distribution(section_distribution)
         return {
             "node_id": node.node_id,
             "name": node.name,
             "type": node.type,
             "aliases": deduped_aliases,
             "section_distribution": section_distribution,
+            "section_distribution_keys": list(keys),
+            "section_distribution_values": list(values),
             "times_seen": max(node.times_seen, 0),
             "source_document_ids": deduped_docs,
             "pipeline_version": self._pipeline_version,
@@ -368,3 +484,31 @@ class GraphWriter:
             "pipeline_version": self._pipeline_version,
             "directional": self._graph_config.is_directional(relation_norm),
         }
+
+    def _ensure_entity_label_exists(self) -> bool:
+        if self._entity_label_exists:
+            return True
+        try:
+            with self._driver.session() as session:
+                execute_read = getattr(session, "execute_read", None)
+                if not callable(execute_read):
+                    self._entity_label_exists = True
+                    return True
+
+                def _check(tx: Any) -> bool:
+                    query = (
+                        "CALL db.labels() YIELD label "
+                        "WHERE label = $target "
+                        "RETURN 1 AS present "
+                        "LIMIT 1"
+                    )
+                    record = tx.run(query, target="Entity").single()
+                    return record is not None
+
+                exists = bool(execute_read(_check))
+        except Exception:
+            LOGGER.exception("Failed to determine whether Entity label exists")
+            self._entity_label_exists = False
+            return False
+        self._entity_label_exists = exists
+        return exists

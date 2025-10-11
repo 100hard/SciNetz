@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, MutableMapping, Optional, Tuple
 
 import pytest
 
@@ -71,21 +71,10 @@ class _InMemoryTransaction:
                 node.name = payload["name"]
                 node.type = payload["type"]
                 node.pipeline_version = payload["pipeline_version"]
-                node.aliases = _union(node.aliases, payload["aliases"], skip={node.name})
-                new_docs = [
-                    doc_id
-                    for doc_id in payload["source_document_ids"]
-                    if doc_id not in node.source_document_ids
-                ]
-                node.source_document_ids = _union(
-                    node.source_document_ids, payload["source_document_ids"]
-                )
-                if new_docs:
-                    node.section_distribution = _merge_sections(
-                        node.section_distribution, payload["section_distribution"]
-                    )
-                    increment = payload["times_seen"] or len(new_docs)
-                    node.times_seen += increment
+                node.aliases = list(payload["aliases"])
+                node.section_distribution = dict(payload["section_distribution"])
+                node.times_seen = payload["times_seen"]
+                node.source_document_ids = list(payload["source_document_ids"])
             self._store.nodes[payload["node_id"]] = node
 
     def _apply_edges(self, edges: Iterable[MutableMapping[str, Any]]) -> None:
@@ -148,24 +137,6 @@ class _InMemoryDriver:
 
     def session(self) -> _InMemorySession:
         return _InMemorySession(self)
-
-
-def _union(existing: Iterable[str], additional: Iterable[str], *, skip: Optional[set[str]] = None) -> List[str]:
-    seen = list(existing)
-    skip = skip or set()
-    for value in additional:
-        if value in skip:
-            continue
-        if value not in seen:
-            seen.append(value)
-    return seen
-
-
-def _merge_sections(current: Mapping[str, int], incoming: Mapping[str, int]) -> Dict[str, int]:
-    result = dict(current)
-    for section, count in incoming.items():
-        result[section] = result.get(section, 0) + count
-    return {section: value for section, value in result.items() if value > 0}
 
 
 @pytest.fixture(name="config")

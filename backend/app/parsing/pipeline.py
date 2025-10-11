@@ -8,6 +8,7 @@ import re
 from hashlib import sha256
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
+from urllib.error import URLError
 
 from docling.document_converter import ConversionStatus, DocumentConverter
 from pydantic import BaseModel, ConfigDict, Field
@@ -85,7 +86,7 @@ class ParsingPipeline:
             conversion = self._converter.convert(pdf_path)
         except Exception as exc:  # noqa: BLE001 - third-party may raise any error
             LOGGER.exception("Docling conversion failed for %s", pdf_path)
-            result_errors.append(f"docling conversion error: {exc}")
+            result_errors.append(self._format_docling_error(exc))
             return ParseResult(
                 doc_id=doc_id,
                 metadata=metadata,
@@ -126,6 +127,29 @@ class ParsingPipeline:
             errors=result_errors,
             output_path=output_path,
         )
+
+    @staticmethod
+    def _format_docling_error(exc: Exception) -> str:
+        """Create a normalized error message for Docling conversions.
+
+        Args:
+            exc: Exception raised during Docling conversion.
+
+        Returns:
+            str: Normalized error string for downstream test skips.
+        """
+
+        message = str(exc)
+        lowercase = message.lower()
+        network_indicators = (
+            isinstance(exc, URLError)
+            or "name or service not known" in lowercase
+            or "temporary failure in name resolution" in lowercase
+            or "getaddrinfo failed" in lowercase
+        )
+        if network_indicators:
+            return f"docling conversion error: huggingface assets unavailable ({message})"
+        return f"docling conversion error: {message}"
 
     def _filter_text_items(self, items: Iterable[dict]) -> List[dict]:
         """Filter Docling text items to the subset required for parsing.

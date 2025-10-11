@@ -10,6 +10,8 @@ import {
   User,
 } from "lucide-react";
 
+import { toast } from "sonner";
+
 import apiClient, { extractErrorMessage } from "../../lib/http";
 
 type PaperMetadata = {
@@ -32,6 +34,17 @@ type PaperSummary = {
   nodes_written: number;
   edges_written: number;
   co_mention_edges: number;
+};
+
+type ExtractionResponse = {
+  doc_id: string;
+  nodes_written: number;
+  edges_written: number;
+  co_mention_edges: number;
+  errors?: string[];
+  metadata?: PaperMetadata;
+  processed_chunks?: number;
+  skipped_chunks?: number;
 };
 
 const POLL_INTERVAL_MS = 12000;
@@ -97,6 +110,7 @@ export default function PapersPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingExtraction, setPendingExtraction] = useState<Record<string, boolean>>({});
   const [titleQuery, setTitleQuery] = useState("");
   const [authorQuery, setAuthorQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -207,6 +221,32 @@ export default function PapersPage() {
   const handleRefresh = useCallback(() => {
     void fetchPapers("refresh");
   }, [fetchPapers]);
+
+  const triggerExtraction = useCallback(
+    async (paper: PaperSummary) => {
+      const paperId = paper.paper_id;
+      setPendingExtraction((prev) => ({ ...prev, [paperId]: true }));
+      try {
+        const response = await apiClient.post<ExtractionResponse>(
+          `/api/ui/papers/${encodeURIComponent(paperId)}/extract`,
+        );
+        toast.success("Extraction complete", {
+          description: `${paper.filename} processed (${response.data.nodes_written ?? 0} nodes, ${response.data.edges_written ?? 0} edges).`,
+        });
+        await fetchPapers("refresh");
+      } catch (err) {
+        const message = extractErrorMessage(err, "Extraction request failed.");
+        toast.error("Extraction failed", { description: message });
+      } finally {
+        setPendingExtraction((prev) => {
+          const next = { ...prev };
+          delete next[paperId];
+          return next;
+        });
+      }
+    },
+    [fetchPapers],
+  );
 
   const handleResetFilters = () => {
     setTitleQuery("");
@@ -327,6 +367,9 @@ export default function PapersPage() {
                 <th scope="col" className="px-4 py-3 text-left font-medium">
                   Updated
                 </th>
+                <th scope="col" className="px-4 py-3 text-right font-medium">
+                  Actions
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-background">
@@ -348,6 +391,9 @@ export default function PapersPage() {
                       </td>
                       <td className="px-4 py-4">
                         <div className="h-4 w-24 rounded bg-muted" />
+                      </td>
+                      <td className="px-4 py-4">
+                        <div className="ml-auto h-8 w-24 rounded bg-muted" />
                       </td>
                     </tr>
                   ))
@@ -381,12 +427,41 @@ export default function PapersPage() {
                         </td>
                         <td className="px-4 py-4 text-sm text-muted-foreground">{formatDate(paper.uploaded_at)}</td>
                         <td className="px-4 py-4 text-sm text-muted-foreground">{formatDate(paper.updated_at)}</td>
+                        <td className="px-4 py-4">
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => void triggerExtraction(paper)}
+                              disabled={
+                                pendingExtraction[paper.paper_id] ||
+                                paper.status.toLowerCase() === "processing"
+                              }
+                              className={`inline-flex items-center gap-2 rounded-md border border-input px-3 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 ${
+                                pendingExtraction[paper.paper_id] || paper.status.toLowerCase() === "processing"
+                                  ? "cursor-not-allowed border-muted bg-muted text-muted-foreground opacity-60"
+                                  : "bg-background text-foreground hover:bg-muted"
+                              }`}
+                            >
+                              {pendingExtraction[paper.paper_id] ? (
+                                <>
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  Running…
+                                </>
+                              ) : (
+                                <>
+                                  <RefreshCw className="h-4 w-4" />
+                                  {paper.status.toLowerCase() === "complete" ? "Re-run extraction" : "Start extraction"}
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     );
                   })
                 : (
                     <tr className="fade-in-up">
-                      <td colSpan={5} className="px-6 py-12">
+                      <td colSpan={6} className="px-6 py-12">
                         <div className="flex flex-col items-center gap-3 text-center text-sm text-muted-foreground">
                           <FileText className="h-8 w-8 text-muted-foreground" />
                           <div>

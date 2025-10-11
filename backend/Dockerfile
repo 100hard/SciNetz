@@ -15,7 +15,8 @@ RUN python scripts/check_package_index.py
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
-    && pip install -r requirements/dev.txt
+    && pip install -r requirements/dev.txt \
+    && python -m spacy download en_core_web_sm
 
 COPY pyproject.toml ./
 COPY backend ./backend

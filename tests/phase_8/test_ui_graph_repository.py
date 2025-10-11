@@ -64,9 +64,13 @@ def test_repository_applies_filters() -> None:
             session.run(
                 """
                 CREATE (a:Entity {node_id: 'n1', name: 'Alpha', aliases: ['Alpha'],
-                                   section_distribution: {Results: 2}, times_seen: 3})
+                                   section_distribution_keys: ['Results'],
+                                   section_distribution_values: [2],
+                                   times_seen: 3})
                 CREATE (b:Entity {node_id: 'n2', name: 'Beta', aliases: ['Beta'],
-                                   section_distribution: {Results: 1}, times_seen: 2})
+                                   section_distribution_keys: ['Results'],
+                                   section_distribution_values: [1],
+                                   times_seen: 2})
                 CREATE (a)-[:RELATION {
                     relation_norm: 'uses',
                     relation_verbatim: 'uses',
@@ -155,3 +159,100 @@ def test_section_filter_accepts_sequence_attributes() -> None:
     ]
     filtered = Neo4jGraphViewRepository._apply_section_filter(edges, ["Results"])
     assert len(filtered) == 1
+
+
+def test_section_filter_falls_back_to_node_distribution() -> None:
+    source = GraphNodeRecord(
+        node_id="n1",
+        name="n1",
+        type=None,
+        aliases=[],
+        times_seen=1,
+        section_distribution={"Methods": 2},
+    )
+    target = GraphNodeRecord(
+        node_id="n2",
+        name="n2",
+        type=None,
+        aliases=[],
+        times_seen=1,
+        section_distribution={"Results": 1},
+    )
+    edges = [
+        GraphEdgeRecord(
+            source=source,
+            target=target,
+            relation={"attributes": {}},
+        )
+    ]
+    filtered = Neo4jGraphViewRepository._apply_section_filter(edges, ["Results"])
+    assert len(filtered) == 1
+
+
+def test_is_co_mention_detects_map_attributes() -> None:
+    node = _node_stub("n1")
+    edge = GraphEdgeRecord(
+        source=node,
+        target=node,
+        relation={"attributes": {"method": "co-mention"}},
+    )
+    assert Neo4jGraphViewRepository._is_co_mention(edge)
+
+
+def test_is_co_mention_detects_sequence_attributes() -> None:
+    node = _node_stub("n1")
+    edge = GraphEdgeRecord(
+        source=node,
+        target=node,
+        relation={
+            "attributes": [
+                {"key": "section", "value": "Intro"},
+                {"name": "method", "value": "co-mention"},
+            ]
+        },
+    )
+    assert Neo4jGraphViewRepository._is_co_mention(edge)
+
+
+def test_is_co_mention_returns_false_when_not_present() -> None:
+    node = _node_stub("n1")
+    edge = GraphEdgeRecord(
+        source=node,
+        target=node,
+        relation={"attributes": {"method": "llm"}},
+    )
+    assert not Neo4jGraphViewRepository._is_co_mention(edge)
+
+
+def test_apply_paper_filter_matches_doc_id_mapping() -> None:
+    node = _node_stub("n1")
+    matching = GraphEdgeRecord(
+        source=node,
+        target=node,
+        relation={"evidence": {"doc_id": "doc-1"}},
+    )
+    non_matching = GraphEdgeRecord(
+        source=node,
+        target=node,
+        relation={"evidence": {"doc_id": "doc-2"}},
+    )
+    edges = [matching, non_matching]
+    result = Neo4jGraphViewRepository._apply_paper_filter(edges, ["doc-1"])
+    assert result == [matching]
+
+
+def test_apply_paper_filter_matches_sequence_evidence() -> None:
+    node = _node_stub("n1")
+    edge = GraphEdgeRecord(
+        source=node,
+        target=node,
+        relation={
+            "evidence": [
+                {"doc_id": "doc-3", "element_id": "el-1"},
+                {"document_id": "doc-4"},
+            ]
+        },
+    )
+    edges = [edge]
+    result = Neo4jGraphViewRepository._apply_paper_filter(edges, ["doc-3"])
+    assert result == edges

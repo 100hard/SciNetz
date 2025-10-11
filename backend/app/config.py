@@ -51,6 +51,7 @@ class OpenAIConfig(_FrozenModel):
     temperature: float = Field(0.0, ge=0.0, le=2.0)
     max_output_tokens: int = Field(..., ge=1)
     prompt_version: str = Field(..., min_length=1)
+    initial_output_multiplier: float = Field(..., gt=0)
     backoff_initial_seconds: float = Field(..., gt=0)
     backoff_max_seconds: float = Field(..., gt=0)
     retry_statuses: List[int] = Field(default_factory=list)
@@ -62,6 +63,7 @@ class ExtractionConfig(_FrozenModel):
 
     max_triples_per_chunk_base: int = Field(..., ge=1)
     tokens_per_triple: int = Field(..., ge=1)
+    max_prompt_entities: int = Field(..., ge=1)
     chunk_size_tokens: int = Field(..., ge=1)
     chunk_overlap_tokens: int = Field(..., ge=0)
     use_entity_inventory: bool = False
@@ -74,9 +76,13 @@ class ExtractionConfig(_FrozenModel):
     openai_max_retries: int = Field(..., ge=0)
     openai_temperature: float = Field(..., ge=0.0, le=2.0)
     openai_max_output_tokens: int = Field(..., ge=1)
+    openai_initial_output_multiplier: float = Field(..., gt=0)
     openai_backoff_initial_seconds: float = Field(..., gt=0)
     openai_backoff_max_seconds: float = Field(..., gt=0)
     openai_retry_statuses: List[int] = Field(default_factory=list)
+    cache_dir: str = Field(..., min_length=1)
+    response_cache_filename: str = Field(..., min_length=1)
+    token_cache_filename: str = Field(..., min_length=1)
 
     @property
     def openai(self) -> OpenAIConfig:
@@ -94,28 +100,7 @@ class ExtractionConfig(_FrozenModel):
             temperature=self.openai_temperature,
             max_output_tokens=self.openai_max_output_tokens,
             prompt_version=self.openai_prompt_version,
-            backoff_initial_seconds=self.openai_backoff_initial_seconds,
-            backoff_max_seconds=self.openai_backoff_max_seconds,
-            retry_statuses=list(self.openai_retry_statuses),
-        )
-
-
-    @property
-    def openai(self) -> OpenAIConfig:
-        """Return the OpenAI adapter configuration.
-
-        Returns:
-            OpenAIConfig: Immutable settings for the OpenAI adapter.
-        """
-
-        return OpenAIConfig(
-            model=self.openai_model,
-            api_base=self.openai_base_url,
-            timeout_seconds=self.openai_timeout_seconds,
-            max_retries=self.openai_max_retries,
-            temperature=self.openai_temperature,
-            max_output_tokens=self.openai_max_output_tokens,
-            prompt_version=self.openai_prompt_version,
+            initial_output_multiplier=self.openai_initial_output_multiplier,
             backoff_initial_seconds=self.openai_backoff_initial_seconds,
             backoff_max_seconds=self.openai_backoff_max_seconds,
             retry_statuses=list(self.openai_retry_statuses),
@@ -170,6 +155,8 @@ class GraphConfig(_FrozenModel):
     uri: Optional[str] = Field(default=None)
     username: Optional[str] = Field(default=None)
     password: Optional[str] = Field(default=None)
+    entity_batch_size: int = Field(200, ge=1)
+    edge_batch_size: int = Field(500, ge=1)
 
     @field_validator("relation_semantics")
     @classmethod

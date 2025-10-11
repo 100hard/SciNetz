@@ -12,6 +12,10 @@ except Exception:  # pragma: no cover - fallback for typing when neo4j unavailab
     Record = object  # type: ignore[assignment]
 
 from backend.app.config import AppConfig, load_config
+from backend.app.graph.section_distribution import (
+    decode_distribution_from_mapping,
+    decode_section_distribution,
+)
 from backend.app.qa.entity_resolution import CandidateNode, QARepositoryProtocol
 
 LOGGER = logging.getLogger(__name__)
@@ -73,7 +77,9 @@ class Neo4jQARepository(QARepositoryProtocol):
                n.name AS name,
                coalesce(n.aliases, []) AS aliases,
                coalesce(n.times_seen, 0) AS times_seen,
-               coalesce(n.section_distribution, {}) AS section_distribution
+               coalesce(n.section_distribution, {}) AS section_distribution,
+               coalesce(n.section_distribution_keys, []) AS section_distribution_keys,
+               coalesce(n.section_distribution_values, []) AS section_distribution_values
         ORDER BY times_seen DESC, name ASC
         LIMIT 5
         """
@@ -87,7 +93,9 @@ class Neo4jQARepository(QARepositoryProtocol):
                n.name AS name,
                coalesce(n.aliases, []) AS aliases,
                coalesce(n.times_seen, 0) AS times_seen,
-               coalesce(n.section_distribution, {}) AS section_distribution
+               coalesce(n.section_distribution, {}) AS section_distribution,
+               coalesce(n.section_distribution_keys, []) AS section_distribution_keys,
+               coalesce(n.section_distribution_values, []) AS section_distribution_values
         ORDER BY times_seen DESC, name ASC
         LIMIT $limit
         """
@@ -158,24 +166,37 @@ class Neo4jQARepository(QARepositoryProtocol):
 
     @staticmethod
     def _record_to_candidate(record: Record) -> CandidateNode:
+        data = record.data()
+        distribution = decode_section_distribution(
+            data.get("section_distribution"),
+            data.get("section_distribution_keys"),
+            data.get("section_distribution_values"),
+        )
+        aliases = [str(alias) for alias in data.get("aliases") or []]
         return CandidateNode(
-            node_id=str(record["node_id"]),
-            name=str(record["name"]),
-            aliases=list(record["aliases"] or []),
-            times_seen=int(record["times_seen"] or 0),
-            section_distribution=dict(record["section_distribution"] or {}),
+            node_id=str(data["node_id"]),
+            name=str(data["name"]),
+            aliases=aliases,
+            times_seen=int(data.get("times_seen", 0) or 0),
+            section_distribution=distribution,
         )
 
     @staticmethod
     def _record_to_path(record: Record) -> PathRecord:
-        nodes = [dict(_safe_map(value)) for value in record["nodes"]]
+        nodes = []
+        for value in record["nodes"]:
+            node_data = dict(_safe_map(value))
+            node_data["section_distribution"] = decode_distribution_from_mapping(node_data)
+            nodes.append(node_data)
         relationships = [dict(_safe_map(value)) for value in record["relationships"]]
         return PathRecord(nodes=nodes, relationships=relationships)
 
     @staticmethod
     def _record_to_neighbor(record: Record) -> NeighborRecord:
         source = dict(_safe_map(record["source"]))
+        source["section_distribution"] = decode_distribution_from_mapping(source)
         target = dict(_safe_map(record["target"]))
+        target["section_distribution"] = decode_distribution_from_mapping(target)
         relationship = dict(_safe_map(record["relationship"]))
         return NeighborRecord(source=source, target=target, relationship=relationship)
 

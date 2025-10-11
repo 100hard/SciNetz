@@ -1,6 +1,7 @@
 """Two-pass triplet extraction pipeline for Phase 3."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -11,7 +12,18 @@ from functools import lru_cache
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Tuple, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    runtime_checkable,
+)
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -24,6 +36,9 @@ json_module = json
 
 from backend.app.config import AppConfig, OpenAIConfig, load_config
 from backend.app.contracts import Evidence, ParsedElement, TextSpan, Triplet
+
+if TYPE_CHECKING:
+    from backend.app.extraction.cache import LLMResponseCache, TokenBudgetCache
 
 LOGGER = logging.getLogger(__name__)
 
@@ -106,8 +121,8 @@ class RawLLMTriple:
     subject_text: str
     relation_verbatim: str
     object_text: str
-    supportive_sentence: str
     confidence: float
+    supportive_sentence: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +132,10 @@ class ExtractionResult:
     triplets: List[Triplet]
     section_distribution: Dict[str, Dict[str, int]]
     relation_verbatims: List[str] = field(default_factory=list)
+
+
+class _TruncationError(RuntimeError):
+    """Raised when the LLM response terminates before producing complete JSON."""
 
 
 class LLMExtractor(ABC):
@@ -152,9 +171,11 @@ class OpenAIExtractor(LLMExtractor):
     _SYSTEM_PROMPT_TEMPLATE = (
         "You are an expert scientific information extractor. "
         "Follow prompt version {prompt_version}. Extract factual relationships and return at most {max_triples} triples. "
-        "Subjects and objects must be explicit entity mentions. "
-        "Return full supportive sentences verbatim and include a confidence between 0.0 and 1.0. "
-        "Normalize relations to the allowed set and convert passive voice to active voice."
+        "Subjects and objects must be explicit entity mentions. Allowed relations: {allowed_relations}. "
+        "Set the relation_verbatim field to exactly one of the allowed relations; do not invent new predicates or alter their spelling. "
+        "Only emit a triple when the predicate can be normalized to this inventory; otherwise skip it. "
+        "Avoid vague or generic language and convert passive voice to active voice when needed. "
+        "Return full supportive sentences verbatim and include a confidence between 0.0 and 1.0."
     )
     _RESPONSE_SCHEMA = {
         "type": "json_schema",
@@ -193,6 +214,8 @@ class OpenAIExtractor(LLMExtractor):
         },
     }
 
+    _NON_JSON_ERROR = "OpenAI returned non-JSON content"
+
     def __init__(
         self,
         *,
@@ -200,6 +223,11 @@ class OpenAIExtractor(LLMExtractor):
         api_key: Optional[str] = None,
         client: Optional[_HTTPClient] = None,
         http_post: Optional[_HTTPPostCallable] = None,
+        token_budget_per_triple: int,
+        allowed_relations: Sequence[str],
+        max_prompt_entities: int,
+        response_cache: Optional["LLMResponseCache"] = None,
+        token_cache: Optional["TokenBudgetCache"] = None,
     ) -> None:
         """Initialise the extractor with configuration and networking hooks."""
 
@@ -211,6 +239,25 @@ class OpenAIExtractor(LLMExtractor):
         self._settings = settings
         self._api_key = resolved_key
         self._http_post = http_post
+        if token_budget_per_triple <= 0:
+            raise ValueError("token_budget_per_triple must be positive")
+        self._token_budget_per_triple = token_budget_per_triple
+        if max_prompt_entities <= 0:
+            raise ValueError("max_prompt_entities must be positive")
+        self._max_prompt_entities = max_prompt_entities
+        self._initial_multiplier = max(1.0, settings.initial_output_multiplier)
+        self._token_multiplier_cache: Dict[str, int] = {}
+        self._response_cache = response_cache
+        self._token_cache = token_cache
+        normalized_relations: List[str] = []
+        for relation in allowed_relations:
+            cleaned = str(relation).strip()
+            if cleaned and cleaned not in normalized_relations:
+                normalized_relations.append(cleaned)
+        if not normalized_relations:
+            raise ValueError("allowed_relations must include at least one value")
+        self._allowed_relations = tuple(normalized_relations)
+        self._allowed_relations_text = ", ".join(self._allowed_relations)
 
         self._client: Optional[_HTTPClient]
         self._owns_client = False
@@ -250,15 +297,106 @@ class OpenAIExtractor(LLMExtractor):
     ) -> Sequence[RawLLMTriple]:
         """Invoke the OpenAI API and parse triples from the response."""
 
-        payload = self._build_payload(element, candidate_entities, max_triples)
-        response_json = self._post_with_retries(payload)
-        return self._parse_response(response_json, max_triples)
+        prompt_entities = self._limit_entities(element, candidate_entities)
+        normalized_entities: Optional[Tuple[str, ...]] = None
+        if prompt_entities:
+            normalized_entities = tuple(prompt_entities)
+        response_cache_key: Optional[str] = None
+        if self._response_cache is not None:
+            response_cache_key = self._response_cache_key(
+                element, normalized_entities, max_triples
+            )
+            cached_triples = self._response_cache.get(response_cache_key)
+            if cached_triples is not None:
+                LOGGER.debug("Using cached LLM triples for %s", element.element_id)
+                return cached_triples[: max(1, max_triples)]
+        attempt_budget = max(1, max_triples)
+        token_multiplier = self._resolve_initial_multiplier(element, attempt_budget)
+        last_error: Optional[Exception] = None
+        while attempt_budget >= 1:
+            cache_key = self._cache_key(element, attempt_budget)
+            payload = self._build_payload(
+                element,
+                prompt_entities,
+                attempt_budget,
+                token_multiplier,
+            )
+            response_json = self._post_with_retries(payload)
+            try:
+                triples = self._parse_response(response_json, attempt_budget)
+            except _TruncationError as exc:
+                last_error = exc
+                next_multiplier = self._next_token_multiplier(attempt_budget, token_multiplier)
+                if next_multiplier is not None:
+                    current_tokens = self._calculate_max_tokens(attempt_budget, token_multiplier)
+                    next_tokens = self._calculate_max_tokens(attempt_budget, next_multiplier)
+                    LOGGER.warning(
+                        "OpenAI response truncated at %s tokens; retrying with %s tokens (budget %s)",
+                        current_tokens,
+                        next_tokens,
+                        attempt_budget,
+                    )
+                    token_multiplier = next_multiplier
+                    continue
+                if attempt_budget == 1:
+                    raise
+                reduced_budget = max(1, attempt_budget // 2)
+                LOGGER.warning(
+                    "OpenAI response truncated at %s triples with max token budget; retrying with budget %s",
+                    attempt_budget,
+                    reduced_budget,
+                )
+                attempt_budget = reduced_budget
+                token_multiplier = self._resolve_initial_multiplier(element, attempt_budget)
+                continue
+            except RuntimeError as exc:
+                if str(exc) != self._NON_JSON_ERROR or attempt_budget == 1:
+                    raise
+                LOGGER.warning(
+                    "OpenAI response truncated at %s triples; retrying with budget %s",
+                    attempt_budget,
+                    max(1, attempt_budget // 2),
+                )
+                last_error = exc
+                attempt_budget = max(1, attempt_budget // 2)
+                token_multiplier = self._resolve_initial_multiplier(element, attempt_budget)
+                continue
+            if attempt_budget < max_triples:
+                LOGGER.info(
+                    "Successful extraction after reducing triple budget from %s to %s",
+                    max_triples,
+                    attempt_budget,
+                )
+            if token_multiplier > 1:
+                LOGGER.info(
+                    "Successful extraction after increasing token budget multiplier to %s (triples %s)",
+                    token_multiplier,
+                    attempt_budget,
+                )
+            self._token_multiplier_cache[cache_key] = token_multiplier
+            if self._token_cache is not None:
+                self._token_cache.set(cache_key, token_multiplier)
+            if attempt_budget != max_triples:
+                original_key = self._cache_key(element, max_triples)
+                self._token_multiplier_cache[original_key] = token_multiplier
+                if self._token_cache is not None:
+                    self._token_cache.set(original_key, token_multiplier)
+            if self._response_cache is not None:
+                attempt_response_key = self._response_cache_key(
+                    element, normalized_entities, attempt_budget
+                )
+                self._response_cache.set(attempt_response_key, triples)
+                if attempt_budget != max_triples and response_cache_key is not None:
+                    self._response_cache.set(response_cache_key, triples)
+            return triples
+        raise last_error if last_error is not None else RuntimeError(self._NON_JSON_ERROR)
 
     def _build_payload(
         self,
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]],
         max_triples: int,
+        token_multiplier: int,
     ) -> Dict[str, Any]:
         """Construct the chat completion payload sent to OpenAI."""
 
@@ -267,7 +405,7 @@ class OpenAIExtractor(LLMExtractor):
         payload: Dict[str, Any] = {
             "model": self._settings.model,
             "temperature": self._settings.temperature,
-            "max_tokens": self._settings.max_output_tokens,
+            "max_tokens": self._calculate_max_tokens(max_triples, token_multiplier),
             "response_format": self._RESPONSE_SCHEMA,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -276,12 +414,96 @@ class OpenAIExtractor(LLMExtractor):
         }
         return payload
 
+    def _limit_entities(
+        self,
+        element: ParsedElement,
+        candidate_entities: Optional[Sequence[str]],
+    ) -> Optional[List[str]]:
+        """Trim candidate entities to respect configured prompt limits."""
+
+        if not candidate_entities:
+            return None
+        cleaned: List[str] = []
+        for entity in candidate_entities:
+            if not isinstance(entity, str):
+                continue
+            stripped = entity.strip()
+            if stripped:
+                cleaned.append(stripped)
+        if not cleaned:
+            return None
+        if len(cleaned) > self._max_prompt_entities:
+            LOGGER.debug(
+                "Trimming candidate entities from %s to %s for element %s",
+                len(cleaned),
+                self._max_prompt_entities,
+                element.element_id,
+            )
+            return cleaned[: self._max_prompt_entities]
+        return cleaned
+
+    def _cache_key(self, element: ParsedElement, max_triples: int) -> str:
+        """Generate a cache key for the element and triple budget."""
+
+        budget = max(1, max_triples)
+        content_hash = getattr(element, "content_hash", None)
+        if not content_hash:
+            content_hash = hashlib.sha256(element.content.encode("utf-8")).hexdigest()
+        return f"{self._settings.model}:{self._settings.prompt_version}:{content_hash}:{budget}"
+
+    def _response_cache_key(
+        self,
+        element: ParsedElement,
+        prompt_entities: Optional[Tuple[str, ...]],
+        max_triples: int,
+    ) -> str:
+        """Return a stable cache key for persisted LLM responses."""
+
+        budget = str(max(1, max_triples))
+        content_hash = getattr(element, "content_hash", None)
+        if not content_hash:
+            content_hash = hashlib.sha256(element.content.encode("utf-8")).hexdigest()
+        parts: List[str] = [
+            self._settings.model,
+            self._settings.prompt_version,
+            content_hash,
+            budget,
+            str(self._max_prompt_entities),
+        ]
+        if prompt_entities:
+            parts.extend(prompt_entities)
+        digest_input = "||".join(parts)
+        return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+
+    def _resolve_initial_multiplier(self, element: ParsedElement, max_triples: int) -> int:
+        """Determine the starting token multiplier for an extraction attempt."""
+
+        cache_key = self._cache_key(element, max_triples)
+        cached = self._token_multiplier_cache.get(cache_key)
+        if cached is not None and cached >= 1:
+            return cached
+        if self._token_cache is not None:
+            persisted = self._token_cache.get(cache_key)
+            if persisted is not None and persisted >= 1:
+                self._token_multiplier_cache[cache_key] = persisted
+                return persisted
+        multiplier = int(math.ceil(self._initial_multiplier))
+        return max(1, multiplier)
+
+    def _calculate_max_tokens(self, max_triples: int, token_multiplier: int) -> int:
+        """Determine the token limit for a request based on triple budget."""
+
+        base_tokens = max_triples * self._token_budget_per_triple * max(token_multiplier, 1)
+        baseline = max(self._token_budget_per_triple, base_tokens)
+        return min(self._settings.max_output_tokens, baseline)
+
     def _render_system_prompt(self, max_triples: int) -> str:
         """Render the system prompt used for extraction."""
 
         return self._SYSTEM_PROMPT_TEMPLATE.format(
             prompt_version=self._settings.prompt_version,
             max_triples=max_triples,
+            allowed_relations=self._allowed_relations_text,
         )
 
     def _render_user_prompt(
@@ -411,7 +633,12 @@ class OpenAIExtractor(LLMExtractor):
         if not isinstance(choices, list) or not choices:
             LOGGER.error("OpenAI response missing choices: %s", payload)
             raise RuntimeError("OpenAI response missing choices")
-        message = choices[0].get("message")  # type: ignore[index]
+        choice = choices[0]  # type: ignore[index]
+        finish_reason = choice.get("finish_reason")
+        if finish_reason == "length":
+            LOGGER.warning("OpenAI response hit max tokens before completing JSON payload")
+            raise _TruncationError("OpenAI response truncated by token limit")
+        message = choice.get("message")
         if not isinstance(message, dict) or "content" not in message:
             LOGGER.error("OpenAI response missing message content: %s", payload)
             raise RuntimeError("OpenAI response missing message content")
@@ -438,12 +665,15 @@ class OpenAIExtractor(LLMExtractor):
             if not isinstance(item, dict):
                 LOGGER.info("Skipping non-dict triple entry: %s", item)
                 continue
+            supportive_sentence = item.get("supportive_sentence")
+            if supportive_sentence is None:
+                LOGGER.debug("LLM triple missing supportive sentence; attempting fallback: %s", item)
             try:
                 triple = RawLLMTriple(
                     subject_text=str(item["subject_text"]),
                     relation_verbatim=str(item["relation_verbatim"]),
                     object_text=str(item["object_text"]),
-                    supportive_sentence=str(item["supportive_sentence"]),
+                    supportive_sentence=(str(supportive_sentence) if supportive_sentence is not None else None),
                     confidence=float(item["confidence"]),
                 )
             except (KeyError, TypeError, ValueError) as exc:
@@ -452,6 +682,15 @@ class OpenAIExtractor(LLMExtractor):
             triples.append(triple)
         return triples
 
+    def _next_token_multiplier(self, max_triples: int, current_multiplier: int) -> Optional[int]:
+        """Return the next token budget multiplier if additional headroom exists."""
+
+        tentative_multiplier = max(current_multiplier, 1) * 2
+        current_tokens = self._calculate_max_tokens(max_triples, current_multiplier)
+        next_tokens = self._calculate_max_tokens(max_triples, tentative_multiplier)
+        if next_tokens <= current_tokens:
+            return None
+        return tentative_multiplier
     @staticmethod
     def _extract_error_message(response: _SimpleHTTPResponse) -> str:
         """Extract an error message from a failed OpenAI response."""
@@ -538,9 +777,17 @@ class TwoPassTripletExtractor:
                 continue
             subject_text = raw.subject_text.strip()
             object_text = raw.object_text.strip()
-            sentence_text = raw.supportive_sentence.strip()
-            if not subject_text or not object_text or not sentence_text:
-                LOGGER.info("Dropping triple with empty fields: %s", raw)
+            if not subject_text or not object_text:
+                LOGGER.info("Dropping triple with empty subject/object: %s", raw)
+                continue
+            sentence_text = self._resolve_supportive_sentence(
+                raw,
+                element,
+                subject_text,
+                object_text,
+            )
+            if not sentence_text:
+                LOGGER.info("Dropping triple; supportive sentence unavailable: %s", raw)
                 continue
             if not (0.0 <= raw.confidence <= 1.0):
                 LOGGER.info("Dropping triple with invalid confidence %.3f", raw.confidence)
@@ -596,6 +843,81 @@ class TwoPassTripletExtractor:
         section_distribution = {entity: dict(counts) for entity, counts in section_counts.items()}
         return accepted, section_distribution, relation_verbatims
 
+    def _resolve_supportive_sentence(
+        self,
+        raw: RawLLMTriple,
+        element: ParsedElement,
+        subject_text: str,
+        object_text: str,
+    ) -> Optional[str]:
+        """Resolve supportive sentence text for a raw triple.
+
+        Args:
+            raw: Raw triple returned by the LLM.
+            element: Parsed element containing the source content.
+            subject_text: Trimmed subject string.
+            object_text: Trimmed object string.
+
+        Returns:
+            Optional[str]: Sentence containing both entities if available.
+        """
+
+        if raw.supportive_sentence:
+            candidate = raw.supportive_sentence.strip()
+            if candidate:
+                return candidate
+        return self._find_sentence_in_content(
+            element.content,
+            subject_text,
+            object_text,
+        )
+
+    def _find_sentence_in_content(
+        self,
+        content: str,
+        subject_text: str,
+        object_text: str,
+    ) -> Optional[str]:
+        """Locate a sentence in the element content containing both entities.
+
+        Args:
+            content: Element text to search.
+            subject_text: Trimmed subject string.
+            object_text: Trimmed object string.
+
+        Returns:
+            Optional[str]: Matching sentence if found, otherwise None.
+        """
+
+        subject_lower = subject_text.lower()
+        object_lower = object_text.lower()
+        matches = list(re.finditer(r"[^.!?]+(?:[.!?]+|$)", content, flags=re.MULTILINE))
+        for match in matches:
+            sentence = match.group(0)
+            if self._sentence_contains_entities(sentence, subject_lower, object_lower):
+                return sentence.strip()
+        return None
+
+    @staticmethod
+    def _sentence_contains_entities(
+        sentence: str,
+        subject_lower: str,
+        object_lower: str,
+    ) -> bool:
+        """Return whether both entities appear in the candidate sentence.
+
+        Args:
+            sentence: Candidate sentence to inspect.
+            subject_lower: Lowercase subject string.
+            object_lower: Lowercase object string.
+
+        Returns:
+            bool: True when both entities are present, otherwise False.
+        """
+
+        normalized = sentence.lower()
+        return subject_lower in normalized and object_lower in normalized
+
     @staticmethod
     def _update_section_counts(
         section_counts: Dict[str, Dict[str, int]],
@@ -624,7 +946,12 @@ class TwoPassTripletExtractor:
         scaled = max(1, math.ceil(token_count / self._config.extraction.tokens_per_triple))
         sentence_count = max(1, len(re.findall(r"[^.!?]+[.!?]", content)))
         estimate = max(scaled, sentence_count)
-        return min(self._config.extraction.max_triples_per_chunk_base, estimate)
+        budget_cap = max(
+            1,
+            self._config.extraction.openai_max_output_tokens
+            // self._config.extraction.tokens_per_triple,
+        )
+        return min(self._config.extraction.max_triples_per_chunk_base, estimate, budget_cap)
 
     def _find_span(self, text: str, target: str) -> Optional[Tuple[int, int]]:
         """Locate the character span of the target text within the source.
@@ -743,4 +1070,6 @@ __all__ = [
     "normalize_relation",
     "spans_overlap",
 ]
+
+
 

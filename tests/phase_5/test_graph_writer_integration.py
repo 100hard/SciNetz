@@ -113,6 +113,160 @@ def test_graph_writer_persists_entities_and_edges() -> None:
             container.stop()
 
 
+@pytest.mark.skipif(
+    Neo4jContainer is None or GraphDatabase is None,
+    reason="neo4j driver and testcontainers are required for integration tests",
+)
+def test_entity_section_distribution_merges_counts() -> None:
+    """Ensure section distributions accumulate when new documents are added."""
+
+    container = None
+    driver = None
+
+    try:
+        container = Neo4jContainer("neo4j:5.21").with_env("NEO4J_AUTH", "neo4j/test")
+        container.start()
+    except DockerException as exc:  # pragma: no cover - environment without Docker
+        pytest.skip(f"Docker is not available: {exc}")
+    except Exception as exc:  # pragma: no cover - surface unexpected startup issues
+        pytest.skip(f"Unable to start Neo4j test container: {exc}")
+
+    try:
+        uri = container.get_connection_url()
+        driver = GraphDatabase.driver(uri, auth=("neo4j", "test"))
+        writer = GraphWriter(driver=driver, entity_batch_size=10, edge_batch_size=10)
+
+        node_id = "entity-merge-test"
+        writer.upsert_entity(
+            Node(
+                node_id=node_id,
+                name="Transformer Models",
+                type="Model",
+                aliases=["Transformers"],
+                section_distribution={"Methods": 1},
+                times_seen=1,
+                source_document_ids=["doc-initial"],
+            )
+        )
+        writer.flush()
+
+        writer.upsert_entity(
+            Node(
+                node_id=node_id,
+                name="Transformer Models",
+                type="Model",
+                aliases=["Transformers"],
+                section_distribution={"Methods": 2, "Results": 1},
+                times_seen=3,
+                source_document_ids=["doc-followup"],
+            )
+        )
+        writer.flush()
+
+        with driver.session() as session:
+            record = session.run(
+                """
+                MATCH (n:Entity {node_id: $node_id})
+                RETURN n.section_distribution AS sections,
+                       n.section_distribution_keys AS section_keys,
+                       n.section_distribution_values AS section_values,
+                       n.times_seen AS times_seen
+                """,
+                node_id=node_id,
+            ).single()
+
+        assert record is not None
+        sections = decode_section_distribution(
+            record["sections"],
+            record["section_keys"],
+            record["section_values"],
+        )
+        assert sections == {"Methods": 3, "Results": 1}
+        assert record["times_seen"] == 4
+    finally:
+        if driver is not None:
+            driver.close()
+        if container is not None:
+            container.stop()
+
+
+@pytest.mark.skipif(
+    Neo4jContainer is None or GraphDatabase is None,
+    reason="neo4j driver and testcontainers are required for integration tests",
+)
+def test_entity_update_without_new_documents_preserves_counts() -> None:
+    """Ensure repeated uploads of the same document do not inflate counts."""
+
+    container = None
+    driver = None
+
+    try:
+        container = Neo4jContainer("neo4j:5.21").with_env("NEO4J_AUTH", "neo4j/test")
+        container.start()
+    except DockerException as exc:  # pragma: no cover - environment without Docker
+        pytest.skip(f"Docker is not available: {exc}")
+    except Exception as exc:  # pragma: no cover - surface unexpected startup issues
+        pytest.skip(f"Unable to start Neo4j test container: {exc}")
+
+    try:
+        uri = container.get_connection_url()
+        driver = GraphDatabase.driver(uri, auth=("neo4j", "test"))
+        writer = GraphWriter(driver=driver, entity_batch_size=10, edge_batch_size=10)
+
+        node_id = "entity-repeat-test"
+        original = Node(
+            node_id=node_id,
+            name="Self-Supervised Pipeline",
+            type="Method",
+            aliases=["SSP"],
+            section_distribution={"Methods": 2},
+            times_seen=2,
+            source_document_ids=["doc-static"],
+        )
+        writer.upsert_entity(original)
+        writer.flush()
+
+        duplicate = Node(
+            node_id=node_id,
+            name="Self-Supervised Pipeline",
+            type="Method",
+            aliases=["SSP", "Self-Supervised Pipeline"],
+            section_distribution={"Methods": 5, "Results": 3},
+            times_seen=10,
+            source_document_ids=["doc-static"],
+        )
+        writer.upsert_entity(duplicate)
+        writer.flush()
+
+        with driver.session() as session:
+            record = session.run(
+                """
+                MATCH (n:Entity {node_id: $node_id})
+                RETURN n.section_distribution AS sections,
+                       n.section_distribution_keys AS section_keys,
+                       n.section_distribution_values AS section_values,
+                       n.times_seen AS times_seen,
+                       n.source_document_ids AS docs
+                """,
+                node_id=node_id,
+            ).single()
+
+        assert record is not None
+        sections = decode_section_distribution(
+            record["sections"],
+            record["section_keys"],
+            record["section_values"],
+        )
+        assert sections == {"Methods": 2}
+        assert record["times_seen"] == 2
+        assert record["docs"] == ["doc-static"]
+    finally:
+        if driver is not None:
+            driver.close()
+        if container is not None:
+            container.stop()
+
+
 def _write_entities(writer: GraphWriter, count: int) -> List[str]:
     """Seed Neo4j with a collection of canonical nodes."""
 

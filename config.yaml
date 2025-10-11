@@ -38,6 +38,7 @@ parsing:
 extraction:
   max_triples_per_chunk_base: 15
   tokens_per_triple: 60
+  max_prompt_entities: 12
   chunk_size_tokens: 512
   chunk_overlap_tokens: 50
   use_entity_inventory: false
@@ -49,7 +50,8 @@ extraction:
   openai_prompt_version: "phase3-v1"
   openai_max_retries: 2
   openai_temperature: 0.0
-  openai_max_output_tokens: 800
+  openai_max_output_tokens: 3200
+  openai_initial_output_multiplier: 2
   openai_backoff_initial_seconds: 0.5
   openai_backoff_max_seconds: 4.0
   openai_retry_statuses:
@@ -58,6 +60,9 @@ extraction:
     - 502
     - 503
     - 504
+  cache_dir: "data/cache"
+  response_cache_filename: "openai_responses.json"
+  token_cache_filename: "openai_token_budget.json"
 
 canonicalization:
   base_threshold: 0.86
@@ -189,6 +194,8 @@ graph:
   uri: "bolt://neo4j:7687"
   username: "neo4j"
   password: "neo4jpassword"
+  entity_batch_size: 200
+  edge_batch_size: 500
 
 co_mention:
   enabled: true

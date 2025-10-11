@@ -17,7 +17,13 @@ from pydantic import BaseModel, Field
 
 from backend.app.canonicalization import CanonicalizationPipeline
 from backend.app.config import AppConfig, load_config
-from backend.app.extraction import EntityInventoryBuilder, OpenAIExtractor, TwoPassTripletExtractor
+from backend.app.extraction import (
+    EntityInventoryBuilder,
+    LLMResponseCache,
+    OpenAIExtractor,
+    TokenBudgetCache,
+    TwoPassTripletExtractor,
+)
 from backend.app.graph import GraphWriter
 from backend.app.orchestration import ExtractionOrchestrator, OrchestrationResult
 from backend.app.orchestration.orchestrator import ProcessedChunkStore
@@ -372,7 +378,12 @@ def _build_default_orchestrator(
             return None, driver
         triplet_extractor = TwoPassTripletExtractor(config=config, llm_extractor=llm_extractor)
         canonicalization = CanonicalizationPipeline(config=config)
-        graph_writer = GraphWriter(driver=driver, config=config)
+        graph_writer = GraphWriter(
+            driver=driver,
+            config=config,
+            entity_batch_size=config.graph.entity_batch_size,
+            edge_batch_size=config.graph.edge_batch_size,
+        )
         store_path = Path(__file__).resolve().parents[2] / "data" / "pipeline" / "processed_chunks.json"
         chunk_store = ProcessedChunkStore(store_path)
         orchestrator = ExtractionOrchestrator(
@@ -490,8 +501,25 @@ def _create_llm_extractor(config: AppConfig) -> Optional[OpenAIExtractor]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return None
+    cache_root = Path(config.extraction.cache_dir)
+    if not cache_root.is_absolute():
+        cache_root = Path(__file__).resolve().parents[2] / cache_root
     try:
-        return OpenAIExtractor(settings=config.extraction.openai, api_key=api_key)
+        response_cache = LLMResponseCache(
+            cache_root / config.extraction.response_cache_filename
+        )
+        token_cache = TokenBudgetCache(
+            cache_root / config.extraction.token_cache_filename
+        )
+        return OpenAIExtractor(
+            settings=config.extraction.openai,
+            api_key=api_key,
+            token_budget_per_triple=config.extraction.tokens_per_triple,
+            allowed_relations=config.relations.canonical_relation_names(),
+            max_prompt_entities=config.extraction.max_prompt_entities,
+            response_cache=response_cache,
+            token_cache=token_cache,
+        )
     except Exception:  # noqa: BLE001 - dependency failures should disable extractor
         LOGGER.exception("Failed to initialize OpenAI extractor")
         return None

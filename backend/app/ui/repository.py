@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
 
 from neo4j import Driver, Record
 from typing_extensions import Protocol
+
+from backend.app.graph.section_distribution import decode_distribution_from_mapping
 
 
 @dataclass(frozen=True)
@@ -53,16 +56,8 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
     """Concrete repository issuing Cypher queries for graph views."""
 
     _QUERY = """
-        MATCH (src:Entity)-[rel:RELATION]->(dst:Entity)
-        WHERE rel.confidence >= $min_confidence
-          AND ($relations = [] OR rel.relation_norm IN $relations)
-          AND ($include_co_mentions OR coalesce(rel.attributes['method'], '') <> 'co-mention')
-          AND (
-                $papers = []
-                OR rel.evidence['doc_id'] IN $papers
-            )
+        MATCH (src)-[rel]->(dst)
         RETURN src, dst, rel
-        ORDER BY rel.confidence DESC, rel.created_at DESC
         LIMIT $limit
     """
 
@@ -70,16 +65,18 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
         self._driver = driver
 
     def fetch_edges(self, filters: GraphViewFilters) -> Sequence[GraphEdgeRecord]:
-        params = {
-            "min_confidence": filters.min_confidence,
-            "relations": list(filters.relations),
-            "include_co_mentions": bool(filters.include_co_mentions),
-            "papers": list(filters.papers),
-            "limit": self._query_limit(filters),
-        }
+        params = {"limit": self._query_limit(filters)}
         records = self._run_query(params)
         edges = [self._record_to_edge(record) for record in records]
+        edges = self._apply_confidence_filter(edges, filters.min_confidence)
+        if filters.relations:
+            edges = self._apply_relation_filter(edges, filters.relations)
+        if not filters.include_co_mentions:
+            edges = [edge for edge in edges if not self._is_co_mention(edge)]
+        if filters.papers:
+            edges = self._apply_paper_filter(edges, filters.papers)
         filtered = self._apply_section_filter(edges, filters.sections)
+        filtered = self._sort_edges(filtered)
         limit = max(int(filters.limit), 0)
         return filtered[:limit] if limit else []
 
@@ -90,8 +87,41 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
             return 0
         section_filter_active = any(section.strip() for section in filters.sections)
         multiplier = 3 if section_filter_active else 1
+        if not filters.include_co_mentions:
+            multiplier = max(multiplier, 2)
+        if filters.papers:
+            multiplier = max(multiplier, 3)
+        if filters.relations:
+            multiplier = max(multiplier, 2)
         expanded = base_limit * multiplier
         return min(expanded, 3000)
+
+    @staticmethod
+    def _apply_confidence_filter(
+        edges: Sequence[GraphEdgeRecord], threshold: float
+    ) -> List[GraphEdgeRecord]:
+        if threshold <= 0:
+            return list(edges)
+        filtered: List[GraphEdgeRecord] = []
+        for edge in edges:
+            confidence = _as_float(edge.relation.get("confidence"))
+            if confidence >= threshold:
+                filtered.append(edge)
+        return filtered
+
+    @staticmethod
+    def _apply_relation_filter(
+        edges: Sequence[GraphEdgeRecord], relations: Sequence[str]
+    ) -> List[GraphEdgeRecord]:
+        allowed = {relation.strip().lower() for relation in relations if relation.strip()}
+        if not allowed:
+            return list(edges)
+        filtered: List[GraphEdgeRecord] = []
+        for edge in edges:
+            relation_norm = str(edge.relation.get("relation_norm", "")).strip().lower()
+            if relation_norm in allowed:
+                filtered.append(edge)
+        return filtered
 
     @staticmethod
     def _apply_section_filter(
@@ -103,10 +133,41 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
         allowed = {section for section in trimmed}
         filtered: List[GraphEdgeRecord] = []
         for edge in edges:
-            relation_sections = Neo4jGraphViewRepository._extract_sections(
-                edge.relation.get("attributes")
+            relation_sections = set(
+                Neo4jGraphViewRepository._extract_sections(edge.relation.get("attributes"))
             )
+            if not relation_sections:
+                relation_sections = Neo4jGraphViewRepository._sections_from_nodes(edge)
+            else:
+                relation_sections |= Neo4jGraphViewRepository._sections_from_nodes(edge)
             if any(section in allowed for section in relation_sections):
+                filtered.append(edge)
+        return filtered
+
+    @staticmethod
+    def _sort_edges(edges: Sequence[GraphEdgeRecord]) -> List[GraphEdgeRecord]:
+        def _sort_key(edge: GraphEdgeRecord) -> tuple:
+            confidence = _as_float(edge.relation.get("confidence"))
+            created_at = edge.relation.get("created_at")
+            timestamp = 0.0
+            if isinstance(created_at, datetime):
+                timestamp = created_at.timestamp()
+            elif isinstance(created_at, str):
+                timestamp = _parse_datetime(created_at)
+            return (-confidence, -timestamp)
+
+        return sorted(edges, key=_sort_key)
+
+    @staticmethod
+    def _apply_paper_filter(
+        edges: Sequence[GraphEdgeRecord], papers: Sequence[str]
+    ) -> List[GraphEdgeRecord]:
+        allowed = {paper.strip() for paper in papers if paper.strip()}
+        if not allowed:
+            return list(edges)
+        filtered: List[GraphEdgeRecord] = []
+        for edge in edges:
+            if Neo4jGraphViewRepository._matches_papers(edge, allowed):
                 filtered.append(edge)
         return filtered
 
@@ -139,6 +200,15 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
                         Neo4jGraphViewRepository._normalise_section_values(item)
                     )
         return [section for section in (section.strip() for section in sections) if section]
+    @staticmethod
+    def _sections_from_nodes(edge: GraphEdgeRecord) -> set[str]:
+        sections: set[str] = set()
+        for distribution in (edge.source.section_distribution, edge.target.section_distribution):
+            if isinstance(distribution, Mapping):
+                for section, count in distribution.items():
+                    if count and section:
+                        sections.add(str(section).strip())
+        return sections
 
     @staticmethod
     def _normalise_section_values(value: object) -> List[str]:
@@ -179,7 +249,7 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
         else:
             data = dict(raw)
         aliases = list(data.get("aliases", []) or [])
-        section_distribution = dict(data.get("section_distribution", {}) or {})
+        distribution = decode_distribution_from_mapping(data)
         node_type = data.get("type")
         return GraphNodeRecord(
             node_id=str(data.get("node_id")),
@@ -187,7 +257,7 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
             type=str(node_type) if node_type is not None else None,
             aliases=[str(alias) for alias in aliases],
             times_seen=int(data.get("times_seen", 0) or 0),
-            section_distribution={str(key): int(value) for key, value in section_distribution.items()},
+            section_distribution=distribution,
         )
 
     @staticmethod
@@ -208,6 +278,44 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
         return relation
 
     @staticmethod
+    def _matches_papers(edge: GraphEdgeRecord, allowed: set[str]) -> bool:
+        evidence = edge.relation.get("evidence")
+        if isinstance(evidence, Mapping):
+            doc_id = evidence.get("doc_id")
+            if doc_id is not None and str(doc_id).strip() in allowed:
+                return True
+        elif isinstance(evidence, Sequence) and not isinstance(evidence, (str, bytes)):
+            for entry in evidence:
+                if isinstance(entry, Mapping):
+                    doc_id = entry.get("doc_id") or entry.get("document_id")
+                    if doc_id is not None and str(doc_id).strip() in allowed:
+                        return True
+        return False
+
+    @staticmethod
+    def _is_co_mention(edge: GraphEdgeRecord) -> bool:
+        attributes = edge.relation.get("attributes")
+        if isinstance(attributes, Mapping):
+            value = attributes.get("method")
+            if isinstance(value, str) and value.strip().lower() == "co-mention":
+                return True
+            if value is not None:
+                return str(value).strip().lower() == "co-mention"
+        elif isinstance(attributes, Sequence) and not isinstance(attributes, (str, bytes)):
+            for item in attributes:
+                if isinstance(item, Mapping):
+                    key = (item.get("key") or item.get("name") or "").lower()
+                    if key == "method":
+                        value = item.get("value")
+                        if isinstance(value, str):
+                            return value.strip().lower() == "co-mention"
+                        return str(value).strip().lower() == "co-mention"
+                elif isinstance(item, str):
+                    if item.strip().lower() == "co-mention":
+                        return True
+        return False
+
+    @staticmethod
     def _normalise_evidence(evidence: Mapping[str, object]) -> Dict[str, object]:
         payload: Dict[str, object] = {}
         for key, value in evidence.items():
@@ -220,3 +328,20 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
                 payload[key] = value
         return payload
 
+
+def _as_float(value: object) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _parse_datetime(raw: str) -> float:
+    try:
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        return 0.0
