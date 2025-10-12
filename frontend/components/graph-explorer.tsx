@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, Filter, Loader2, RefreshCw } from "lucide-react";
+import { AlertCircle, Eraser, Filter, Loader2, RefreshCw } from "lucide-react";
 
 import GraphVisualization, { GRAPH_VISUALIZATION_NODE_LIMIT } from "./graph-visualization";
 import apiClient, { extractErrorMessage } from "../lib/http";
@@ -173,6 +173,11 @@ const GraphExplorer = () => {
     }
   };
 
+  const handleClearGraph = useCallback(() => {
+    setGraph(null);
+    setError(null);
+  }, []);
+
   return (
     <div className="space-y-6">
       <section className="rounded-lg border bg-card p-6 shadow-sm">
@@ -182,14 +187,23 @@ const GraphExplorer = () => {
             <h2 className="text-lg font-semibold text-foreground">Filters</h2>
             <p className="text-sm text-muted-foreground">Configure the graph query before fetching data.</p>
           </div>
-          <button
-            type="button"
-            onClick={() => void fetchGraph()}
-            disabled={isLoading || isFetchingSettings}
-            className={`ml-auto inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 ${isLoading ? "opacity-80" : "hover:bg-primary/90"} disabled:cursor-not-allowed disabled:opacity-60`}
-          >
-            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Refresh graph
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleClearGraph}
+              className="inline-flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2"
+            >
+              <Eraser className="h-4 w-4" /> Clear graph
+            </button>
+            <button
+              type="button"
+              onClick={() => void fetchGraph()}
+              disabled={isLoading || isFetchingSettings}
+              className={`inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 ${isLoading ? "opacity-80" : "hover:bg-primary/90"} disabled:cursor-not-allowed disabled:opacity-60`}
+            >
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Refresh graph
+            </button>
+          </div>
         </div>
 
         <div className="mt-6 grid gap-6 md:grid-cols-2 xl:grid-cols-3">

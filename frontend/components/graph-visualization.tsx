@@ -43,8 +43,8 @@ type SimulationNode = {
   node: GraphNode;
   x: number;
   y: number;
-  vx: number;
-  vy: number;
+  dx: number;
+  dy: number;
 };
 
 type LayoutResult = {
@@ -72,78 +72,83 @@ const runForceLayout = (
   const allowedIds = new Set(nodes.map((node) => node.id));
   const filteredEdges = edges.filter((edge) => allowedIds.has(edge.source) && allowedIds.has(edge.target));
 
-  const simulationNodes: SimulationNode[] = nodes.map((node, index) => {
-    const angle = (2 * Math.PI * index) / nodes.length;
-    const radius = Math.min(width, height) * 0.2 + (Math.random() - 0.5) * 24;
-    return {
-      node,
-      x: centerX + radius * Math.cos(angle),
-      y: centerY + radius * Math.sin(angle),
-      vx: 0,
-      vy: 0,
-    };
-  });
+  const simulationNodes: SimulationNode[] = nodes.map((node) => ({
+    node,
+    x: centerX + (Math.random() - 0.5) * width * 0.7,
+    y: centerY + (Math.random() - 0.5) * height * 0.7,
+    dx: 0,
+    dy: 0,
+  }));
 
   const nodeIndex = new Map(simulationNodes.map((entry) => [entry.node.id, entry]));
 
-  const iterations = Math.min(240, 30 + simulationNodes.length * 4);
-  const repulsionStrength = 3200;
-  const springLength = Math.min(width, height) * 0.32;
-  const springStrength = 0.015;
-  const centeringStrength = 0.04;
-  const damping = 0.85;
-  const step = 0.8;
+  const iterations = Math.min(300, 100 + simulationNodes.length * 4);
+  const area = width * height;
+  const k = Math.sqrt(area / simulationNodes.length);
+  let temperature = Math.min(width, height) / 2;
+  const coolingFactor = 0.92;
+  const gravity = 0.08;
+  const epsilon = 0.0001;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
-    // Repulsive forces
+    for (const node of simulationNodes) {
+      node.dx = 0;
+      node.dy = 0;
+    }
+
     for (let i = 0; i < simulationNodes.length; i += 1) {
       const nodeA = simulationNodes[i];
       for (let j = i + 1; j < simulationNodes.length; j += 1) {
         const nodeB = simulationNodes[j];
-        const dx = nodeB.x - nodeA.x;
-        const dy = nodeB.y - nodeA.y;
-        const distanceSq = dx * dx + dy * dy + 0.01;
-        const distance = Math.sqrt(distanceSq);
-        const force = repulsionStrength / distanceSq;
-        const fx = (force * dx) / distance;
-        const fy = (force * dy) / distance;
-        nodeA.vx -= fx;
-        nodeA.vy -= fy;
-        nodeB.vx += fx;
-        nodeB.vy += fy;
+        const dx = nodeA.x - nodeB.x;
+        const dy = nodeA.y - nodeB.y;
+        const distance = Math.sqrt(dx * dx + dy * dy) || epsilon;
+        const force = (k * k) / distance;
+        const offsetX = (dx / distance) * force;
+        const offsetY = (dy / distance) * force;
+        nodeA.dx += offsetX;
+        nodeA.dy += offsetY;
+        nodeB.dx -= offsetX;
+        nodeB.dy -= offsetY;
       }
     }
 
-    // Attractive forces along edges
     for (const edge of filteredEdges) {
       const source = nodeIndex.get(edge.source);
       const target = nodeIndex.get(edge.target);
       if (!source || !target) {
         continue;
       }
-      const dx = target.x - source.x;
-      const dy = target.y - source.y;
-      const distance = Math.max(Math.sqrt(dx * dx + dy * dy), 0.01);
-      const displacement = distance - springLength;
-      const force = displacement * springStrength;
-      const fx = (force * dx) / distance;
-      const fy = (force * dy) / distance;
-      source.vx += fx;
-      source.vy += fy;
-      target.vx -= fx;
-      target.vy -= fy;
+      const dx = source.x - target.x;
+      const dy = source.y - target.y;
+      const distance = Math.sqrt(dx * dx + dy * dy) || epsilon;
+      const force = (distance * distance) / k;
+      const offsetX = (dx / distance) * force;
+      const offsetY = (dy / distance) * force;
+      source.dx -= offsetX;
+      source.dy -= offsetY;
+      target.dx += offsetX;
+      target.dy += offsetY;
     }
 
     for (const node of simulationNodes) {
-      const dx = centerX - node.x;
-      const dy = centerY - node.y;
-      node.vx += dx * centeringStrength;
-      node.vy += dy * centeringStrength;
+      const toCenterX = node.x - centerX;
+      const toCenterY = node.y - centerY;
+      node.dx -= toCenterX * gravity;
+      node.dy -= toCenterY * gravity;
 
-      node.x += node.vx * step;
-      node.y += node.vy * step;
-      node.vx *= damping;
-      node.vy *= damping;
+      const displacement = Math.sqrt(node.dx * node.dx + node.dy * node.dy) || epsilon;
+      const limited = Math.min(displacement, temperature);
+      node.x += (node.dx / displacement) * limited;
+      node.y += (node.dy / displacement) * limited;
+
+      node.x = Math.min(width, Math.max(0, node.x));
+      node.y = Math.min(height, Math.max(0, node.y));
+    }
+
+    temperature *= coolingFactor;
+    if (temperature < 1) {
+      break;
     }
   }
 
