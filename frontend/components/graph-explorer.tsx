@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, Filter, Loader2, RefreshCw } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, Eraser, Filter, Loader2, RefreshCw } from "lucide-react";
 
+import GraphVisualization, { GRAPH_VISUALIZATION_NODE_LIMIT } from "./graph-visualization";
 import apiClient, { extractErrorMessage } from "../lib/http";
 
 type GraphDefaults = {
@@ -17,7 +18,7 @@ type UiSettingsResponse = {
   graph_defaults: GraphDefaults;
 };
 
-type GraphNode = {
+export type GraphNode = {
   id: string;
   label: string;
   type?: string | null;
@@ -26,7 +27,7 @@ type GraphNode = {
   section_distribution: Record<string, number>;
 };
 
-type GraphEdge = {
+export type GraphEdge = {
   id: string;
   source: string;
   target: string;
@@ -83,6 +84,8 @@ const stringify = (value: Record<string, unknown>) => {
   }
 };
 
+const AUTO_FETCH_STORAGE_KEY = "graphAutoFetchEnabled";
+
 const GraphExplorer = () => {
   const [defaults, setDefaults] = useState<GraphDefaults | null>(null);
   const [selectedRelations, setSelectedRelations] = useState<string[]>([]);
@@ -95,6 +98,27 @@ const GraphExplorer = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isFetchingSettings, setIsFetchingSettings] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [autoFetchEnabled, setAutoFetchEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") {
+      return true;
+    }
+    const stored = window.sessionStorage.getItem(AUTO_FETCH_STORAGE_KEY);
+    if (stored === null) {
+      return true;
+    }
+    return stored === "true";
+  });
+  const skipNextAutoFetchRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.sessionStorage.setItem(
+      AUTO_FETCH_STORAGE_KEY,
+      autoFetchEnabled ? "true" : "false",
+    );
+  }, [autoFetchEnabled]);
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -148,8 +172,17 @@ const GraphExplorer = () => {
     if (!defaults) {
       return;
     }
+    if (!autoFetchEnabled) {
+      return;
+    }
+
+    if (skipNextAutoFetchRef.current) {
+      skipNextAutoFetchRef.current = false;
+      return;
+    }
+
     void fetchGraph();
-  }, [defaults, fetchGraph]);
+  }, [autoFetchEnabled, defaults, fetchGraph]);
 
   const relationOptions = defaults?.relations ?? [];
   const sectionOptions = defaults?.sections ?? [];
@@ -172,6 +205,21 @@ const GraphExplorer = () => {
     }
   };
 
+  const handleClearGraph = useCallback(() => {
+    setGraph(null);
+    setError(null);
+    setAutoFetchEnabled(false);
+  }, []);
+
+  const handleRefreshGraph = useCallback(() => {
+    if (!autoFetchEnabled) {
+      skipNextAutoFetchRef.current = true;
+      setAutoFetchEnabled(true);
+    }
+
+    void fetchGraph();
+  }, [autoFetchEnabled, fetchGraph]);
+
   return (
     <div className="space-y-6">
       <section className="rounded-lg border bg-card p-6 shadow-sm">
@@ -181,14 +229,23 @@ const GraphExplorer = () => {
             <h2 className="text-lg font-semibold text-foreground">Filters</h2>
             <p className="text-sm text-muted-foreground">Configure the graph query before fetching data.</p>
           </div>
-          <button
-            type="button"
-            onClick={() => void fetchGraph()}
-            disabled={isLoading || isFetchingSettings}
-            className={`ml-auto inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 ${isLoading ? "opacity-80" : "hover:bg-primary/90"} disabled:cursor-not-allowed disabled:opacity-60`}
-          >
-            {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Refresh graph
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleClearGraph}
+              className="inline-flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2"
+            >
+              <Eraser className="h-4 w-4" /> Clear graph
+            </button>
+            <button
+              type="button"
+              onClick={handleRefreshGraph}
+              disabled={isLoading || isFetchingSettings}
+              className={`inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 ${isLoading ? "opacity-80" : "hover:bg-primary/90"} disabled:cursor-not-allowed disabled:opacity-60`}
+            >
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} Refresh graph
+            </button>
+          </div>
         </div>
 
         <div className="mt-6 grid gap-6 md:grid-cols-2 xl:grid-cols-3">
@@ -308,12 +365,36 @@ const GraphExplorer = () => {
       )}
 
       {graph && (
-        <div className="grid gap-6 xl:grid-cols-2">
-          <section className="space-y-3 rounded-lg border bg-card p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-foreground">Nodes</h3>
+        <Fragment>
+          <section className="space-y-4 rounded-lg border bg-card p-6 shadow-sm">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-foreground">Graph preview</h3>
+                <p className="text-sm text-muted-foreground">
+                  Lightweight layout for visually exploring the current filters.
+                </p>
+              </div>
+              {graph.nodes.length > GRAPH_VISUALIZATION_NODE_LIMIT && (
+                <p className="text-xs text-muted-foreground">
+                  Showing first {GRAPH_VISUALIZATION_NODE_LIMIT} nodes out of {graph.nodes.length}.
+                </p>
+              )}
+            </div>
             {graph.nodes.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No nodes found for the selected filters.</p>
+              <p className="text-sm text-muted-foreground">
+                No nodes found for the selected filters.
+              </p>
             ) : (
+              <GraphVisualization nodes={graph.nodes} edges={graph.edges} />
+            )}
+          </section>
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <section className="space-y-3 rounded-lg border bg-card p-6 shadow-sm">
+              <h3 className="text-lg font-semibold text-foreground">Nodes</h3>
+              {graph.nodes.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No nodes found for the selected filters.</p>
+              ) : (
               <div className="overflow-auto">
                 <table className="min-w-full divide-y divide-border text-sm">
                   <thead className="bg-muted/60 text-xs uppercase tracking-wide text-muted-foreground">
@@ -384,8 +465,9 @@ const GraphExplorer = () => {
                 </table>
               </div>
             )}
-          </section>
-        </div>
+            </section>
+          </div>
+        </Fragment>
       )}
     </div>
   );
