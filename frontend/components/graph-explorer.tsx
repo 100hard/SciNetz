@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Eraser, Filter, Loader2, RefreshCw } from "lucide-react";
 
 import GraphVisualization, { GRAPH_VISUALIZATION_NODE_LIMIT } from "./graph-visualization";
@@ -96,6 +96,8 @@ const GraphExplorer = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isFetchingSettings, setIsFetchingSettings] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [autoFetchEnabled, setAutoFetchEnabled] = useState(true);
+  const skipNextAutoFetchRef = useRef(false);
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -149,8 +151,17 @@ const GraphExplorer = () => {
     if (!defaults) {
       return;
     }
+    if (!autoFetchEnabled) {
+      return;
+    }
+
+    if (skipNextAutoFetchRef.current) {
+      skipNextAutoFetchRef.current = false;
+      return;
+    }
+
     void fetchGraph();
-  }, [defaults, fetchGraph]);
+  }, [autoFetchEnabled, defaults, fetchGraph]);
 
   const relationOptions = defaults?.relations ?? [];
   const sectionOptions = defaults?.sections ?? [];
@@ -176,7 +187,17 @@ const GraphExplorer = () => {
   const handleClearGraph = useCallback(() => {
     setGraph(null);
     setError(null);
+    setAutoFetchEnabled(false);
   }, []);
+
+  const handleRefreshGraph = useCallback(() => {
+    if (!autoFetchEnabled) {
+      skipNextAutoFetchRef.current = true;
+      setAutoFetchEnabled(true);
+    }
+
+    void fetchGraph();
+  }, [autoFetchEnabled, fetchGraph]);
 
   return (
     <div className="space-y-6">
@@ -197,7 +218,7 @@ const GraphExplorer = () => {
             </button>
             <button
               type="button"
-              onClick={() => void fetchGraph()}
+              onClick={handleRefreshGraph}
               disabled={isLoading || isFetchingSettings}
               className={`inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground shadow-sm transition focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 ${isLoading ? "opacity-80" : "hover:bg-primary/90"} disabled:cursor-not-allowed disabled:opacity-60`}
             >
