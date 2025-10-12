@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Filter, Loader2, RefreshCw } from "lucide-react";
 
+import GraphVisualization, { GRAPH_VISUALIZATION_NODE_LIMIT } from "./graph-visualization";
 import apiClient, { extractErrorMessage } from "../lib/http";
 
 type GraphDefaults = {
@@ -17,7 +18,7 @@ type UiSettingsResponse = {
   graph_defaults: GraphDefaults;
 };
 
-type GraphNode = {
+export type GraphNode = {
   id: string;
   label: string;
   type?: string | null;
@@ -26,7 +27,7 @@ type GraphNode = {
   section_distribution: Record<string, number>;
 };
 
-type GraphEdge = {
+export type GraphEdge = {
   id: string;
   source: string;
   target: string;
@@ -308,12 +309,36 @@ const GraphExplorer = () => {
       )}
 
       {graph && (
-        <div className="grid gap-6 xl:grid-cols-2">
-          <section className="space-y-3 rounded-lg border bg-card p-6 shadow-sm">
-            <h3 className="text-lg font-semibold text-foreground">Nodes</h3>
+        <Fragment>
+          <section className="space-y-4 rounded-lg border bg-card p-6 shadow-sm">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-foreground">Graph preview</h3>
+                <p className="text-sm text-muted-foreground">
+                  Lightweight layout for visually exploring the current filters.
+                </p>
+              </div>
+              {graph.nodes.length > GRAPH_VISUALIZATION_NODE_LIMIT && (
+                <p className="text-xs text-muted-foreground">
+                  Showing first {GRAPH_VISUALIZATION_NODE_LIMIT} nodes out of {graph.nodes.length}.
+                </p>
+              )}
+            </div>
             {graph.nodes.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No nodes found for the selected filters.</p>
+              <p className="text-sm text-muted-foreground">
+                No nodes found for the selected filters.
+              </p>
             ) : (
+              <GraphVisualization nodes={graph.nodes} edges={graph.edges} />
+            )}
+          </section>
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <section className="space-y-3 rounded-lg border bg-card p-6 shadow-sm">
+              <h3 className="text-lg font-semibold text-foreground">Nodes</h3>
+              {graph.nodes.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No nodes found for the selected filters.</p>
+              ) : (
               <div className="overflow-auto">
                 <table className="min-w-full divide-y divide-border text-sm">
                   <thead className="bg-muted/60 text-xs uppercase tracking-wide text-muted-foreground">
@@ -384,8 +409,9 @@ const GraphExplorer = () => {
                 </table>
               </div>
             )}
-          </section>
-        </div>
+            </section>
+          </div>
+        </Fragment>
       )}
     </div>
   );
