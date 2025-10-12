@@ -53,6 +53,23 @@ type LayoutResult = {
   bounds: { minX: number; maxX: number; minY: number; maxY: number };
 };
 
+const createSeededGenerator = (seed: string): (() => number) => {
+  let value = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    value = (value * 31 + seed.charCodeAt(index)) >>> 0;
+  }
+  if (value === 0) {
+    value = 0x9e3779b9;
+  }
+  return () => {
+    value ^= value << 13;
+    value ^= value >>> 17;
+    value ^= value << 5;
+    value >>>= 0;
+    return (value & 0xfffffff) / 0x10000000;
+  };
+};
+
 const runForceLayout = (
   nodes: GraphNode[],
   edges: GraphEdge[],
@@ -72,22 +89,30 @@ const runForceLayout = (
   const allowedIds = new Set(nodes.map((node) => node.id));
   const filteredEdges = edges.filter((edge) => allowedIds.has(edge.source) && allowedIds.has(edge.target));
 
-  const simulationNodes: SimulationNode[] = nodes.map((node) => ({
-    node,
-    x: centerX + (Math.random() - 0.5) * width * 0.7,
-    y: centerY + (Math.random() - 0.5) * height * 0.7,
-    dx: 0,
-    dy: 0,
-  }));
+  const maxDimension = Math.max(width, height);
+  const simulationNodes: SimulationNode[] = nodes.map((node, index) => {
+    const seeded = createSeededGenerator(`${node.id}-${index}`);
+    const angle = seeded() * Math.PI * 2;
+    const radius = maxDimension * 0.35 * Math.sqrt(seeded());
+    return {
+      node,
+      x: centerX + Math.cos(angle) * radius,
+      y: centerY + Math.sin(angle) * radius,
+      dx: 0,
+      dy: 0,
+    };
+  });
 
   const nodeIndex = new Map(simulationNodes.map((entry) => [entry.node.id, entry]));
 
-  const iterations = Math.min(300, 100 + simulationNodes.length * 4);
+  const iterations = Math.min(450, 150 + simulationNodes.length * 4);
   const area = width * height;
   const k = Math.sqrt(area / simulationNodes.length);
-  let temperature = Math.min(width, height) / 2;
-  const coolingFactor = 0.92;
-  const gravity = 0.08;
+  let temperature = maxDimension / 1.5;
+  const coolingFactor = 0.93;
+  const gravity = 0.06;
+  const repulsionStrength = 0.95;
+  const attractionStrength = 0.05;
   const epsilon = 0.0001;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
@@ -103,7 +128,7 @@ const runForceLayout = (
         const dx = nodeA.x - nodeB.x;
         const dy = nodeA.y - nodeB.y;
         const distance = Math.sqrt(dx * dx + dy * dy) || epsilon;
-        const force = (k * k) / distance;
+        const force = (repulsionStrength * k * k) / distance;
         const offsetX = (dx / distance) * force;
         const offsetY = (dy / distance) * force;
         nodeA.dx += offsetX;
@@ -122,7 +147,7 @@ const runForceLayout = (
       const dx = source.x - target.x;
       const dy = source.y - target.y;
       const distance = Math.sqrt(dx * dx + dy * dy) || epsilon;
-      const force = (distance * distance) / k;
+      const force = (attractionStrength * distance * distance) / k;
       const offsetX = (dx / distance) * force;
       const offsetY = (dy / distance) * force;
       source.dx -= offsetX;
@@ -142,12 +167,17 @@ const runForceLayout = (
       node.x += (node.dx / displacement) * limited;
       node.y += (node.dy / displacement) * limited;
 
-      node.x = Math.min(width, Math.max(0, node.x));
-      node.y = Math.min(height, Math.max(0, node.y));
+      const distanceToCenter = Math.sqrt((node.x - centerX) ** 2 + (node.y - centerY) ** 2);
+      const maxDistance = maxDimension * 1.1;
+      if (distanceToCenter > maxDistance) {
+        const scale = maxDistance / distanceToCenter;
+        node.x = centerX + (node.x - centerX) * scale;
+        node.y = centerY + (node.y - centerY) * scale;
+      }
     }
 
     temperature *= coolingFactor;
-    if (temperature < 1) {
+    if (temperature < 0.4) {
       break;
     }
   }
