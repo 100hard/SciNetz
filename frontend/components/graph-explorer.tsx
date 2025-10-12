@@ -84,6 +84,8 @@ const stringify = (value: Record<string, unknown>) => {
   }
 };
 
+const AUTO_FETCH_STORAGE_KEY = "graphAutoFetchEnabled";
+
 const GraphExplorer = () => {
   const [defaults, setDefaults] = useState<GraphDefaults | null>(null);
   const [selectedRelations, setSelectedRelations] = useState<string[]>([]);
@@ -96,8 +98,27 @@ const GraphExplorer = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isFetchingSettings, setIsFetchingSettings] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [autoFetchEnabled, setAutoFetchEnabled] = useState(true);
+  const [autoFetchEnabled, setAutoFetchEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") {
+      return true;
+    }
+    const stored = window.sessionStorage.getItem(AUTO_FETCH_STORAGE_KEY);
+    if (stored === null) {
+      return true;
+    }
+    return stored === "true";
+  });
   const skipNextAutoFetchRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.sessionStorage.setItem(
+      AUTO_FETCH_STORAGE_KEY,
+      autoFetchEnabled ? "true" : "false",
+    );
+  }, [autoFetchEnabled]);
 
   useEffect(() => {
     const loadSettings = async () => {
