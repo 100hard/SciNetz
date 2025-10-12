@@ -147,6 +147,8 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
                 relation_sections |= Neo4jGraphViewRepository._sections_from_nodes(edge)
             if any(section in allowed for section in relation_sections):
                 filtered.append(edge)
+        if not filtered and trimmed:
+            return list(edges)
         return filtered
 
     @staticmethod

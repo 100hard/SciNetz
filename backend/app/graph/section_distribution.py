@@ -1,7 +1,8 @@
 """Utilities for encoding and decoding section distribution payloads."""
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Mapping, MutableSequence, Sequence, Tuple
+from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
+from typing import Any, Dict, Iterable, Mapping, MutableSequence, Tuple
 
 
 def encode_section_distribution(
@@ -48,7 +49,7 @@ def decode_section_distribution(
         Dictionary mapping section names to counts.
     """
 
-    if isinstance(distribution, Mapping):
+    if isinstance(distribution, MappingABC):
         return {
             str(section): int(count)
             for section, count in distribution.items()
@@ -81,8 +82,8 @@ def decode_distribution_from_mapping(data: Mapping[str, Any]) -> Dict[str, int]:
 
 
 def _coerce_sequence(value: Any) -> Iterable[Any]:
-    if isinstance(value, (list, tuple)):
-        return value
+    if isinstance(value, SequenceABC) and not isinstance(value, (str, bytes, bytearray)):
+        return list(value)
     if value is None:
         return []
     return [value]
