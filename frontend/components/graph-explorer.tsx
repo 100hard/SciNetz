@@ -98,20 +98,27 @@ const GraphExplorer = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isFetchingSettings, setIsFetchingSettings] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [autoFetchEnabled, setAutoFetchEnabled] = useState<boolean>(() => {
-    if (typeof window === "undefined") {
-      return true;
-    }
-    const stored = window.sessionStorage.getItem(AUTO_FETCH_STORAGE_KEY);
-    if (stored === null) {
-      return true;
-    }
-    return stored === "true";
-  });
+  const [autoFetchEnabled, setAutoFetchEnabled] = useState<boolean | null>(null);
   const skipNextAutoFetchRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === "undefined") {
+      return;
+    }
+    const stored = window.sessionStorage.getItem(AUTO_FETCH_STORAGE_KEY);
+    if (stored === "true") {
+      setAutoFetchEnabled(true);
+      return;
+    }
+    if (stored === "false") {
+      setAutoFetchEnabled(false);
+      return;
+    }
+    setAutoFetchEnabled(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || autoFetchEnabled === null) {
       return;
     }
     window.sessionStorage.setItem(
@@ -172,7 +179,7 @@ const GraphExplorer = () => {
     if (!defaults) {
       return;
     }
-    if (!autoFetchEnabled) {
+    if (autoFetchEnabled !== true) {
       return;
     }
 
@@ -212,7 +219,7 @@ const GraphExplorer = () => {
   }, []);
 
   const handleRefreshGraph = useCallback(() => {
-    if (!autoFetchEnabled) {
+    if (autoFetchEnabled !== true) {
       skipNextAutoFetchRef.current = true;
       setAutoFetchEnabled(true);
     }
