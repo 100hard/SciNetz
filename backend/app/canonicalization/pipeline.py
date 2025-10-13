@@ -89,8 +89,18 @@ class EntityAggregator:
         for name, sections in extraction.section_distribution.items():
             entity = self._entities.setdefault(name, _AggregatedEntity(name=name))
             entity.add_sections(sections)
+        touched: Set[str] = set()
         for triplet in extraction.triplets:
+            touched.update((triplet.subject, triplet.object))
             self._register_triplet(triplet)
+        for name, votes in extraction.entity_type_votes.items():
+            entity = self._entities.setdefault(name, _AggregatedEntity(name=name))
+            for entity_type, weight in votes.items():
+                entity.add_type(entity_type, weight)
+        for name in touched:
+            entity = self._entities.setdefault(name, _AggregatedEntity(name=name))
+            if not entity.type_counts:
+                entity.add_type(self._resolve_type(name))
 
     def extend(self, extractions: Iterable[ExtractionResult]) -> None:
         """Ingest a collection of extraction results."""
@@ -110,7 +120,6 @@ class EntityAggregator:
         for name in (triplet.subject, triplet.object):
             entity = self._entities.setdefault(name, _AggregatedEntity(name=name))
             entity.add_doc(doc_id)
-            entity.add_type(self._resolve_type(name))
 
     def _resolve_type(self, name: str) -> str:
         if self._type_resolver is None:

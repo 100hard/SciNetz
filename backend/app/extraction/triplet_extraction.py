@@ -119,8 +119,10 @@ class RawLLMTriple:
     """Representation of a triple returned from the LLM pass."""
 
     subject_text: str
+    subject_type: str
     relation_verbatim: str
     object_text: str
+    object_type: str
     confidence: float
     supportive_sentence: Optional[str] = None
 
@@ -132,6 +134,7 @@ class ExtractionResult:
     triplets: List[Triplet]
     section_distribution: Dict[str, Dict[str, int]]
     relation_verbatims: List[str] = field(default_factory=list)
+    entity_type_votes: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
 
 class _TruncationError(RuntimeError):
@@ -175,7 +178,9 @@ class OpenAIExtractor(LLMExtractor):
         "Set the relation_verbatim field to exactly one of the allowed relations; do not invent new predicates or alter their spelling. "
         "Only emit a triple when the predicate can be normalized to this inventory; otherwise skip it. "
         "Avoid vague or generic language and convert passive voice to active voice when needed. "
-        "Return full supportive sentences verbatim and include a confidence between 0.0 and 1.0."
+        "Return full supportive sentences verbatim and include a confidence between 0.0 and 1.0. "
+        "Classify every subject and object using the allowed entity types: {allowed_entity_types}. "
+        "Populate subject_type and object_type using exactly one label from that list for each triple."
     )
     _RESPONSE_SCHEMA = {
         "type": "json_schema",
@@ -190,15 +195,19 @@ class OpenAIExtractor(LLMExtractor):
                             "type": "object",
                             "properties": {
                                 "subject_text": {"type": "string"},
+                                "subject_type": {"type": "string"},
                                 "relation_verbatim": {"type": "string"},
                                 "object_text": {"type": "string"},
+                                "object_type": {"type": "string"},
                                 "supportive_sentence": {"type": "string"},
                                 "confidence": {"type": "number"},
                             },
                             "required": [
                                 "subject_text",
+                                "subject_type",
                                 "relation_verbatim",
                                 "object_text",
+                                "object_type",
                                 "supportive_sentence",
                                 "confidence",
                             ],
@@ -225,6 +234,7 @@ class OpenAIExtractor(LLMExtractor):
         http_post: Optional[_HTTPPostCallable] = None,
         token_budget_per_triple: int,
         allowed_relations: Sequence[str],
+        entity_types: Sequence[str],
         max_prompt_entities: int,
         response_cache: Optional["LLMResponseCache"] = None,
         token_cache: Optional["TokenBudgetCache"] = None,
@@ -258,6 +268,15 @@ class OpenAIExtractor(LLMExtractor):
             raise ValueError("allowed_relations must include at least one value")
         self._allowed_relations = tuple(normalized_relations)
         self._allowed_relations_text = ", ".join(self._allowed_relations)
+        normalized_entity_types: List[str] = []
+        for entity_type in entity_types:
+            cleaned_type = str(entity_type).strip()
+            if cleaned_type and cleaned_type not in normalized_entity_types:
+                normalized_entity_types.append(cleaned_type)
+        if not normalized_entity_types:
+            raise ValueError("entity_types must include at least one value")
+        self._allowed_entity_types = tuple(normalized_entity_types)
+        self._allowed_entity_types_text = ", ".join(self._allowed_entity_types)
 
         self._client: Optional[_HTTPClient]
         self._owns_client = False
@@ -479,6 +498,7 @@ class OpenAIExtractor(LLMExtractor):
             content_hash,
             budget,
             str(self._max_prompt_entities),
+            self._allowed_entity_types_text,
         ]
         if prompt_entities:
             parts.extend(prompt_entities)
@@ -514,6 +534,7 @@ class OpenAIExtractor(LLMExtractor):
             prompt_version=self._settings.prompt_version,
             max_triples=max_triples,
             allowed_relations=self._allowed_relations_text,
+            allowed_entity_types=self._allowed_entity_types_text,
         )
 
     def _render_user_prompt(
@@ -681,8 +702,10 @@ class OpenAIExtractor(LLMExtractor):
             try:
                 triple = RawLLMTriple(
                     subject_text=str(item["subject_text"]),
+                    subject_type=str(item["subject_type"]),
                     relation_verbatim=str(item["relation_verbatim"]),
                     object_text=str(item["object_text"]),
+                    object_type=str(item["object_type"]),
                     supportive_sentence=(str(supportive_sentence) if supportive_sentence is not None else None),
                     confidence=float(item["confidence"]),
                 )
@@ -728,6 +751,18 @@ class TwoPassTripletExtractor:
         self._config = config
         self._llm_extractor = llm_extractor
         self._threshold = config.extraction.fuzzy_match_threshold
+        normalized_types: Dict[str, str] = {}
+        for entity_type in config.extraction.entity_types:
+            cleaned = entity_type.strip()
+            if not cleaned:
+                continue
+            lowered = cleaned.lower()
+            if lowered not in normalized_types:
+                normalized_types[lowered] = cleaned
+        if not normalized_types:
+            raise ValueError("config.extraction.entity_types must include at least one valid entry")
+        self._entity_types = tuple(normalized_types.values())
+        self._entity_type_lookup = normalized_types
 
     def extract_from_element(
         self,
@@ -744,7 +779,7 @@ class TwoPassTripletExtractor:
             List[Triplet]: Triples that passed span validation and normalization.
         """
 
-        triplets, _, _ = self._extract_internal(element, candidate_entities)
+        triplets, _, _, _ = self._extract_internal(element, candidate_entities)
         return triplets
 
     def extract_with_metadata(
@@ -754,21 +789,33 @@ class TwoPassTripletExtractor:
     ) -> "ExtractionResult":
         """Extract triples and section distribution metadata for canonicalization."""
 
-        triplets, section_distribution, verbatims = self._extract_internal(
+        triplets, section_distribution, verbatims, type_votes = self._extract_internal(
             element, candidate_entities
         )
         return ExtractionResult(
             triplets=triplets,
             section_distribution=section_distribution,
             relation_verbatims=verbatims,
+            entity_type_votes=type_votes,
         )
 
     def _extract_internal(
         self,
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]],
-    ) -> Tuple[List[Triplet], Dict[str, Dict[str, int]], List[str]]:
-        """Run LLM extraction and span validation, returning metadata."""
+    ) -> Tuple[
+        List[Triplet],
+        Dict[str, Dict[str, int]],
+        List[str],
+        Dict[str, Dict[str, int]],
+    ]:
+        """Run LLM extraction and span validation, returning metadata.
+
+        Returns:
+            Tuple[List[Triplet], Dict[str, Dict[str, int]], List[str], Dict[str, Dict[str, int]]]:
+                Validated triplets, per-entity section counts, verbatim relations, and
+                aggregated entity type votes derived from the LLM output.
+        """
 
         max_triples = self._compute_max_triples(element.content)
         raw_triples = self._llm_extractor.extract_triples(
@@ -779,6 +826,7 @@ class TwoPassTripletExtractor:
         accepted: List[Triplet] = []
         section_counts: Dict[str, Dict[str, int]] = {}
         relation_verbatims: List[str] = []
+        type_votes: Dict[str, Dict[str, int]] = {}
         for raw in raw_triples:
             try:
                 normalized_relation, swap = normalize_relation(raw.relation_verbatim)
@@ -787,6 +835,8 @@ class TwoPassTripletExtractor:
                 continue
             subject_text = raw.subject_text.strip()
             object_text = raw.object_text.strip()
+            subject_type = self._normalize_entity_type(raw.subject_type)
+            object_type = self._normalize_entity_type(raw.object_type)
             if not subject_text or not object_text:
                 LOGGER.info("Dropping triple with empty subject/object: %s", raw)
                 continue
@@ -804,6 +854,7 @@ class TwoPassTripletExtractor:
                 continue
             if swap:
                 subject_text, object_text = object_text, subject_text
+                subject_type, object_type = object_type, subject_type
             subject_span = self._find_span(element.content, subject_text)
             object_span = self._find_span(element.content, object_text)
             sentence_span = self._find_span(element.content, sentence_text)
@@ -844,6 +895,14 @@ class TwoPassTripletExtractor:
             )
             accepted.append(triplet)
             relation_verbatims.append(raw.relation_verbatim)
+            if subject_type:
+                self._increment_type_vote(type_votes, subject_text, subject_type)
+            elif raw.subject_type:
+                LOGGER.debug("Unrecognized subject type '%s' for %s", raw.subject_type, subject_text)
+            if object_type:
+                self._increment_type_vote(type_votes, object_text, object_type)
+            elif raw.object_type:
+                LOGGER.debug("Unrecognized object type '%s' for %s", raw.object_type, object_text)
             self._update_section_counts(
                 section_counts,
                 element.section,
@@ -851,7 +910,8 @@ class TwoPassTripletExtractor:
                 object_text,
             )
         section_distribution = {entity: dict(counts) for entity, counts in section_counts.items()}
-        return accepted, section_distribution, relation_verbatims
+        entity_type_votes = {entity: dict(counts) for entity, counts in type_votes.items()}
+        return accepted, section_distribution, relation_verbatims, entity_type_votes
 
     def _resolve_supportive_sentence(
         self,
@@ -940,6 +1000,25 @@ class TwoPassTripletExtractor:
         for entity in (subject_text, object_text):
             entity_counts = section_counts.setdefault(entity, {})
             entity_counts[section] = entity_counts.get(section, 0) + 1
+
+    def _normalize_entity_type(self, entity_type: Optional[str]) -> Optional[str]:
+        """Normalize an entity type emitted by the LLM response."""
+
+        if entity_type is None:
+            return None
+        cleaned = str(entity_type).strip().lower()
+        if not cleaned:
+            return None
+        return self._entity_type_lookup.get(cleaned)
+
+    @staticmethod
+    def _increment_type_vote(
+        accumulator: Dict[str, Dict[str, int]], entity: str, entity_type: str
+    ) -> None:
+        """Accumulate a vote for an entity type."""
+
+        entity_votes = accumulator.setdefault(entity, {})
+        entity_votes[entity_type] = entity_votes.get(entity_type, 0) + 1
 
     def _compute_max_triples(self, content: str) -> int:
         """Compute the triple limit for an element based on token count.

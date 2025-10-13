@@ -17,15 +17,19 @@
     "triples": [
       {
         "subject_text": "The Reinforcement Learning agent",
+        "subject_type": "Method",
         "relation_verbatim": "uses",
         "object_text": "the PPO algorithm",
+        "object_type": "Method",
         "supportive_sentence": "The Reinforcement Learning agent uses the PPO algorithm to stabilize training.",
         "confidence": 0.95
       },
       {
         "subject_text": "The Reinforcement Learning agent",
+        "subject_type": "Method",
         "relation_verbatim": "outperforms",
         "object_text": "baseline methods",
+        "object_type": "Method",
         "supportive_sentence": "The Reinforcement Learning agent outperforms baseline methods on Atari games.",
         "confidence": 0.9
       }
