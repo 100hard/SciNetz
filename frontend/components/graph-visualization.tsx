@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { GraphEdge, GraphNode } from "./graph-explorer";
 
@@ -26,6 +26,8 @@ type PositionedEdge = {
 };
 
 const DEFAULT_HEIGHT = 420;
+const MIN_SCALE = 0.35;
+const MAX_SCALE = 4.2;
 
 const hashColor = (value: string | null | undefined): string => {
   if (!value) {
@@ -41,6 +43,10 @@ const hashColor = (value: string | null | undefined): string => {
 
 type SimulationNode = {
   node: GraphNode;
+  componentId: number;
+  anchorX: number;
+  anchorY: number;
+  anchorRadius: number;
   x: number;
   y: number;
   dx: number;
@@ -51,6 +57,12 @@ type LayoutResult = {
   nodes: PositionedNode[];
   edges: PositionedEdge[];
   bounds: { minX: number; maxX: number; minY: number; maxY: number };
+};
+
+type GraphTransform = {
+  scale: number;
+  x: number;
+  y: number;
 };
 
 const createSeededGenerator = (seed: string): (() => number) => {
@@ -90,14 +102,84 @@ const runForceLayout = (
   const filteredEdges = edges.filter((edge) => allowedIds.has(edge.source) && allowedIds.has(edge.target));
 
   const maxDimension = Math.max(width, height);
+
+  const adjacency = new Map<string, Set<string>>();
+  for (const node of nodes) {
+    adjacency.set(node.id, new Set());
+  }
+  for (const edge of filteredEdges) {
+    adjacency.get(edge.source)?.add(edge.target);
+    adjacency.get(edge.target)?.add(edge.source);
+  }
+
+  const componentByNode = new Map<string, number>();
+  const componentSizes: number[] = [];
+  for (const node of nodes) {
+    if (componentByNode.has(node.id)) {
+      continue;
+    }
+    const queue: string[] = [node.id];
+    const componentId = componentSizes.length;
+    componentByNode.set(node.id, componentId);
+    let size = 0;
+    while (queue.length) {
+      const current = queue.pop();
+      if (!current) {
+        continue;
+      }
+      size += 1;
+      const neighbours = adjacency.get(current);
+      if (!neighbours) {
+        continue;
+      }
+      for (const neighbour of neighbours) {
+        if (!componentByNode.has(neighbour)) {
+          componentByNode.set(neighbour, componentId);
+          queue.push(neighbour);
+        }
+      }
+    }
+    componentSizes.push(size);
+  }
+
+  if (!componentSizes.length) {
+    componentSizes.push(nodes.length);
+  }
+
+  const componentAnchors = new Map<
+    number,
+    { x: number; y: number; radius: number }
+  >();
+  const componentSpreadBase = Math.max(nodes.length, 1);
+  for (let index = 0; index < componentSizes.length; index += 1) {
+    const seeded = createSeededGenerator(`component-${index}`);
+    const weight = componentSizes[index] / componentSpreadBase;
+    const angle = seeded() * Math.PI * 2;
+    const distance = maxDimension * (0.18 + seeded() * 0.22 + weight * 0.12);
+    const radius = maxDimension * (0.38 + weight * 0.24 + seeded() * 0.1);
+    componentAnchors.set(index, {
+      x: centerX + Math.cos(angle) * distance,
+      y: centerY + Math.sin(angle) * distance,
+      radius,
+    });
+  }
   const simulationNodes: SimulationNode[] = nodes.map((node, index) => {
+    const componentId = componentByNode.get(node.id) ?? 0;
+    const anchor = componentAnchors.get(componentId);
     const seeded = createSeededGenerator(`${node.id}-${index}`);
     const angle = seeded() * Math.PI * 2;
-    const radius = maxDimension * 0.35 * Math.sqrt(seeded());
+    const radius = maxDimension * (0.22 + seeded() * 0.24);
+    const jitterMagnitude = maxDimension * 0.04;
+    const jitterX = (seeded() - 0.5) * 2 * jitterMagnitude;
+    const jitterY = (seeded() - 0.5) * 2 * jitterMagnitude;
     return {
       node,
-      x: centerX + Math.cos(angle) * radius,
-      y: centerY + Math.sin(angle) * radius,
+      componentId,
+      anchorX: anchor?.x ?? centerX,
+      anchorY: anchor?.y ?? centerY,
+      anchorRadius: anchor?.radius ?? maxDimension * 0.6,
+      x: (anchor?.x ?? centerX) + Math.cos(angle) * radius + jitterX,
+      y: (anchor?.y ?? centerY) + Math.sin(angle) * radius + jitterY,
       dx: 0,
       dy: 0,
     };
@@ -105,14 +187,14 @@ const runForceLayout = (
 
   const nodeIndex = new Map(simulationNodes.map((entry) => [entry.node.id, entry]));
 
-  const iterations = Math.min(450, 150 + simulationNodes.length * 4);
+  const iterations = Math.min(480, 160 + simulationNodes.length * 4);
   const area = width * height;
   const k = Math.sqrt(area / simulationNodes.length);
-  let temperature = maxDimension / 1.5;
-  const coolingFactor = 0.93;
-  const gravity = 0.06;
-  const repulsionStrength = 0.95;
-  const attractionStrength = 0.05;
+  let temperature = maxDimension / 1.3;
+  const coolingFactor = 0.92;
+  const gravity = 0.045;
+  const repulsionStrength = 1.05;
+  const attractionStrength = 0.055;
   const epsilon = 0.0001;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
@@ -157,22 +239,22 @@ const runForceLayout = (
     }
 
     for (const node of simulationNodes) {
-      const toCenterX = node.x - centerX;
-      const toCenterY = node.y - centerY;
-      node.dx -= toCenterX * gravity;
-      node.dy -= toCenterY * gravity;
+      const toAnchorX = node.x - node.anchorX;
+      const toAnchorY = node.y - node.anchorY;
+      node.dx -= toAnchorX * gravity;
+      node.dy -= toAnchorY * gravity;
 
       const displacement = Math.sqrt(node.dx * node.dx + node.dy * node.dy) || epsilon;
       const limited = Math.min(displacement, temperature);
       node.x += (node.dx / displacement) * limited;
       node.y += (node.dy / displacement) * limited;
 
-      const distanceToCenter = Math.sqrt((node.x - centerX) ** 2 + (node.y - centerY) ** 2);
-      const maxDistance = maxDimension * 1.1;
-      if (distanceToCenter > maxDistance) {
-        const scale = maxDistance / distanceToCenter;
-        node.x = centerX + (node.x - centerX) * scale;
-        node.y = centerY + (node.y - centerY) * scale;
+      const distanceToAnchor = Math.sqrt((node.x - node.anchorX) ** 2 + (node.y - node.anchorY) ** 2);
+      const maxDistance = node.anchorRadius;
+      if (distanceToAnchor > maxDistance) {
+        const scale = maxDistance / distanceToAnchor;
+        node.x = node.anchorX + (node.x - node.anchorX) * scale;
+        node.y = node.anchorY + (node.y - node.anchorY) * scale;
       }
     }
 
@@ -187,7 +269,13 @@ const runForceLayout = (
   let maxX = Number.NEGATIVE_INFINITY;
   let maxY = Number.NEGATIVE_INFINITY;
 
-  const positionedNodes: PositionedNode[] = simulationNodes.map((node) => {
+  const positionedNodes: PositionedNode[] = simulationNodes.map((node, index) => {
+    const jitterGenerator = createSeededGenerator(`post-${node.node.id}-${index}`);
+    const jitterScale = maxDimension * 0.012;
+    const jitterX = (jitterGenerator() - 0.5) * 2 * jitterScale;
+    const jitterY = (jitterGenerator() - 0.5) * 2 * jitterScale;
+    node.x += jitterX;
+    node.y += jitterY;
     minX = Math.min(minX, node.x);
     minY = Math.min(minY, node.y);
     maxX = Math.max(maxX, node.x);
@@ -233,9 +321,22 @@ const getNodeRadius = (node: GraphNode): number => {
 
 const getEdgeStroke = (confidence: number): number => 1.2 + confidence * 1.4;
 
+const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
+
 const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: GraphEdge[] }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
   const [dimensions, setDimensions] = useState<Dimensions>({ width: 0, height: DEFAULT_HEIGHT });
+  const [transform, setTransform] = useState<GraphTransform>({ scale: 1, x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const panState = useRef({
+    isActive: false,
+    pointerId: null as number | null,
+    startClientX: 0,
+    startClientY: 0,
+    originX: 0,
+    originY: 0,
+  });
 
   useEffect(() => {
     const element = containerRef.current;
@@ -262,12 +363,18 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
     };
   }, []);
 
-  const { positionedNodes, positionedEdges, viewBox } = useMemo(() => {
+  const { positionedNodes, positionedEdges, viewBox, viewWidth, viewHeight } = useMemo(() => {
     const limitedNodes = nodes.slice(0, GRAPH_VISUALIZATION_NODE_LIMIT);
     const width = Math.max(dimensions.width, 320);
     const height = Math.max(dimensions.height, DEFAULT_HEIGHT);
     if (!limitedNodes.length) {
-      return { positionedNodes: [] as PositionedNode[], positionedEdges: [] as PositionedEdge[], viewBox: `0 0 ${width} ${height}` };
+      return {
+        positionedNodes: [] as PositionedNode[],
+        positionedEdges: [] as PositionedEdge[],
+        viewBox: `0 0 ${width} ${height}`,
+        viewWidth: width,
+        viewHeight: height,
+      };
     }
 
     const layout = runForceLayout(limitedNodes, edges, width, height);
@@ -304,15 +411,171 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       positionedNodes: translatedNodes,
       positionedEdges: translatedEdges,
       viewBox: `0 0 ${viewWidth} ${viewHeight}`,
+      viewWidth,
+      viewHeight,
     };
   }, [dimensions.height, dimensions.width, edges, nodes]);
+
+  useEffect(() => {
+    setTransform({ scale: 1, x: 0, y: 0 });
+  }, [positionedNodes.length, positionedEdges.length]);
+
+  const handleWheel = useCallback(
+    (event: React.WheelEvent<SVGSVGElement>) => {
+      if (!svgRef.current || viewWidth === 0 || viewHeight === 0) {
+        return;
+      }
+      event.preventDefault();
+      const svgBounds = svgRef.current.getBoundingClientRect();
+      const pointer = {
+        x: ((event.clientX - svgBounds.left) / svgBounds.width) * viewWidth,
+        y: ((event.clientY - svgBounds.top) / svgBounds.height) * viewHeight,
+      };
+      const zoomFactor = event.deltaY < 0 ? 1.12 : 0.88;
+      setTransform((current) => {
+        const nextScale = clamp(current.scale * zoomFactor, MIN_SCALE, MAX_SCALE);
+        const delta = current.scale - nextScale;
+        return {
+          scale: nextScale,
+          x: current.x + delta * pointer.x,
+          y: current.y + delta * pointer.y,
+        };
+      });
+    },
+    [viewHeight, viewWidth],
+  );
+
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<SVGSVGElement>) => {
+      if (!svgRef.current || viewWidth === 0 || viewHeight === 0) {
+        return;
+      }
+      svgRef.current.setPointerCapture(event.pointerId);
+      panState.current = {
+        isActive: true,
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        originX: transform.x,
+        originY: transform.y,
+      };
+      setIsPanning(true);
+    },
+    [transform.x, transform.y, viewHeight, viewWidth],
+  );
+
+  const handlePointerMove = useCallback(
+    (event: React.PointerEvent<SVGSVGElement>) => {
+      if (!svgRef.current || !panState.current.isActive) {
+        return;
+      }
+      const svgBounds = svgRef.current.getBoundingClientRect();
+      const unitX = viewWidth / svgBounds.width;
+      const unitY = viewHeight / svgBounds.height;
+      const deltaX = (event.clientX - panState.current.startClientX) * unitX;
+      const deltaY = (event.clientY - panState.current.startClientY) * unitY;
+      setTransform((current) => ({
+        ...current,
+        x: panState.current.originX + deltaX,
+        y: panState.current.originY + deltaY,
+      }));
+    },
+    [viewHeight, viewWidth],
+  );
+
+  const endPan = useCallback((event: React.PointerEvent<SVGSVGElement>) => {
+    if (svgRef.current && panState.current.pointerId !== null) {
+      try {
+        svgRef.current.releasePointerCapture(panState.current.pointerId);
+      } catch (error) {
+        console.error("Failed to release pointer capture", error);
+      }
+    }
+    panState.current = {
+      isActive: false,
+      pointerId: null,
+      startClientX: 0,
+      startClientY: 0,
+      originX: 0,
+      originY: 0,
+    };
+    setIsPanning(false);
+  }, []);
+
+  const handleDoubleClick = useCallback(() => {
+    setTransform({ scale: 1, x: 0, y: 0 });
+  }, []);
+
+  const zoomCentered = useCallback(
+    (factor: number) => {
+      if (viewWidth === 0 || viewHeight === 0) {
+        return;
+      }
+      const center = { x: viewWidth / 2, y: viewHeight / 2 };
+      setTransform((current) => {
+        const nextScale = clamp(current.scale * factor, MIN_SCALE, MAX_SCALE);
+        const delta = current.scale - nextScale;
+        return {
+          scale: nextScale,
+          x: current.x + delta * center.x,
+          y: current.y + delta * center.y,
+        };
+      });
+    },
+    [viewHeight, viewWidth],
+  );
+
+  const handleZoomIn = useCallback(() => {
+    zoomCentered(1.12);
+  }, [zoomCentered]);
+
+  const handleZoomOut = useCallback(() => {
+    zoomCentered(0.88);
+  }, [zoomCentered]);
 
   return (
     <div
       ref={containerRef}
       className="relative h-[420px] w-full overflow-hidden rounded-md border border-border bg-gradient-to-br from-background via-background/70 to-background"
     >
-      <svg className="h-full w-full" viewBox={viewBox} role="img" aria-label="Knowledge graph preview">
+      <div className="pointer-events-none absolute left-3 top-3 flex gap-2">
+        <button
+          type="button"
+          onClick={handleZoomIn}
+          className="pointer-events-auto rounded-md border border-border bg-background/80 px-2 py-1 text-xs font-medium shadow-sm transition hover:bg-background"
+        >
+          Zoom in
+        </button>
+        <button
+          type="button"
+          onClick={handleZoomOut}
+          className="pointer-events-auto rounded-md border border-border bg-background/80 px-2 py-1 text-xs font-medium shadow-sm transition hover:bg-background"
+        >
+          Zoom out
+        </button>
+        <button
+          type="button"
+          onClick={handleDoubleClick}
+          className="pointer-events-auto rounded-md border border-border bg-background/80 px-2 py-1 text-xs font-medium shadow-sm transition hover:bg-background"
+        >
+          Reset view
+        </button>
+      </div>
+      <svg
+        ref={svgRef}
+        className={`h-full w-full ${isPanning ? "cursor-grabbing" : "cursor-grab"}`}
+        viewBox={viewBox}
+        role="img"
+        aria-label="Knowledge graph preview"
+        onWheel={handleWheel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={endPan}
+        onPointerLeave={endPan}
+        onPointerCancel={endPan}
+        onDoubleClick={handleDoubleClick}
+        style={{ touchAction: "none" }}
+      >
         <defs>
           <marker id="graph-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
             <path d="M0,0 L8,4 L0,8" fill="hsl(var(--muted-foreground))" />
@@ -321,86 +584,88 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
             <feDropShadow dx="0" dy="1" stdDeviation="1.4" floodColor="rgba(0,0,0,0.25)" />
           </filter>
         </defs>
-        <g stroke="hsl(var(--muted-foreground))" strokeOpacity="0.45">
-          {positionedEdges.map((edge) => {
-            const midX = (edge.source.x + edge.target.x) / 2;
-            const midY = (edge.source.y + edge.target.y) / 2;
-            const rawAngle = (Math.atan2(edge.target.y - edge.source.y, edge.target.x - edge.source.x) * 180) / Math.PI;
-            const flipped = rawAngle > 90 || rawAngle < -90;
-            const angle = flipped ? rawAngle + 180 : rawAngle;
-            const label = edge.relation;
-            const labelWidth = Math.min(140, Math.max(56, label.length * 6));
-            return (
-              <g key={edge.id}>
-                <line
-                  x1={edge.source.x}
-                  y1={edge.source.y}
-                  x2={edge.target.x}
-                  y2={edge.target.y}
-                  markerEnd="url(#graph-arrow)"
-                  strokeWidth={getEdgeStroke(edge.confidence)}
-                />
-                <g transform={`translate(${midX}, ${midY}) rotate(${angle})`}>
-                  <rect
-                    x={-labelWidth / 2}
-                    y={-10}
-                    width={labelWidth}
-                    height={20}
-                    rx={6}
-                    fill="hsl(var(--background))"
-                    opacity={0.85}
+        <g transform={`translate(${transform.x} ${transform.y}) scale(${transform.scale})`}>
+          <g stroke="hsl(var(--muted-foreground))" strokeOpacity="0.45">
+            {positionedEdges.map((edge) => {
+              const midX = (edge.source.x + edge.target.x) / 2;
+              const midY = (edge.source.y + edge.target.y) / 2;
+              const rawAngle = (Math.atan2(edge.target.y - edge.source.y, edge.target.x - edge.source.x) * 180) / Math.PI;
+              const flipped = rawAngle > 90 || rawAngle < -90;
+              const angle = flipped ? rawAngle + 180 : rawAngle;
+              const label = edge.relation;
+              const labelWidth = Math.min(140, Math.max(56, label.length * 6));
+              return (
+                <g key={edge.id}>
+                  <line
+                    x1={edge.source.x}
+                    y1={edge.source.y}
+                    x2={edge.target.x}
+                    y2={edge.target.y}
+                    markerEnd="url(#graph-arrow)"
+                    strokeWidth={getEdgeStroke(edge.confidence)}
                   />
+                  <g transform={`translate(${midX}, ${midY}) rotate(${angle})`}>
+                    <rect
+                      x={-labelWidth / 2}
+                      y={-10}
+                      width={labelWidth}
+                      height={20}
+                      rx={6}
+                      fill="hsl(var(--background))"
+                      opacity={0.85}
+                    />
+                    <text
+                      textAnchor="middle"
+                      fontSize="9"
+                      fill="hsl(var(--foreground))"
+                      transform={flipped ? "scale(-1, -1)" : undefined}
+                    >
+                      {label}
+                    </text>
+                  </g>
+                </g>
+              );
+            })}
+          </g>
+          <g>
+            {positionedNodes.map((entry) => (
+              <g key={entry.node.id} transform={`translate(${entry.x}, ${entry.y})`}>
+                <circle
+                  r={getNodeRadius(entry.node)}
+                  fill={hashColor(entry.node.type ?? null)}
+                  stroke="hsl(var(--card))"
+                  strokeWidth={2}
+                  opacity={0.95}
+                  filter="url(#node-shadow)"
+                >
+                  <title>
+                    {entry.node.label}
+                    {entry.node.type ? `\nType: ${entry.node.type}` : ""}
+                    {`\nTimes seen: ${entry.node.times_seen}`}
+                    {`\nConfidence-weighted edges: ${
+                      entry.node.section_distribution
+                        ? Object.values(entry.node.section_distribution).reduce((acc, value) => acc + value, 0)
+                        : 0
+                    }`}
+                  </title>
+                </circle>
+                <text x={0} y={getNodeRadius(entry.node) + 16} textAnchor="middle" fontSize="11" fill="hsl(var(--foreground))">
+                  {truncateLabel(entry.node.label)}
+                </text>
+                {entry.node.type ? (
                   <text
+                    x={0}
+                    y={getNodeRadius(entry.node) + 30}
                     textAnchor="middle"
                     fontSize="9"
-                    fill="hsl(var(--foreground))"
-                    transform={flipped ? "scale(-1, -1)" : undefined}
+                    fill="hsl(var(--muted-foreground))"
                   >
-                    {label}
+                    {entry.node.type}
                   </text>
-                </g>
+                ) : null}
               </g>
-            );
-          })}
-        </g>
-        <g>
-          {positionedNodes.map((entry) => (
-            <g key={entry.node.id} transform={`translate(${entry.x}, ${entry.y})`}>
-              <circle
-                r={getNodeRadius(entry.node)}
-                fill={hashColor(entry.node.type ?? null)}
-                stroke="hsl(var(--card))"
-                strokeWidth={2}
-                opacity={0.95}
-                filter="url(#node-shadow)"
-              >
-                <title>
-                  {entry.node.label}
-                  {entry.node.type ? `\nType: ${entry.node.type}` : ""}
-                  {`\nTimes seen: ${entry.node.times_seen}`}
-                  {`\nConfidence-weighted edges: ${
-                    entry.node.section_distribution
-                      ? Object.values(entry.node.section_distribution).reduce((acc, value) => acc + value, 0)
-                      : 0
-                  }`}
-                </title>
-              </circle>
-              <text x={0} y={getNodeRadius(entry.node) + 16} textAnchor="middle" fontSize="11" fill="hsl(var(--foreground))">
-                {truncateLabel(entry.node.label)}
-              </text>
-              {entry.node.type ? (
-                <text
-                  x={0}
-                  y={getNodeRadius(entry.node) + 30}
-                  textAnchor="middle"
-                  fontSize="9"
-                  fill="hsl(var(--muted-foreground))"
-                >
-                  {entry.node.type}
-                </text>
-              ) : null}
-            </g>
-          ))}
+            ))}
+          </g>
         </g>
       </svg>
     </div>
