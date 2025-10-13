@@ -63,9 +63,16 @@ extraction:
   cache_dir: "data/cache"
   response_cache_filename: "openai_responses.json"
   token_cache_filename: "openai_token_budget.json"
+  entity_types:
+    - Method
+    - Dataset
+    - Metric
+    - Task
+    - Material
+    - Other
 
 canonicalization:
-  base_threshold: 0.86
+  base_threshold: 0.82
   polysemy_threshold: 0.92
   polysemy_section_diversity: 3
   polysemy_blocklist:
@@ -77,6 +84,9 @@ canonicalization:
     - algorithm
     - network
     - approach
+  lexical_similarity_threshold: 0.9
+  lexical_similarity_bonus: 0.04
+  type_match_bonus: 0.03
 
 relations:
   normalization_patterns:
@@ -236,3 +246,6 @@ ui:
       - Methods
     show_co_mentions: false
     layout: fcose
+  lexical_similarity_threshold: 0.9
+  lexical_similarity_bonus: 0.04
+  type_match_bonus: 0.03

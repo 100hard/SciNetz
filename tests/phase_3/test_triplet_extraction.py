@@ -120,8 +120,10 @@ def test_triplet_with_missing_span_is_rejected(config) -> None:
         triples=[
             RawLLMTriple(
                 subject_text="Transformer",  # not present
+                subject_type="Method",
                 relation_verbatim="uses",
                 object_text="attention",
+                object_type="Method",
                 supportive_sentence="Graph neural networks achieve strong accuracy.",
                 confidence=0.9,
             )
@@ -151,8 +153,10 @@ def test_missing_supportive_sentence_falls_back_to_element_content(config) -> No
         triples=[
             RawLLMTriple(
                 subject_text="Model A",
+                subject_type="Method",
                 relation_verbatim="compared-to",
                 object_text="Model B",
+                object_type="Method",
                 supportive_sentence=None,
                 confidence=0.81,
             )
@@ -183,8 +187,10 @@ def test_missing_supportive_sentence_is_dropped_when_no_sentence_found(config) -
         triples=[
             RawLLMTriple(
                 subject_text="Model A",
+                subject_type="Method",
                 relation_verbatim="compared-to",
                 object_text="Model B",
+                object_type="Method",
                 supportive_sentence=None,
                 confidence=0.8,
             )
@@ -214,8 +220,10 @@ def test_passive_voice_flips_subject_and_object(config) -> None:
         triples=[
             RawLLMTriple(
                 subject_text="The dataset",
+                subject_type="Dataset",
                 relation_verbatim="is used by",
                 object_text="the model",
+                object_type="Method",
                 supportive_sentence=content,
                 confidence=0.92,
             )
@@ -255,6 +263,11 @@ def test_golden_triplet_extraction_matches_fixture(config) -> None:
     assert result.relation_verbatims == [
         item["relation_verbatim"] for item in fixture["llm_response"]["triples"]
     ]
+    assert result.entity_type_votes == {
+        "The Reinforcement Learning agent": {"Method": 2},
+        "the PPO algorithm": {"Method": 1},
+        "baseline methods": {"Method": 1},
+    }
 
 
 def test_extract_from_element_returns_triplets_only(config) -> None:
@@ -307,6 +320,7 @@ def test_openai_extractor_parses_valid_response(config) -> None:
         client=client,
         token_budget_per_triple=config.extraction.tokens_per_triple,
         allowed_relations=config.relations.canonical_relation_names(),
+        entity_types=config.extraction.entity_types,
         max_prompt_entities=config.extraction.max_prompt_entities,
     )
     pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
@@ -346,6 +360,7 @@ def test_openai_extractor_raises_on_error_response(config) -> None:
         client=client,
         token_budget_per_triple=config.extraction.tokens_per_triple,
         allowed_relations=config.relations.canonical_relation_names(),
+        entity_types=config.extraction.entity_types,
         max_prompt_entities=config.extraction.max_prompt_entities,
     )
     pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
@@ -393,6 +408,7 @@ def test_openai_extractor_limits_candidate_entities(config) -> None:
         client=client,
         token_budget_per_triple=config.extraction.tokens_per_triple,
         allowed_relations=config.relations.canonical_relation_names(),
+        entity_types=config.extraction.entity_types,
         max_prompt_entities=config.extraction.max_prompt_entities,
     )
 
@@ -433,6 +449,7 @@ def test_openai_extractor_uses_initial_token_multiplier(config) -> None:
         client=client,
         token_budget_per_triple=config.extraction.tokens_per_triple,
         allowed_relations=config.relations.canonical_relation_names(),
+        entity_types=config.extraction.entity_types,
         max_prompt_entities=config.extraction.max_prompt_entities,
     )
 
@@ -474,6 +491,7 @@ def test_openai_extractor_logs_configured_multiplier_without_retry(caplog, confi
         client=client,
         token_budget_per_triple=config.extraction.tokens_per_triple,
         allowed_relations=config.relations.canonical_relation_names(),
+        entity_types=config.extraction.entity_types,
         max_prompt_entities=config.extraction.max_prompt_entities,
     )
 
@@ -529,6 +547,7 @@ def test_openai_extractor_uses_cached_response(tmp_path, config) -> None:
         client=client_one,
         token_budget_per_triple=config.extraction.tokens_per_triple,
         allowed_relations=config.relations.canonical_relation_names(),
+        entity_types=config.extraction.entity_types,
         max_prompt_entities=config.extraction.max_prompt_entities,
         response_cache=response_cache,
         token_cache=token_cache,
@@ -552,6 +571,7 @@ def test_openai_extractor_uses_cached_response(tmp_path, config) -> None:
         client=client_two,
         token_budget_per_triple=config.extraction.tokens_per_triple,
         allowed_relations=config.relations.canonical_relation_names(),
+        entity_types=config.extraction.entity_types,
         max_prompt_entities=config.extraction.max_prompt_entities,
         response_cache=response_cache_reloaded,
         token_cache=token_cache_reloaded,

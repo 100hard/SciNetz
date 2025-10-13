@@ -353,6 +353,34 @@ def test_entity_aggregator_uses_type_resolver() -> None:
     assert candidate.type == "Method"
 
 
+def test_entity_aggregator_prefers_llm_type_votes() -> None:
+    aggregator = EntityAggregator(type_resolver=lambda _: "Fallback")
+    aggregator.ingest(
+        ExtractionResult(
+            triplets=[
+                _triplet(
+                    "Reinforcement Learning",
+                    "uses",
+                    "Q-learning",
+                    doc_id="doc1",
+                    element_id="e1",
+                )
+            ],
+            section_distribution={
+                "Reinforcement Learning": {"Methods": 1},
+                "Q-learning": {"Results": 1},
+            },
+            entity_type_votes={
+                "Reinforcement Learning": {"Method": 2},
+                "Q-learning": {"Method": 1},
+            },
+        )
+    )
+
+    candidate = next(candidate for candidate in aggregator.build_candidates() if candidate.name == "Reinforcement Learning")
+    assert candidate.type == "Method"
+
+
 def test_canonicalization_pipeline_end_to_end(config, storage_dirs) -> None:
     backend = StubEmbeddingBackend(
         {

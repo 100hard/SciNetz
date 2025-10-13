@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import unicodedata
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -436,6 +437,40 @@ class EntityCanonicalizer:
         sections = [section for section, count in candidate.section_distribution.items() if count > 0]
         return len(sections) >= self._config.canonicalization.polysemy_section_diversity
 
+    @staticmethod
+    def _max_lexical_similarity(name: str, others: Sequence[str]) -> float:
+        if not others:
+            return 0.0
+        best = 0.0
+        for other in others:
+            score = SequenceMatcher(None, name, other).ratio()
+            if score > best:
+                best = score
+        return best
+
+    def _adjust_threshold(
+        self,
+        threshold: float,
+        candidate: "_PreparedCandidate",
+        cluster: "_Cluster",
+        *,
+        blocklisted: bool,
+        candidate_poly: bool,
+        cluster_poly: bool,
+    ) -> float:
+        if blocklisted or candidate_poly or cluster_poly:
+            return threshold
+        adjusted = threshold
+        if cluster.type_counts.get(candidate.original.type, 0) > 0:
+            adjusted -= self._config.canonicalization.type_match_bonus
+        lexical_similarity = self._max_lexical_similarity(
+            candidate.normalized_name,
+            tuple(cluster.normalized_names),
+        )
+        if lexical_similarity >= self._config.canonicalization.lexical_similarity_threshold:
+            adjusted -= self._config.canonicalization.lexical_similarity_bonus
+        return max(0.0, min(1.0, adjusted))
+
     def _should_merge(self, candidate: _PreparedCandidate, cluster: _Cluster) -> bool:
         """Determine whether a candidate should merge into an existing cluster.
 
@@ -447,14 +482,22 @@ class EntityCanonicalizer:
             bool: ``True`` if the candidate should merge into the cluster.
         """
 
-        threshold = self._config.canonicalization.base_threshold
         candidate_poly = candidate.polysemous
         cluster_poly = cluster.is_polysemous(self._config.canonicalization.polysemy_section_diversity)
         blocklisted = candidate.blocklisted or cluster.blocklisted
+        threshold = self._config.canonicalization.base_threshold
         if blocklisted:
             threshold = max(threshold, _BLOCKLIST_THRESHOLD)
         elif candidate_poly or cluster_poly:
             threshold = max(threshold, self._config.canonicalization.polysemy_threshold)
+        threshold = self._adjust_threshold(
+            threshold,
+            candidate,
+            cluster,
+            blocklisted=blocklisted,
+            candidate_poly=candidate_poly,
+            cluster_poly=cluster_poly,
+        )
         similarity = cluster.similarity(candidate.embedding)
         if similarity < threshold:
             return False

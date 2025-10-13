@@ -83,6 +83,7 @@ class ExtractionConfig(_FrozenModel):
     cache_dir: str = Field(..., min_length=1)
     response_cache_filename: str = Field(..., min_length=1)
     token_cache_filename: str = Field(..., min_length=1)
+    entity_types: List[str] = Field(..., min_length=1)
 
     @property
     def openai(self) -> OpenAIConfig:
@@ -113,6 +114,9 @@ class CanonicalizationConfig(_FrozenModel):
     polysemy_threshold: float = Field(..., ge=0.0, le=1.0)
     polysemy_section_diversity: int = Field(..., ge=1)
     polysemy_blocklist: List[str] = Field(default_factory=list)
+    lexical_similarity_threshold: float = Field(..., ge=0.0, le=1.0)
+    lexical_similarity_bonus: float = Field(..., ge=0.0, le=1.0)
+    type_match_bonus: float = Field(..., ge=0.0, le=1.0)
 
 
 class RelationPatternConfig(_FrozenModel):

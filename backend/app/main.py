@@ -516,6 +516,7 @@ def _create_llm_extractor(config: AppConfig) -> Optional[OpenAIExtractor]:
             api_key=api_key,
             token_budget_per_triple=config.extraction.tokens_per_triple,
             allowed_relations=config.relations.canonical_relation_names(),
+            entity_types=config.extraction.entity_types,
             max_prompt_entities=config.extraction.max_prompt_entities,
             response_cache=response_cache,
             token_cache=token_cache,
