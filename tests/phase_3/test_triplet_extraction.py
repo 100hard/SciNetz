@@ -136,6 +136,72 @@ def test_triplet_with_missing_span_is_rejected(config) -> None:
     assert triples == []
 
 
+def test_triplet_with_self_reference_is_rejected(config) -> None:
+    """Triples whose subject and object are identical must be dropped."""
+
+    content = "Gradient descent optimizes gradient descent for this task."
+    element = ParsedElement(
+        doc_id="doc-2",
+        element_id="doc-2:0",
+        section="Methods",
+        content=content,
+        content_hash="b" * 64,
+        start_char=0,
+        end_char=len(content),
+    )
+    extractor = _StubExtractor(
+        triples=[
+            RawLLMTriple(
+                subject_text="gradient descent",
+                subject_type="Method",
+                relation_verbatim="uses",
+                object_text="gradient descent",
+                object_type="Method",
+                supportive_sentence=content,
+                confidence=0.82,
+            )
+        ]
+    )
+    pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
+
+    triples = pipeline.extract_from_element(element, candidate_entities=None)
+
+    assert triples == []
+
+
+def test_triplet_with_ambiguous_type_is_rejected(config) -> None:
+    """Triples should be skipped when an entity is reported with an ambiguous type."""
+
+    content = "The MNIST dataset is evaluated using accuracy."
+    element = ParsedElement(
+        doc_id="doc-3",
+        element_id="doc-3:0",
+        section="Results",
+        content=content,
+        content_hash="c" * 64,
+        start_char=0,
+        end_char=len(content),
+    )
+    extractor = _StubExtractor(
+        triples=[
+            RawLLMTriple(
+                subject_text="MNIST dataset",
+                subject_type="Other",
+                relation_verbatim="evaluated on",
+                object_text="accuracy",
+                object_type="Metric",
+                supportive_sentence=content,
+                confidence=0.76,
+            )
+        ]
+    )
+    pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
+
+    triples = pipeline.extract_from_element(element, candidate_entities=None)
+
+    assert triples == []
+
+
 def test_missing_supportive_sentence_falls_back_to_element_content(config) -> None:
     """Triples without supportive sentences should reuse the element sentence."""
 
@@ -420,6 +486,30 @@ def test_openai_extractor_limits_candidate_entities(config) -> None:
     assert len(triples) == len(fixture["llm_response"]["triples"])
 
 
+def test_system_prompt_emphasizes_type_and_grounding_rules(config) -> None:
+    """The system prompt should enforce grounding and entity typing constraints."""
+
+    settings = config.extraction.openai
+
+    client = _FakeHTTPClient(lambda path, headers, payload: _FakeResponse(status_code=200, payload={"choices": []}))
+    extractor = OpenAIExtractor(
+        settings=settings,
+        api_key="test-key",
+        client=client,
+        token_budget_per_triple=config.extraction.tokens_per_triple,
+        allowed_relations=config.relations.canonical_relation_names(),
+        entity_types=config.extraction.entity_types,
+        max_prompt_entities=config.extraction.max_prompt_entities,
+    )
+
+    prompt = extractor._render_system_prompt(max_triples=5)  # type: ignore[attr-defined]
+
+    assert "Subjects and objects must be different" in prompt
+    assert "Use only the provided chunk" in prompt
+    assert "Discard the triple" in prompt
+    assert "Gradient descent" in prompt
+
+
 def test_openai_extractor_uses_initial_token_multiplier(config) -> None:
     """OpenAI extractor should start with the configured token multiplier."""
 
@@ -579,3 +669,41 @@ def test_openai_extractor_uses_cached_response(tmp_path, config) -> None:
 
     triples_second = extractor_two.extract_triples(element, candidate_entities=None, max_triples=5)
     assert len(triples_second) == len(triples_first)
+
+
+def test_openai_system_prompt_discourages_generic_entities(config) -> None:
+    """System prompt should instruct the model to avoid generic or vague nodes."""
+
+    fixture = _load_golden("sample_chunk")
+    element = _element_from_fixture(fixture["element"])
+    settings = config.extraction.openai
+    captured_prompt: dict[str, str] = {}
+
+    def handler(path: str, headers: dict, payload: dict) -> _FakeResponse:
+        captured_prompt["system"] = payload["messages"][0]["content"]
+        response_body = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(fixture["llm_response"]),
+                    }
+                }
+            ]
+        }
+        return _FakeResponse(status_code=200, payload=response_body)
+
+    client = _FakeHTTPClient(handler)
+    extractor = OpenAIExtractor(
+        settings=settings,
+        api_key="test-key",
+        client=client,
+        token_budget_per_triple=config.extraction.tokens_per_triple,
+        allowed_relations=config.relations.canonical_relation_names(),
+        entity_types=config.extraction.entity_types,
+        max_prompt_entities=config.extraction.max_prompt_entities,
+    )
+
+    extractor.extract_triples(element, candidate_entities=None, max_triples=3)
+
+    assert "Do not extract overly generic or vague terms" in captured_prompt["system"]

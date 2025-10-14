@@ -117,6 +117,13 @@ class CanonicalizationConfig(_FrozenModel):
     lexical_similarity_threshold: float = Field(..., ge=0.0, le=1.0)
     lexical_similarity_bonus: float = Field(..., ge=0.0, le=1.0)
     type_match_bonus: float = Field(..., ge=0.0, le=1.0)
+    lexical_similarity_floor: float = Field(..., ge=0.0, le=1.0)
+    min_shared_token_count: int = Field(..., ge=0)
+    alias_token_limit: int = Field(..., ge=1)
+    alias_char_limit: int = Field(..., ge=1)
+    long_alias_penalty: float = Field(..., ge=0.0, le=1.0)
+    sentence_alias_penalty: float = Field(..., ge=0.0, le=1.0)
+    cross_type_penalty: float = Field(..., ge=0.0, le=1.0)
 
 
 class RelationPatternConfig(_FrozenModel):

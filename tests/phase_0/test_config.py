@@ -18,20 +18,23 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.extraction.openai_model == "gpt-4o-mini"
     assert config.extraction.openai_base_url == "https://api.openai.com/v1"
     assert config.extraction.openai_timeout_seconds == 60
-    assert config.extraction.openai_prompt_version == "phase3-v1"
+    assert config.extraction.openai_prompt_version == "phase3-v3"
     settings = config.extraction.openai
     assert config.extraction.cache_dir == "data/cache"
     assert config.extraction.response_cache_filename == "openai_responses.json"
     assert config.extraction.token_cache_filename == "openai_token_budget.json"
     assert settings.model == "gpt-4o-mini"
-    assert settings.prompt_version == "phase3-v1"
+    assert settings.prompt_version == "phase3-v3"
     assert settings.max_retries == 2
     assert settings.temperature == 0.0
     assert settings.max_output_tokens == 3200
     assert settings.initial_output_multiplier == 2
     assert 429 in settings.retry_statuses
-    assert config.canonicalization.base_threshold == 0.86
+    assert config.canonicalization.base_threshold == 0.88
     assert config.canonicalization.polysemy_section_diversity == 3
+    assert config.canonicalization.lexical_similarity_floor == 0.55
+    assert config.canonicalization.min_shared_token_count == 1
+    assert config.canonicalization.alias_token_limit == 5
     assert config.qa.entity_match_threshold == 0.83
     assert config.export.max_size_mb == 5
     assert config.extraction.use_entity_inventory is False

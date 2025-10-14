@@ -42,6 +42,8 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
+_AMBIGUOUS_ENTITY_TYPES = {"other", "unknown", "misc", "miscellaneous"}
+
 
 @dataclass
 class _SimpleHTTPResponse:
@@ -172,15 +174,23 @@ class OpenAIExtractor(LLMExtractor):
 
     _ENDPOINT = "/chat/completions"
     _SYSTEM_PROMPT_TEMPLATE = (
-        "You are an expert scientific information extractor. "
-        "Follow prompt version {prompt_version}. Extract factual relationships and return at most {max_triples} triples. "
-        "Subjects and objects must be explicit entity mentions. Allowed relations: {allowed_relations}. "
-        "Set the relation_verbatim field to exactly one of the allowed relations; do not invent new predicates or alter their spelling. "
-        "Only emit a triple when the predicate can be normalized to this inventory; otherwise skip it. "
+        "You are an expert scientific information extractor.\n"
+        "Follow prompt version {prompt_version}. Extract factual relationships and return at most {max_triples} triples.\n"
+        "Subjects and objects must be explicit entity mentions drawn directly from the provided text chunk. "
+        "Allowed relations: {allowed_relations}. Set relation_verbatim to exactly one of these canonical relations; "
+        "skip any triple whose predicate cannot be normalized to this inventory.\n"
+        "Rules:\n"
+        "- Subjects and objects must be different. Reject any self-referential statement.\n"
+        "- Use only the provided chunk; do not rely on external knowledge or assumptions.\n"
+        "- Classify every subject and object using the allowed entity types: {allowed_entity_types}. "
+        "If you cannot confidently assign one of these labels (for example, if the entity is ambiguous), Discard the triple instead of outputting Other or Unknown.\n"
+        "- Do not extract overly generic or vague terms such as the model, our system, the data, or results. "
+        "Output only specific, named scientific concepts.\n"
+        "- Return full supportive sentences verbatim and include a confidence between 0.0 and 1.0.\n"
+        "Examples of entity typing: Gradient descent algorithm -> Method; MNIST dataset -> Dataset; F1 score -> Metric; "
+        "Image classification task -> Task; CRISPR protein -> Material.\n"
         "Avoid vague or generic language and convert passive voice to active voice when needed. "
-        "Return full supportive sentences verbatim and include a confidence between 0.0 and 1.0. "
-        "Classify every subject and object using the allowed entity types: {allowed_entity_types}. "
-        "Populate subject_type and object_type using exactly one label from that list for each triple."
+        "Output must strictly adhere to the requested JSON schema."
     )
     _RESPONSE_SCHEMA = {
         "type": "json_schema",
@@ -840,6 +850,12 @@ class TwoPassTripletExtractor:
             if not subject_text or not object_text:
                 LOGGER.info("Dropping triple with empty subject/object: %s", raw)
                 continue
+            if self._is_ambiguous_type(subject_type):
+                LOGGER.info("Dropping triple; ambiguous subject type: %s", raw.subject_type)
+                continue
+            if self._is_ambiguous_type(object_type):
+                LOGGER.info("Dropping triple; ambiguous object type: %s", raw.object_type)
+                continue
             sentence_text = self._resolve_supportive_sentence(
                 raw,
                 element,
@@ -855,6 +871,9 @@ class TwoPassTripletExtractor:
             if swap:
                 subject_text, object_text = object_text, subject_text
                 subject_type, object_type = object_type, subject_type
+            if subject_text.casefold() == object_text.casefold():
+                LOGGER.info("Dropping triple; subject and object identical: %s", subject_text)
+                continue
             subject_span = self._find_span(element.content, subject_text)
             object_span = self._find_span(element.content, object_text)
             sentence_span = self._find_span(element.content, sentence_text)
@@ -1010,6 +1029,12 @@ class TwoPassTripletExtractor:
         if not cleaned:
             return None
         return self._entity_type_lookup.get(cleaned)
+
+    @staticmethod
+    def _is_ambiguous_type(normalized: Optional[str]) -> bool:
+        if normalized is None:
+            return True
+        return normalized.strip().lower() in _AMBIGUOUS_ENTITY_TYPES
 
     @staticmethod
     def _increment_type_vote(

@@ -12,10 +12,14 @@ from backend.app.ui.service import GraphEdge, GraphNode, GraphViewService
 @dataclass
 class _StubRepository(GraphViewRepositoryProtocol):
     edges: Sequence[GraphEdgeRecord]
+    cleared: bool = False
 
     def fetch_edges(self, filters: GraphViewFilters):  # type: ignore[override]
         self.filters = filters  # type: ignore[attr-defined]
         return list(self.edges)
+
+    def clear_graph(self) -> None:  # type: ignore[override]
+        self.cleared = True
 
 
 def _make_node(node_id: str, name: str) -> GraphNodeRecord:
@@ -107,3 +111,12 @@ def test_graph_view_service_respects_limit() -> None:
     )
 
     assert repo.filters.limit == 5
+
+
+def test_graph_view_service_clears_repository() -> None:
+    repo = _StubRepository(edges=[])
+    service = GraphViewService(repo)
+
+    service.clear_graph()
+
+    assert repo.cleared is True

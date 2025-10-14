@@ -99,6 +99,7 @@ const GraphExplorer = () => {
   const [isFetchingSettings, setIsFetchingSettings] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [autoFetchEnabled, setAutoFetchEnabled] = useState<boolean | null>(null);
+  const [isClearing, setIsClearing] = useState(false);
   const skipNextAutoFetchRef = useRef(false);
 
   useEffect(() => {
@@ -212,11 +213,23 @@ const GraphExplorer = () => {
     }
   };
 
-  const handleClearGraph = useCallback(() => {
-    setGraph(null);
+  const handleClearGraph = useCallback(async () => {
+    if (isClearing) {
+      return;
+    }
+    setIsClearing(true);
     setError(null);
-    setAutoFetchEnabled(false);
-  }, []);
+    try {
+      await apiClient.post("/api/ui/graph/clear");
+      setGraph(null);
+      setAutoFetchEnabled(false);
+    } catch (err) {
+      const message = extractErrorMessage(err, "Unable to clear graph.");
+      setError(message);
+    } finally {
+      setIsClearing(false);
+    }
+  }, [isClearing]);
 
   const handleRefreshGraph = useCallback(() => {
     if (autoFetchEnabled !== true) {
@@ -240,9 +253,10 @@ const GraphExplorer = () => {
             <button
               type="button"
               onClick={handleClearGraph}
-              className="inline-flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2"
+              disabled={isClearing || isFetchingSettings}
+              className={`inline-flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium text-foreground shadow-sm transition focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 ${isClearing ? "opacity-80" : "hover:bg-muted/40"} disabled:cursor-not-allowed disabled:opacity-60`}
             >
-              <Eraser className="h-4 w-4" /> Clear graph
+              {isClearing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eraser className="h-4 w-4" />} Clear graph
             </button>
             <button
               type="button"

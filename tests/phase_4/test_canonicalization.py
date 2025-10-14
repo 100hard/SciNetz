@@ -500,3 +500,150 @@ def test_canonicalizer_is_idempotent(config, storage_dirs) -> None:
     assert _normalize_nodes(first) == _normalize_nodes(second)
     assert first.merge_map == second.merge_map
     assert first_embeddings == second_embeddings
+
+
+def test_canonicalizer_rejects_sentence_like_aliases(config, storage_dirs) -> None:
+    backend = StubEmbeddingBackend(
+        {
+            "convolutional neural network": [1.0, 0.0, 0.0],
+            "this novel convolutional neural network architecture dramatically improves accuracy": [1.0, 0.0, 0.0],
+        }
+    )
+    tuned_config = config.model_copy(
+        update={
+            "canonicalization": config.canonicalization.model_copy(
+                update={
+                    "alias_token_limit": 6,
+                    "alias_char_limit": 80,
+                    "long_alias_penalty": 0.05,
+                    "sentence_alias_penalty": 0.08,
+                }
+            ),
+        }
+    )
+    canonicalizer = EntityCanonicalizer(
+        tuned_config,
+        embedding_backend=backend,
+        embedding_dir=storage_dirs["embeddings"],
+        report_dir=storage_dirs["reports"],
+    )
+    candidates = [
+        _candidate(
+            "Convolutional Neural Network",
+            times_seen=4,
+            section_distribution={"Methods": 4},
+            doc_ids=["docA"],
+        ),
+        _candidate(
+            "This novel convolutional neural network architecture dramatically improves accuracy",
+            times_seen=2,
+            section_distribution={"Methods": 2},
+            doc_ids=["docB"],
+        ),
+    ]
+
+    result = canonicalizer.canonicalize(candidates)
+
+    assert len(result.nodes) == 2
+    for node in result.nodes:
+        assert not node.aliases
+
+
+def test_canonicalizer_merges_concise_aliases_under_stricter_rules(config, storage_dirs) -> None:
+    backend = StubEmbeddingBackend(
+        {
+            "reinforcement learning": [1.0, 0.0, 0.0],
+            "rl": [1.0, 0.0, 0.0],
+        }
+    )
+    tuned_config = config.model_copy(
+        update={
+            "canonicalization": config.canonicalization.model_copy(
+                update={
+                    "alias_token_limit": 6,
+                    "alias_char_limit": 80,
+                    "long_alias_penalty": 0.05,
+                    "sentence_alias_penalty": 0.08,
+                }
+            ),
+        }
+    )
+    canonicalizer = EntityCanonicalizer(
+        tuned_config,
+        embedding_backend=backend,
+        embedding_dir=storage_dirs["embeddings"],
+        report_dir=storage_dirs["reports"],
+    )
+    candidates = [
+        _candidate(
+            "Reinforcement Learning",
+            times_seen=5,
+            section_distribution={"Methods": 5},
+            doc_ids=["doc1"],
+        ),
+        _candidate(
+            "RL",
+            times_seen=2,
+            section_distribution={"Methods": 2},
+            doc_ids=["doc2"],
+        ),
+    ]
+
+    result = canonicalizer.canonicalize(candidates)
+
+    assert any(node.name == "Reinforcement Learning" and node.aliases == ["RL"] for node in result.nodes)
+
+
+def test_canonicalizer_rejects_context_only_aliases(config, storage_dirs) -> None:
+    backend = StubEmbeddingBackend(
+        {
+            "word embedding vectors": [1.0, 0.0, 0.0],
+            "english wikipedia": [1.0, 0.0, 0.0],
+            "adam": [1.0, 0.0, 0.0],
+            "4 days": [1.0, 0.0, 0.0],
+        }
+    )
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=backend,
+        embedding_dir=storage_dirs["embeddings"],
+        report_dir=storage_dirs["reports"],
+    )
+    candidates = [
+        _candidate(
+            "Word Embedding Vectors",
+            times_seen=6,
+            section_distribution={"Methods": 6, "Results": 3},
+            doc_ids=["doc1"],
+        ),
+        _candidate(
+            "English Wikipedia",
+            times_seen=3,
+            section_distribution={"Methods": 3},
+            doc_ids=["doc2"],
+            entity_type="Dataset",
+        ),
+        _candidate(
+            "Adam",
+            times_seen=2,
+            section_distribution={"Methods": 2},
+            doc_ids=["doc3"],
+            entity_type="Method",
+        ),
+        _candidate(
+            "4 days",
+            times_seen=1,
+            section_distribution={"Results": 1},
+            doc_ids=["doc4"],
+            entity_type="Metric",
+        ),
+    ]
+
+    result = canonicalizer.canonicalize(candidates)
+
+    target_nodes = {node.name: node for node in result.nodes}
+    assert "Word Embedding Vectors" in target_nodes
+    assert "English Wikipedia" in target_nodes
+    assert "Adam" in target_nodes
+    assert "4 days" in target_nodes
+    assert not target_nodes["Word Embedding Vectors"].aliases

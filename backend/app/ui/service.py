@@ -96,6 +96,15 @@ class GraphViewService:
             edges.append(self._edge_from_record(record))
         return GraphView(nodes=list(node_map.values()), edges=edges)
 
+    def clear_graph(self) -> None:
+        """Remove nodes and edges exposed through the graph view."""
+
+        try:
+            self._repository.clear_graph()
+        except Exception:
+            LOGGER.exception("Failed to clear graph repository state")
+            raise
+
     @staticmethod
     def _node_from_record(record: GraphNodeRecord) -> GraphNode:
         return GraphNode(

@@ -15,6 +15,10 @@ type PositionedNode = {
   node: GraphNode;
   x: number;
   y: number;
+  degree: number;
+  componentId: number;
+  anchorX: number;
+  anchorY: number;
 };
 
 type PositionedEdge = {
@@ -25,9 +29,46 @@ type PositionedEdge = {
   confidence: number;
 };
 
+type StyledNode = PositionedNode & {
+  radius: number;
+  fill: string;
+  labelLines: string[];
+  labelColor: string;
+  strokeColor: string;
+  strokeWidth: number;
+};
+
+type StyledEdge = PositionedEdge & {
+  stroke: string;
+  markerKey: string;
+  labelColor: string;
+  strokeOpacity: number;
+};
+
 const DEFAULT_HEIGHT = 420;
 const MIN_SCALE = 0.35;
 const MAX_SCALE = 4.2;
+const NODE_STROKE_COLOR = "#0f172a";
+const NODE_LABEL_COLOR = "#f8fafc";
+const TYPE_COLOR_MAP: Record<string, string> = {
+  method: "#2563eb",
+  methods: "#2563eb",
+  dataset: "#16a34a",
+  datasets: "#16a34a",
+  metric: "#7c3aed",
+  metrics: "#7c3aed",
+  task: "#ea580c",
+  tasks: "#ea580c",
+  entity: "#0ea5e9",
+};
+const RELATION_COLOR_MAP: Record<string, string> = {
+  evaluates: "#2563eb",
+  uses: "#0ea5e9",
+  reports: "#16a34a",
+  improves: "#7c3aed",
+  predicts: "#f97316",
+  extends: "#db2777",
+};
 
 const hashColor = (value: string | null | undefined): string => {
   if (!value) {
@@ -38,7 +79,7 @@ const hashColor = (value: string | null | undefined): string => {
     hash = (hash * 31 + char.charCodeAt(0)) % 360;
   }
   const hue = Math.abs(hash);
-  return `hsl(${hue}, 70%, 58%)`;
+  return `hsl(${hue}, 65%, 65%)`;
 };
 
 type SimulationNode = {
@@ -46,7 +87,6 @@ type SimulationNode = {
   componentId: number;
   anchorX: number;
   anchorY: number;
-  anchorRadius: number;
   x: number;
   y: number;
   dx: number;
@@ -146,21 +186,29 @@ const runForceLayout = (
     componentSizes.push(nodes.length);
   }
 
-  const componentAnchors = new Map<
-    number,
-    { x: number; y: number; radius: number }
-  >();
+  const componentAnchors = new Map<number, { x: number; y: number; spread: number; noise: number }>();
   const componentSpreadBase = Math.max(nodes.length, 1);
+  const minDimension = Math.min(width, height);
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
   for (let index = 0; index < componentSizes.length; index += 1) {
     const seeded = createSeededGenerator(`component-${index}`);
     const weight = componentSizes[index] / componentSpreadBase;
-    const angle = seeded() * Math.PI * 2;
-    const distance = maxDimension * (0.18 + seeded() * 0.22 + weight * 0.12);
-    const radius = maxDimension * (0.38 + weight * 0.24 + seeded() * 0.1);
+    const angle = index === 0 ? 0 : goldenAngle * index + seeded() * 0.24;
+    const radialStep = minDimension * (0.08 + weight * 0.06);
+    const distance =
+      index === 0
+        ? 0
+        : Math.min(
+            minDimension * 0.26,
+            Math.sqrt(index + 1) * radialStep + seeded() * minDimension * 0.02,
+          );
+    const spread = minDimension * (0.18 + weight * 0.14 + seeded() * 0.04);
+    const noise = (seeded() - 0.5) * minDimension * 0.015;
     componentAnchors.set(index, {
       x: centerX + Math.cos(angle) * distance,
       y: centerY + Math.sin(angle) * distance,
-      radius,
+      spread,
+      noise,
     });
   }
   const simulationNodes: SimulationNode[] = nodes.map((node, index) => {
@@ -168,18 +216,19 @@ const runForceLayout = (
     const anchor = componentAnchors.get(componentId);
     const seeded = createSeededGenerator(`${node.id}-${index}`);
     const angle = seeded() * Math.PI * 2;
-    const radius = maxDimension * (0.22 + seeded() * 0.24);
-    const jitterMagnitude = maxDimension * 0.04;
+    const spread = anchor?.spread ?? minDimension * 0.4;
+    const radius = spread * (0.12 + seeded() * 0.48);
+    const jitterMagnitude = spread * 0.08;
     const jitterX = (seeded() - 0.5) * 2 * jitterMagnitude;
     const jitterY = (seeded() - 0.5) * 2 * jitterMagnitude;
+    const noise = anchor?.noise ?? 0;
     return {
       node,
       componentId,
-      anchorX: anchor?.x ?? centerX,
-      anchorY: anchor?.y ?? centerY,
-      anchorRadius: anchor?.radius ?? maxDimension * 0.6,
-      x: (anchor?.x ?? centerX) + Math.cos(angle) * radius + jitterX,
-      y: (anchor?.y ?? centerY) + Math.sin(angle) * radius + jitterY,
+      anchorX: (anchor?.x ?? centerX) + noise,
+      anchorY: (anchor?.y ?? centerY) - noise,
+      x: (anchor?.x ?? centerX) + Math.cos(angle) * radius + jitterX + noise,
+      y: (anchor?.y ?? centerY) + Math.sin(angle) * radius + jitterY - noise,
       dx: 0,
       dy: 0,
     };
@@ -187,14 +236,16 @@ const runForceLayout = (
 
   const nodeIndex = new Map(simulationNodes.map((entry) => [entry.node.id, entry]));
 
-  const iterations = Math.min(480, 160 + simulationNodes.length * 4);
+  const iterations = Math.min(560, 220 + simulationNodes.length * 3);
   const area = width * height;
   const k = Math.sqrt(area / simulationNodes.length);
-  let temperature = maxDimension / 1.3;
-  const coolingFactor = 0.92;
-  const gravity = 0.045;
-  const repulsionStrength = 1.05;
-  const attractionStrength = 0.055;
+  let temperature = maxDimension / 1.25;
+  const coolingFactor = 0.94;
+  const gravity = 0.028;
+  const centerGravity = 0.02;
+  const repulsionStrength = 0.95;
+  const attractionStrength = 0.06;
+  const crossComponentPull = 0.015;
   const epsilon = 0.0001;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
@@ -243,19 +294,21 @@ const runForceLayout = (
       const toAnchorY = node.y - node.anchorY;
       node.dx -= toAnchorX * gravity;
       node.dy -= toAnchorY * gravity;
+      const toCenterX = node.x - centerX;
+      const toCenterY = node.y - centerY;
+      node.dx -= toCenterX * centerGravity;
+      node.dy -= toCenterY * centerGravity;
+      if (node.componentId !== 0) {
+        const blendedAnchorX = (node.anchorX + centerX) / 2;
+        const blendedAnchorY = (node.anchorY + centerY) / 2;
+        node.dx -= (node.x - blendedAnchorX) * crossComponentPull;
+        node.dy -= (node.y - blendedAnchorY) * crossComponentPull;
+      }
 
       const displacement = Math.sqrt(node.dx * node.dx + node.dy * node.dy) || epsilon;
       const limited = Math.min(displacement, temperature);
       node.x += (node.dx / displacement) * limited;
       node.y += (node.dy / displacement) * limited;
-
-      const distanceToAnchor = Math.sqrt((node.x - node.anchorX) ** 2 + (node.y - node.anchorY) ** 2);
-      const maxDistance = node.anchorRadius;
-      if (distanceToAnchor > maxDistance) {
-        const scale = maxDistance / distanceToAnchor;
-        node.x = node.anchorX + (node.x - node.anchorX) * scale;
-        node.y = node.anchorY + (node.y - node.anchorY) * scale;
-      }
     }
 
     temperature *= coolingFactor;
@@ -264,11 +317,6 @@ const runForceLayout = (
     }
   }
 
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-
   const positionedNodes: PositionedNode[] = simulationNodes.map((node, index) => {
     const jitterGenerator = createSeededGenerator(`post-${node.node.id}-${index}`);
     const jitterScale = maxDimension * 0.012;
@@ -276,12 +324,31 @@ const runForceLayout = (
     const jitterY = (jitterGenerator() - 0.5) * 2 * jitterScale;
     node.x += jitterX;
     node.y += jitterY;
-    minX = Math.min(minX, node.x);
-    minY = Math.min(minY, node.y);
-    maxX = Math.max(maxX, node.x);
-    maxY = Math.max(maxY, node.y);
-    return { node: node.node, x: node.x, y: node.y };
+    const neighbours = adjacency.get(node.node.id);
+    return {
+      node: node.node,
+      x: node.x,
+      y: node.y,
+      degree: neighbours?.size ?? 0,
+      componentId: node.componentId,
+      anchorX: node.anchorX,
+      anchorY: node.anchorY,
+    };
   });
+
+  resolveCollisions(positionedNodes);
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (const entry of positionedNodes) {
+    minX = Math.min(minX, entry.x);
+    minY = Math.min(minY, entry.y);
+    maxX = Math.max(maxX, entry.x);
+    maxY = Math.max(maxY, entry.y);
+  }
 
   const positionedNodeIndex = new Map(positionedNodes.map((entry) => [entry.node.id, entry]));
   const positionedEdges: PositionedEdge[] = filteredEdges.map((edge) => {
@@ -306,20 +373,117 @@ const runForceLayout = (
   };
 };
 
-const truncateLabel = (label: string): string => {
-  if (label.length <= 26) {
-    return label;
+const formatNodeLabel = (label: string): string[] => {
+  const words = label.split(/\s+/).filter(Boolean);
+  if (!words.length) {
+    return ["Unknown"];
   }
-  return `${label.slice(0, 23)}…`;
+  const lines: string[] = [];
+  let current = "";
+  const maxLength = 14;
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= maxLength) {
+      current = candidate;
+      continue;
+    }
+    if (current) {
+      lines.push(current);
+    }
+    if (word.length > maxLength) {
+      lines.push(`${word.slice(0, maxLength - 1)}…`);
+      current = "";
+    } else {
+      current = word;
+    }
+    if (lines.length === 2) {
+      break;
+    }
+  }
+  if (lines.length < 2 && current) {
+    lines.push(current);
+  }
+  if (lines.length === 0) {
+    lines.push(words[0]);
+  }
+  return lines.slice(0, 2);
 };
 
-const getNodeRadius = (node: GraphNode): number => {
-  const baseRadius = 18;
-  const scaled = Math.log10(Math.max(node.times_seen, 1));
-  return baseRadius + scaled * 6;
+const getNodeFill = (type: string | null | undefined): string => {
+  if (!type) {
+    return hashColor(null);
+  }
+  const key = type.trim().toLowerCase();
+  return TYPE_COLOR_MAP[key] ?? hashColor(type);
 };
 
-const getEdgeStroke = (confidence: number): number => 1.2 + confidence * 1.4;
+const calculateNodeRadius = (node: GraphNode, degree: number, labelLines: string[]): number => {
+  const timesSeenContribution = Math.log10(Math.max(node.times_seen, 1)) * 6;
+  const degreeContribution = Math.sqrt(Math.max(degree, 1)) * 4;
+  const longestLine = labelLines.reduce((acc, line) => Math.max(acc, line.length), 0);
+  const labelRadius = longestLine > 0 ? longestLine * 3.6 : 0;
+  const labelHeight = labelLines.length * 8 + 10;
+  const minimum = Math.max(24, labelRadius, labelHeight);
+  return minimum + timesSeenContribution + degreeContribution;
+};
+
+const getRelationColor = (relation: string): string => {
+  const key = relation.trim().toLowerCase();
+  return RELATION_COLOR_MAP[key] ?? "rgba(15, 23, 42, 0.6)";
+};
+
+const estimateCollisionRadius = (node: GraphNode, degree: number): number => {
+  const base = 20;
+  const degreeContribution = Math.sqrt(Math.max(degree, 1)) * 3.2;
+  const timesSeenContribution = Math.log10(Math.max(node.times_seen, 1)) * 5.2;
+  return base + degreeContribution + timesSeenContribution;
+};
+
+const resolveCollisions = (nodes: PositionedNode[]): void => {
+  const padding = 16;
+  const epsilon = 0.0001;
+  const iterations = 8;
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    let moved = false;
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const nodeA = nodes[i];
+        const nodeB = nodes[j];
+        let dx = nodeA.x - nodeB.x;
+        let dy = nodeA.y - nodeB.y;
+        let distance = Math.sqrt(dx * dx + dy * dy);
+        const minDistance =
+          estimateCollisionRadius(nodeA.node, nodeA.degree) +
+          estimateCollisionRadius(nodeB.node, nodeB.degree) +
+          padding;
+        if (distance >= minDistance) {
+          continue;
+        }
+        let nx: number;
+        let ny: number;
+        if (distance < epsilon) {
+          const angle = ((i + 1) * 0.318309886 + (j + 1) * 0.127323954) * Math.PI * 2;
+          nx = Math.cos(angle);
+          ny = Math.sin(angle);
+          distance = epsilon;
+        } else {
+          nx = dx / distance;
+          ny = dy / distance;
+        }
+        const overlap = minDistance - distance;
+        const shift = overlap / 2;
+        nodeA.x += nx * shift;
+        nodeA.y += ny * shift;
+        nodeB.x -= nx * shift;
+        nodeB.y -= ny * shift;
+        moved = true;
+      }
+    }
+    if (!moved) {
+      break;
+    }
+  }
+};
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
@@ -369,8 +533,8 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
     const height = Math.max(dimensions.height, DEFAULT_HEIGHT);
     if (!limitedNodes.length) {
       return {
-        positionedNodes: [] as PositionedNode[],
-        positionedEdges: [] as PositionedEdge[],
+        positionedNodes: [] as StyledNode[],
+        positionedEdges: [] as StyledEdge[],
         viewBox: `0 0 ${width} ${height}`,
         viewWidth: width,
         viewHeight: height,
@@ -378,11 +542,11 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
     }
 
     const layout = runForceLayout(limitedNodes, edges, width, height);
-    const margin = 80;
-    const minX = Math.min(layout.bounds.minX, 0) - margin;
-    const maxX = Math.max(layout.bounds.maxX, width) + margin;
-    const minY = Math.min(layout.bounds.minY, 0) - margin;
-    const maxY = Math.max(layout.bounds.maxY, height) + margin;
+    const margin = 30;
+    const minX = layout.bounds.minX - margin;
+    const maxX = layout.bounds.maxX + margin;
+    const minY = layout.bounds.minY - margin;
+    const maxY = layout.bounds.maxY + margin;
 
     const viewWidth = maxX - minX;
     const viewHeight = maxY - minY;
@@ -391,25 +555,46 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       ...node,
       x: node.x - minX,
       y: node.y - minY,
+      anchorX: node.anchorX - minX,
+      anchorY: node.anchorY - minY,
     }));
 
-    const translatedNodeIndex = new Map(translatedNodes.map((entry) => [entry.node.id, entry]));
-    const translatedEdges = layout.edges.map((edge) => {
-      const source = translatedNodeIndex.get(edge.source.node.id);
-      const target = translatedNodeIndex.get(edge.target.node.id);
+    const styledNodes: StyledNode[] = translatedNodes.map((entry) => {
+      const labelLines = formatNodeLabel(entry.node.label);
+      return {
+        ...entry,
+        labelLines,
+        radius: calculateNodeRadius(entry.node, entry.degree, labelLines),
+        fill: getNodeFill(entry.node.type ?? null),
+        labelColor: NODE_LABEL_COLOR,
+        strokeColor: NODE_STROKE_COLOR,
+        strokeWidth: 3,
+      };
+    });
+
+    const styledNodeIndex = new Map(styledNodes.map((entry) => [entry.node.id, entry]));
+    const styledEdges: StyledEdge[] = layout.edges.map((edge) => {
+      const source = styledNodeIndex.get(edge.source.node.id);
+      const target = styledNodeIndex.get(edge.target.node.id);
       if (!source || !target) {
-        throw new Error("Translated graph layout attempted to render an edge without positioned nodes");
+        throw new Error("Graph layout attempted to render an edge without positioned nodes");
       }
+      const stroke = getRelationColor(edge.relation);
+      const opacity = 0.25 + Math.min(Math.max(edge.confidence, 0), 1) * 0.45;
       return {
         ...edge,
         source,
         target,
+        stroke,
+        markerKey: stroke,
+        labelColor: stroke,
+        strokeOpacity: opacity,
       };
     });
 
     return {
-      positionedNodes: translatedNodes,
-      positionedEdges: translatedEdges,
+      positionedNodes: styledNodes,
+      positionedEdges: styledEdges,
       viewBox: `0 0 ${viewWidth} ${viewHeight}`,
       viewWidth,
       viewHeight,
@@ -533,6 +718,18 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
     zoomCentered(0.88);
   }, [zoomCentered]);
 
+  const edgeMarkerMap = useMemo(() => {
+    const map = new Map<string, string>();
+    positionedEdges.forEach((edge) => {
+      if (!map.has(edge.markerKey)) {
+        map.set(edge.markerKey, `graph-arrow-${map.size}`);
+      }
+    });
+    return map;
+  }, [positionedEdges]);
+
+  const markerEntries = useMemo(() => Array.from(edgeMarkerMap.entries()), [edgeMarkerMap]);
+
   return (
     <div
       ref={containerRef}
@@ -577,15 +774,17 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
         style={{ touchAction: "none" }}
       >
         <defs>
-          <marker id="graph-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
-            <path d="M0,0 L8,4 L0,8" fill="hsl(var(--muted-foreground))" />
-          </marker>
+          {markerEntries.map(([color, id]) => (
+            <marker key={id} id={id} markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,4 L0,8" fill={color} fillOpacity="0.85" />
+            </marker>
+          ))}
           <filter id="node-shadow" x="-50%" y="-50%" width="200%" height="200%">
             <feDropShadow dx="0" dy="1" stdDeviation="1.4" floodColor="rgba(0,0,0,0.25)" />
           </filter>
         </defs>
         <g transform={`translate(${transform.x} ${transform.y}) scale(${transform.scale})`}>
-          <g stroke="hsl(var(--muted-foreground))" strokeOpacity="0.45">
+          <g>
             {positionedEdges.map((edge) => {
               const midX = (edge.source.x + edge.target.x) / 2;
               const midY = (edge.source.y + edge.target.y) / 2;
@@ -593,7 +792,8 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
               const flipped = rawAngle > 90 || rawAngle < -90;
               const angle = flipped ? rawAngle + 180 : rawAngle;
               const label = edge.relation;
-              const labelWidth = Math.min(140, Math.max(56, label.length * 6));
+              const labelWidth = Math.min(160, Math.max(56, label.length * 6));
+              const markerId = edgeMarkerMap.get(edge.markerKey);
               return (
                 <g key={edge.id}>
                   <line
@@ -601,8 +801,10 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
                     y1={edge.source.y}
                     x2={edge.target.x}
                     y2={edge.target.y}
-                    markerEnd="url(#graph-arrow)"
-                    strokeWidth={getEdgeStroke(edge.confidence)}
+                    markerEnd={markerId ? `url(#${markerId})` : undefined}
+                    stroke={edge.stroke}
+                    strokeWidth={1.2}
+                    strokeOpacity={edge.strokeOpacity}
                   />
                   <g transform={`translate(${midX}, ${midY}) rotate(${angle})`}>
                     <rect
@@ -611,13 +813,12 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
                       width={labelWidth}
                       height={20}
                       rx={6}
-                      fill="hsl(var(--background))"
-                      opacity={0.85}
+                      fill="rgba(248, 250, 252, 0.9)"
                     />
                     <text
                       textAnchor="middle"
                       fontSize="9"
-                      fill="hsl(var(--foreground))"
+                      fill={edge.labelColor}
                       transform={flipped ? "scale(-1, -1)" : undefined}
                     >
                       {label}
@@ -631,11 +832,11 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
             {positionedNodes.map((entry) => (
               <g key={entry.node.id} transform={`translate(${entry.x}, ${entry.y})`}>
                 <circle
-                  r={getNodeRadius(entry.node)}
-                  fill={hashColor(entry.node.type ?? null)}
-                  stroke="hsl(var(--card))"
-                  strokeWidth={2}
-                  opacity={0.95}
+                  r={entry.radius}
+                  fill={entry.fill}
+                  stroke={entry.strokeColor}
+                  strokeWidth={entry.strokeWidth}
+                  opacity={0.92}
                   filter="url(#node-shadow)"
                 >
                   <title>
@@ -649,20 +850,22 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
                     }`}
                   </title>
                 </circle>
-                <text x={0} y={getNodeRadius(entry.node) + 16} textAnchor="middle" fontSize="11" fill="hsl(var(--foreground))">
-                  {truncateLabel(entry.node.label)}
-                </text>
-                {entry.node.type ? (
-                  <text
-                    x={0}
-                    y={getNodeRadius(entry.node) + 30}
-                    textAnchor="middle"
-                    fontSize="9"
-                    fill="hsl(var(--muted-foreground))"
-                  >
-                    {entry.node.type}
-                  </text>
-                ) : null}
+                {entry.labelLines.map((line, index) => {
+                  const offset = (index - (entry.labelLines.length - 1) / 2) * 12;
+                  return (
+                    <text
+                      key={`${entry.node.id}-label-${index}`}
+                      x={0}
+                      y={offset + 4}
+                      textAnchor="middle"
+                      fontSize="11"
+                      fontWeight={600}
+                      fill={entry.labelColor}
+                    >
+                      {line}
+                    </text>
+                  );
+                })}
               </g>
             ))}
           </g>

@@ -338,6 +338,22 @@ def create_app(
         )
         return _graph_response_from_view(view)
 
+    @app.post(
+        "/api/ui/graph/clear",
+        tags=["ui"],
+        summary="Remove graph data from the Neo4j store",
+    )
+    def clear_graph() -> dict[str, str]:
+        """Delete nodes and edges so subsequent UI fetches return an empty graph."""
+
+        service = _require_graph_service(app)
+        try:
+            service.clear_graph()
+        except Exception as exc:  # noqa: BLE001 - surface failure without hiding details
+            LOGGER.exception("Failed to clear graph state")
+            raise HTTPException(status_code=500, detail="Unable to clear graph") from exc
+        return {"status": "cleared"}
+
     @app.post("/api/qa/ask", tags=["qa"], summary="Answer question using the knowledge graph")
     def ask(request: QARequest) -> dict[str, object]:
         """Answer a user question using the graph-first QA pipeline."""

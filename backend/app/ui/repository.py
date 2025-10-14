@@ -56,6 +56,9 @@ class GraphViewRepositoryProtocol(Protocol):
     def fetch_edges(self, filters: GraphViewFilters) -> Sequence[GraphEdgeRecord]:
         """Return graph edges satisfying the provided filters."""
 
+    def clear_graph(self) -> None:
+        """Delete graph nodes and edges accessible to the UI."""
+
 
 class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
     """Concrete repository issuing Cypher queries for graph views."""
@@ -65,6 +68,8 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
         RETURN src, dst, rel
         LIMIT $limit
     """
+
+    _CLEAR_QUERY = "MATCH (node:Entity) DETACH DELETE node"
 
     def __init__(self, driver: Driver) -> None:
         self._driver = driver
@@ -241,6 +246,13 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
 
         with self._driver.session() as session:
             return session.execute_read(_execute)
+
+    def clear_graph(self) -> None:
+        def _execute(tx):  # type: ignore[no-untyped-def]
+            tx.run(self._CLEAR_QUERY)
+
+        with self._driver.session() as session:
+            session.execute_write(_execute)
 
     @staticmethod
     def _record_to_edge(record: Record) -> GraphEdgeRecord:

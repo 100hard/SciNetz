@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import unicodedata
 from difflib import SequenceMatcher
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set
+from typing import AbstractSet, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set
 from uuid import UUID, uuid5
 
 import numpy as np
@@ -36,7 +37,6 @@ _NAMESPACE_UUID = UUID("2d6bb3b6-4be3-4f98-a18a-0a49de2a5d88")
 _TOP_SECTION_OVERLAP_THRESHOLD = 0.5
 _DISTRIBUTION_TOLERANCE = 0.05
 
-
 @dataclass(frozen=True, slots=True)
 class EntityCandidate:
     """Aggregated representation of an entity prior to canonicalization."""
@@ -47,7 +47,6 @@ class EntityCandidate:
     section_distribution: Mapping[str, int]
     source_document_ids: Sequence[str]
 
-
 @dataclass(frozen=True, slots=True)
 class CanonicalizationResult:
     """Output of canonicalization consisting of nodes and merge metadata."""
@@ -57,13 +56,11 @@ class CanonicalizationResult:
     merge_map_path: Path
     merge_report_path: Path
 
-
 class EmbeddingBackend:
     """Protocol for embedding text into dense vectors."""
 
     def embed(self, text: str) -> np.ndarray:  # pragma: no cover - interface method
         raise NotImplementedError
-
 
 class HashingEmbeddingBackend(EmbeddingBackend):
     """Deterministic embedding backend using hashing for reproducibility."""
@@ -95,7 +92,6 @@ class HashingEmbeddingBackend(EmbeddingBackend):
         if norm == 0:
             return np.zeros(self._dimensions, dtype=np.float32)
         return vector / norm
-
 
 class E5EmbeddingBackend(EmbeddingBackend):
     """Embedding backend powered by the intfloat/e5-base model."""
@@ -172,7 +168,6 @@ class E5EmbeddingBackend(EmbeddingBackend):
                     self._model = SentenceTransformer(self._model_name, device=self._device)
         return self._model
 
-
 def _normalize_name(name: str) -> str:
     normalized = unicodedata.normalize("NFKC", name)
     normalized = " ".join(normalized.split())
@@ -180,12 +175,76 @@ def _normalize_name(name: str) -> str:
     normalized = normalized.strip("!\"#$%&'()*+, -./:;<=>?@[\\]^_`{|}~")
     return normalized.lower()
 
+_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*")
+_SENTENCE_PUNCTUATION_PATTERN = re.compile(r"[.!?;:]")
+_INITIALISM_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "of",
+    "on",
+    "the",
+    "to",
+    "with",
+    "using",
+}
+
+def _count_tokens(name: str) -> int:
+    return len(_TOKEN_PATTERN.findall(name))
+
+def _is_sentence_like(name: str, limit: int) -> bool:
+    stripped = name.strip()
+    if not stripped:
+        return False
+    if _SENTENCE_PUNCTUATION_PATTERN.search(stripped):
+        return True
+    return stripped.count(" ") + 1 > limit
+
+def _token_sequence(name: str) -> List[str]:
+    return [match.group(0).lower() for match in _TOKEN_PATTERN.finditer(name)]
+
+def _letters_only(name: str) -> str:
+    return "".join(char for char in name.lower() if char.isalpha())
+
+def _initialism(tokens: Sequence[str]) -> str:
+    filtered = [token for token in tokens if token and token not in _INITIALISM_STOPWORDS and len(token) > 2]
+    if not filtered:
+        filtered = [token for token in tokens if token]
+    initials = "".join(token[0] for token in filtered if token)
+    if len(initials) < 2 or len(initials) > 12:
+        return ""
+    return initials.lower()
+
+def _max_token_overlap(token_set: AbstractSet[str], members: Sequence["_PreparedCandidate"]) -> int:
+    best = 0
+    for member in members:
+        overlap = len(token_set & member.tokens)
+        if overlap > best:
+            best = overlap
+    return best
+
+def _has_acronym_bridge(candidate: "_PreparedCandidate", members: Sequence["_PreparedCandidate"]) -> bool:
+    for member in members:
+        if candidate.initialism and candidate.initialism == member.letters:
+            return True
+        if candidate.letters and candidate.letters == member.initialism:
+            return True
+        if candidate.initialism and candidate.initialism == member.initialism:
+            return True
+        if candidate.letters and candidate.letters == member.letters:
+            return True
+    return False
 
 def _top_sections(distribution: Mapping[str, int]) -> List[str]:
     filtered = [(section, count) for section, count in distribution.items() if count > 0]
     filtered.sort(key=lambda item: (-item[1], item[0]))
     return [section for section, _ in filtered[:2]]
-
 
 def _section_overlap_ratio(a: Mapping[str, int], b: Mapping[str, int]) -> float:
     top_a = set(_top_sections(a))
@@ -198,13 +257,11 @@ def _section_overlap_ratio(a: Mapping[str, int], b: Mapping[str, int]) -> float:
         return 0.0
     return intersection / union
 
-
 def _normalize_distribution(distribution: Mapping[str, int]) -> Dict[str, float]:
     total = sum(count for count in distribution.values() if count > 0)
     if total == 0:
         return {}
     return {section: count / total for section, count in distribution.items() if count > 0}
-
 
 def _distributions_match(a: Mapping[str, int], b: Mapping[str, int]) -> bool:
     norm_a = _normalize_distribution(a)
@@ -214,7 +271,6 @@ def _distributions_match(a: Mapping[str, int], b: Mapping[str, int]) -> bool:
         if abs(norm_a.get(key, 0.0) - norm_b.get(key, 0.0)) > _DISTRIBUTION_TOLERANCE:
             return False
     return True
-
 
 class _Cluster:
     """Internal representation of a merged entity cluster."""
@@ -260,7 +316,6 @@ class _Cluster:
     @property
     def centroid(self) -> np.ndarray:
         return self._centroid
-
 
 class _SimilarityIndex:
     """Similarity search helper backed by FAISS when available."""
@@ -330,7 +385,6 @@ class _SimilarityIndex:
             stacked = np.stack(self._vectors)
             self._index.add(stacked)
 
-
 @dataclass(slots=True)
 class _PreparedCandidate:
     original: EntityCandidate
@@ -338,7 +392,12 @@ class _PreparedCandidate:
     embedding: np.ndarray
     blocklisted: bool
     polysemous: bool
-
+    token_count: int
+    char_length: int
+    is_sentence_like: bool
+    tokens: FrozenSet[str]
+    letters: str
+    initialism: str
 
 class EntityCanonicalizer:
     """Canonicalize entity candidates into stable graph nodes."""
@@ -425,12 +484,28 @@ class EntityCanonicalizer:
         embedding = self._load_or_create_embedding(normalized)
         blocklisted = normalized in self._blocklist
         polysemous = self._is_polysemous_candidate(candidate)
+        token_count = _count_tokens(candidate.name)
+        char_length = len(candidate.name.strip())
+        sentence_like = _is_sentence_like(
+            candidate.name,
+            self._config.canonicalization.alias_token_limit,
+        )
+        token_sequence = _token_sequence(candidate.name)
+        token_set = frozenset(token_sequence)
+        letters = _letters_only(candidate.name)
+        initialism = _initialism(token_sequence)
         return _PreparedCandidate(
             original=candidate,
             normalized_name=normalized,
             embedding=embedding,
             blocklisted=blocklisted,
             polysemous=polysemous,
+            token_count=token_count,
+            char_length=char_length,
+            is_sentence_like=sentence_like,
+            tokens=token_set,
+            letters=letters,
+            initialism=initialism,
         )
 
     def _is_polysemous_candidate(self, candidate: EntityCandidate) -> bool:
@@ -453,6 +528,7 @@ class EntityCanonicalizer:
         threshold: float,
         candidate: "_PreparedCandidate",
         cluster: "_Cluster",
+        lexical_similarity: float,
         *,
         blocklisted: bool,
         candidate_poly: bool,
@@ -463,10 +539,8 @@ class EntityCanonicalizer:
         adjusted = threshold
         if cluster.type_counts.get(candidate.original.type, 0) > 0:
             adjusted -= self._config.canonicalization.type_match_bonus
-        lexical_similarity = self._max_lexical_similarity(
-            candidate.normalized_name,
-            tuple(cluster.normalized_names),
-        )
+        else:
+            adjusted += self._config.canonicalization.cross_type_penalty
         if lexical_similarity >= self._config.canonicalization.lexical_similarity_threshold:
             adjusted -= self._config.canonicalization.lexical_similarity_bonus
         return max(0.0, min(1.0, adjusted))
@@ -485,6 +559,29 @@ class EntityCanonicalizer:
         candidate_poly = candidate.polysemous
         cluster_poly = cluster.is_polysemous(self._config.canonicalization.polysemy_section_diversity)
         blocklisted = candidate.blocklisted or cluster.blocklisted
+        exact_name_match = candidate.normalized_name in cluster.normalized_names
+        lexical_similarity = self._max_lexical_similarity(
+            candidate.normalized_name,
+            tuple(cluster.normalized_names),
+        )
+        if not exact_name_match:
+            token_limit = self._config.canonicalization.alias_token_limit
+            char_limit = self._config.canonicalization.alias_char_limit
+            if candidate.token_count > token_limit:
+                return False
+            if candidate.char_length > char_limit:
+                return False
+            if candidate.is_sentence_like:
+                return False
+            shared_tokens = _max_token_overlap(candidate.tokens, cluster.members)
+            min_shared_tokens = self._config.canonicalization.min_shared_token_count
+            lexical_floor = self._config.canonicalization.lexical_similarity_floor
+            if (
+                lexical_similarity < lexical_floor
+                and shared_tokens < min_shared_tokens
+                and not _has_acronym_bridge(candidate, cluster.members)
+            ):
+                return False
         threshold = self._config.canonicalization.base_threshold
         if blocklisted:
             threshold = max(threshold, _BLOCKLIST_THRESHOLD)
@@ -494,6 +591,7 @@ class EntityCanonicalizer:
             threshold,
             candidate,
             cluster,
+            lexical_similarity,
             blocklisted=blocklisted,
             candidate_poly=candidate_poly,
             cluster_poly=cluster_poly,

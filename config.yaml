@@ -47,7 +47,7 @@ extraction:
   openai_model: "gpt-4o-mini"
   openai_base_url: "https://api.openai.com/v1"
   openai_timeout_seconds: 60
-  openai_prompt_version: "phase3-v1"
+  openai_prompt_version: "phase3-v3"
   openai_max_retries: 2
   openai_temperature: 0.0
   openai_max_output_tokens: 3200
@@ -72,7 +72,7 @@ extraction:
     - Other
 
 canonicalization:
-  base_threshold: 0.82
+  base_threshold: 0.88
   polysemy_threshold: 0.92
   polysemy_section_diversity: 3
   polysemy_blocklist:
@@ -87,6 +87,13 @@ canonicalization:
   lexical_similarity_threshold: 0.9
   lexical_similarity_bonus: 0.04
   type_match_bonus: 0.03
+  lexical_similarity_floor: 0.55
+  min_shared_token_count: 1
+  alias_token_limit: 5
+  alias_char_limit: 80
+  long_alias_penalty: 0.05
+  sentence_alias_penalty: 0.08
+  cross_type_penalty: 0.06
 
 relations:
   normalization_patterns:
