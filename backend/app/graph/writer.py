@@ -89,6 +89,13 @@ class GraphWriter:
     END |
         SET reverse.conflicting = true
     )
+    RETURN
+        edge.src_id AS src_id,
+        edge.dst_id AS dst_id,
+        edge.relation_norm AS relation_norm,
+        edge.directional AS directional,
+        edge.evidence AS evidence,
+        reverse IS NOT NULL AS has_reverse
     """
 
     def __init__(
@@ -263,7 +270,8 @@ class GraphWriter:
         tx.run(self._ENTITY_QUERY, entities=list(entities))
 
     def _write_edge_batch(self, tx: Any, edges: Iterable[MutableMapping[str, Any]]) -> None:
-        tx.run(self._EDGE_QUERY, edges=list(edges))
+        result = tx.run(self._EDGE_QUERY, edges=list(edges))
+        self._log_conflicts(result)
 
     def _prepare_entity_batch(self, batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Combine staged entity payloads with existing graph state."""
@@ -526,6 +534,81 @@ class GraphWriter:
         if evidence.full_sentence is not None:
             payload["full_sentence"] = evidence.full_sentence
         return json.dumps(payload, sort_keys=True)
+
+    def _log_conflicts(self, records: Any) -> None:
+        """Emit warnings for directional edges that conflict with existing data."""
+
+        for record in records or []:
+            directional = bool(self._record_value(record, "directional"))
+            has_reverse = bool(self._record_value(record, "has_reverse"))
+            if not directional or not has_reverse:
+                continue
+            src_id = self._record_value(record, "src_id")
+            dst_id = self._record_value(record, "dst_id")
+            relation = self._record_value(record, "relation_norm")
+            evidence = self._record_value(record, "evidence")
+            metadata = self._parse_evidence_metadata(evidence)
+            doc_id = metadata.get("doc_id")
+            element_id = metadata.get("element_id")
+            if doc_id and element_id:
+                LOGGER.warning(
+                    "Directional relation '%s' between %s and %s conflicts with an "
+                    "existing reverse edge (doc_id=%s, element_id=%s)",
+                    relation,
+                    src_id,
+                    dst_id,
+                    doc_id,
+                    element_id,
+                )
+            elif doc_id:
+                LOGGER.warning(
+                    "Directional relation '%s' between %s and %s conflicts with an "
+                    "existing reverse edge (doc_id=%s)",
+                    relation,
+                    src_id,
+                    dst_id,
+                    doc_id,
+                )
+            else:
+                LOGGER.warning(
+                    "Directional relation '%s' between %s and %s conflicts with an "
+                    "existing reverse edge",
+                    relation,
+                    src_id,
+                    dst_id,
+                )
+
+    @staticmethod
+    def _record_value(record: Any, key: str) -> Any:
+        if isinstance(record, Mapping):
+            return record.get(key)
+        getter = getattr(record, "get", None)
+        if callable(getter):
+            return getter(key)
+        try:
+            return record[key]
+        except Exception:  # pragma: no cover - defensive for neo4j Record
+            return None
+
+    @staticmethod
+    def _parse_evidence_metadata(evidence_payload: Any) -> Dict[str, Optional[str]]:
+        if isinstance(evidence_payload, str):
+            try:
+                decoded = json.loads(evidence_payload)
+            except json.JSONDecodeError:
+                decoded = {}
+            payload = decoded if isinstance(decoded, Mapping) else {}
+        elif isinstance(evidence_payload, Mapping):
+            payload = evidence_payload
+        else:
+            payload = {}
+        doc_id = payload.get("doc_id")
+        element_id = payload.get("element_id")
+        result: Dict[str, Optional[str]] = {
+            "doc_id": str(doc_id) if doc_id not in (None, "") else None,
+            "element_id": str(element_id) if element_id not in (None, "") else None,
+        }
+        return result
 
     def _ensure_entity_label_exists(self) -> bool:
         if self._entity_label_exists:

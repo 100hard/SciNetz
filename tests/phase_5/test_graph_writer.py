@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple
@@ -40,6 +41,14 @@ class _InMemoryEdge:
     conflicting: bool
 
 
+@dataclass
+class _Result:
+    records: List[Dict[str, Any]]
+
+    def __iter__(self):
+        return iter(self.records)
+
+
 class _InMemoryTransaction:
     """Minimal transaction stub replicating the write queries."""
 
@@ -48,13 +57,15 @@ class _InMemoryTransaction:
 
     def run(self, query: str, **params: Any) -> None:
         if "UNWIND $entities" in query:
-            self._apply_entities(params["entities"])
+            return self._apply_entities(params["entities"])
         elif "UNWIND $edges" in query:
-            self._apply_edges(params["edges"])
+            return self._apply_edges(params["edges"])
         else:  # pragma: no cover - defensive guard
             raise NotImplementedError(query)
 
-    def _apply_entities(self, entities: Iterable[MutableMapping[str, Any]]) -> None:
+    def _apply_entities(
+        self, entities: Iterable[MutableMapping[str, Any]]
+    ) -> _Result:
         for payload in entities:
             node = self._store.nodes.get(payload["node_id"])
             if node is None:
@@ -77,13 +88,17 @@ class _InMemoryTransaction:
                 node.times_seen = payload["times_seen"]
                 node.source_document_ids = list(payload["source_document_ids"])
             self._store.nodes[payload["node_id"]] = node
+        return _Result(records=[])
 
-    def _apply_edges(self, edges: Iterable[MutableMapping[str, Any]]) -> None:
+    def _apply_edges(self, edges: Iterable[MutableMapping[str, Any]]) -> _Result:
+        records: List[Dict[str, Any]] = []
         for payload in edges:
             key = (payload["src_id"], payload["dst_id"], payload["relation_norm"])
             edge = self._store.edges.get(key)
             evidence = self._normalise_evidence(payload["evidence"])
             attributes = self._normalise_attributes(payload["attributes"])
+            reverse_key = (payload["dst_id"], payload["src_id"], payload["relation_norm"])
+            reverse_exists = bool(payload["directional"] and reverse_key in self._store.edges)
             if edge is None:
                 edge = _InMemoryEdge(
                     src_id=payload["src_id"],
@@ -108,10 +123,21 @@ class _InMemoryTransaction:
                 edge.confidence = max(edge.confidence, payload["confidence"])
             self._store.edges[key] = edge
 
-            reverse_key = (payload["dst_id"], payload["src_id"], payload["relation_norm"])
-            if payload["directional"] and reverse_key in self._store.edges:
+            if reverse_exists:
                 self._store.edges[key].conflicting = True
                 self._store.edges[reverse_key].conflicting = True
+
+            records.append(
+                {
+                    "src_id": payload["src_id"],
+                    "dst_id": payload["dst_id"],
+                    "relation_norm": payload["relation_norm"],
+                    "directional": payload["directional"],
+                    "has_reverse": reverse_exists,
+                    "evidence": payload["evidence"],
+                }
+            )
+        return _Result(records=records)
 
     @staticmethod
     def _normalise_evidence(payload: Any) -> Dict[str, Any]:
@@ -386,7 +412,12 @@ def test_edge_attributes_are_serialized_to_json(writer: GraphWriter) -> None:
     assert decoded == {"method": "llm", "section": "Results"}
 
 
-def test_edge_upsert_counts_and_conflicts(writer: GraphWriter, driver: _InMemoryDriver) -> None:
+def test_edge_upsert_counts_and_conflicts(
+    writer: GraphWriter,
+    driver: _InMemoryDriver,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="backend.app.graph.writer")
     node_a = Node(
         node_id="node-a",
         name="Model A",
@@ -461,6 +492,15 @@ def test_edge_upsert_counts_and_conflicts(writer: GraphWriter, driver: _InMemory
     reverse_key = (node_b.node_id, node_a.node_id, "outperforms")
     assert driver.edges[forward_key].conflicting is True
     assert driver.edges[reverse_key].conflicting is True
+
+    conflict_logs = [
+        record.message
+        for record in caplog.records
+        if "conflicts with an existing reverse edge" in record.message
+    ]
+    assert conflict_logs
+    assert "doc_id=doc-2" in conflict_logs[-1]
+    assert "element_id=el-2" in conflict_logs[-1]
 
 
 def test_bidirectional_relations_do_not_conflict(

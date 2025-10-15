@@ -67,6 +67,6 @@ Read PLAN.md for full architecture. We're building a research paper knowledge gr
 
 ## Current Phase
 [Update this as you progress]
-Phase: 4 - Canonicalization
+Phase: 5 - Graph Writer
 Status: Ready to start
 Blockers: None
