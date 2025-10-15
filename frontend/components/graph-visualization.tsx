@@ -1,5 +1,6 @@
 "use client";
 
+import type { JSX } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { GraphEdge, GraphNode } from "./graph-explorer";
@@ -29,6 +30,8 @@ type PositionedEdge = {
   confidence: number;
 };
 
+type NodeShape = "circle" | "hexagon" | "diamond" | "rounded";
+
 type StyledNode = PositionedNode & {
   radius: number;
   fill: string;
@@ -36,6 +39,7 @@ type StyledNode = PositionedNode & {
   labelColor: string;
   strokeColor: string;
   strokeWidth: number;
+  shape: NodeShape;
 };
 
 type StyledEdge = PositionedEdge & {
@@ -43,14 +47,15 @@ type StyledEdge = PositionedEdge & {
   markerKey: string;
   labelColor: string;
   strokeOpacity: number;
+  strokeWidth: number;
 };
 
 type ComponentBackground = {
   id: number;
-  cx: number;
-  cy: number;
-  rx: number;
-  ry: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
   fill: string;
   stroke: string;
   label: string;
@@ -79,6 +84,17 @@ const RELATION_COLOR_MAP: Record<string, string> = {
   improves: "#7c3aed",
   predicts: "#f97316",
   extends: "#db2777",
+};
+
+const NODE_SHAPE_MAP: Record<string, NodeShape> = {
+  method: "hexagon",
+  methods: "hexagon",
+  dataset: "diamond",
+  datasets: "diamond",
+  metric: "rounded",
+  metrics: "rounded",
+  task: "circle",
+  tasks: "circle",
 };
 
 const hashColor = (value: string | null | undefined): string => {
@@ -420,6 +436,14 @@ const formatNodeLabel = (label: string): string[] => {
   return lines.slice(0, 2);
 };
 
+const getNodeShape = (type: string | null | undefined): NodeShape => {
+  if (!type) {
+    return "circle";
+  }
+  const key = type.trim().toLowerCase();
+  return NODE_SHAPE_MAP[key] ?? "circle";
+};
+
 const getNodeFill = (type: string | null | undefined): string => {
   if (!type) {
     return hashColor(null);
@@ -511,12 +535,58 @@ const resolveCollisions = (nodes: PositionedNode[]): void => {
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
+const createPolygonPoints = (sides: number, radius: number): string => {
+  const points: string[] = [];
+  for (let index = 0; index < sides; index += 1) {
+    const angle = ((Math.PI * 2) / sides) * index - Math.PI / 2;
+    const x = Math.cos(angle) * radius;
+    const y = Math.sin(angle) * radius;
+    points.push(`${x.toFixed(2)},${y.toFixed(2)}`);
+  }
+  return points.join(" ");
+};
+
+const renderShape = (
+  shape: NodeShape,
+  size: number,
+  props: {
+    fill: string;
+    stroke: string;
+    strokeWidth: number;
+    opacity: number;
+    filter?: string;
+  },
+): JSX.Element => {
+  switch (shape) {
+    case "hexagon": {
+      const points = createPolygonPoints(6, size * 0.95);
+      return <polygon points={points} {...props} strokeLinejoin="round" strokeLinecap="round" />;
+    }
+    case "diamond": {
+      const width = size * 1.15;
+      const height = size * 1.5;
+      const points = `0,${(-height).toFixed(2)} ${width.toFixed(2)},0 0,${height.toFixed(2)} ${(-width).toFixed(2)},0`;
+      return <polygon points={points} {...props} strokeLinejoin="round" strokeLinecap="round" />;
+    }
+    case "rounded": {
+      const width = size * 2.1;
+      const height = size * 1.5;
+      return <rect x={-width / 2} y={-height / 2} width={width} height={height} rx={Math.min(height / 2, size * 0.75)} {...props} />;
+    }
+    case "circle":
+    default:
+      return <circle r={size} {...props} />;
+  }
+};
+
 const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: GraphEdge[] }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [dimensions, setDimensions] = useState<Dimensions>({ width: 0, height: DEFAULT_HEIGHT });
   const [transform, setTransform] = useState<GraphTransform>({ scale: 1, x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
   const panState = useRef({
     isActive: false,
     pointerId: null as number | null,
@@ -551,7 +621,7 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
     };
   }, []);
 
-  const { positionedNodes, positionedEdges, componentBackgrounds, viewBox, viewWidth, viewHeight } = useMemo(() => {
+  const { positionedNodes, positionedEdges, componentBackgrounds, adjacencyMap, viewBox, viewWidth, viewHeight } = useMemo(() => {
     const limitedNodes = nodes.slice(0, GRAPH_VISUALIZATION_NODE_LIMIT);
     const width = Math.max(dimensions.width, 320);
     const height = Math.max(dimensions.height, DEFAULT_HEIGHT);
@@ -560,6 +630,7 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
         positionedNodes: [] as StyledNode[],
         positionedEdges: [] as StyledEdge[],
         componentBackgrounds: [] as ComponentBackground[],
+        adjacencyMap: new Map<string, Set<string>>(),
         viewBox: `0 0 ${width} ${height}`,
         viewWidth: width,
         viewHeight: height,
@@ -586,15 +657,23 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
 
     const styledNodes: StyledNode[] = translatedNodes.map((entry) => {
       const labelLines = formatNodeLabel(entry.node.label);
+      const shape = getNodeShape(entry.node.type ?? null);
+      const radius = calculateNodeRadius(entry.node, entry.degree, labelLines);
       return {
         ...entry,
         labelLines,
-        radius: calculateNodeRadius(entry.node, entry.degree, labelLines),
+        radius,
         fill: getNodeFill(entry.node.type ?? null),
         labelColor: NODE_LABEL_COLOR,
         strokeColor: NODE_STROKE_COLOR,
-        strokeWidth: 3,
+        strokeWidth: shape === "circle" ? 3 : 2.6,
+        shape,
       };
+    });
+
+    const adjacencyMap = new Map<string, Set<string>>();
+    styledNodes.forEach((entry) => {
+      adjacencyMap.set(entry.node.id, new Set());
     });
 
     const styledNodeIndex = new Map(styledNodes.map((entry) => [entry.node.id, entry]));
@@ -605,15 +684,20 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
         throw new Error("Graph layout attempted to render an edge without positioned nodes");
       }
       const stroke = getRelationColor(edge.relation);
-      const opacity = 0.25 + Math.min(Math.max(edge.confidence, 0), 1) * 0.45;
+      const confidence = Math.min(Math.max(edge.confidence, 0), 1);
+      const opacity = 0.28 + confidence * 0.52;
+      const strokeWidth = 1.1 + confidence * 1.6;
+      adjacencyMap.get(source.node.id)?.add(target.node.id);
+      adjacencyMap.get(target.node.id)?.add(source.node.id);
       return {
         ...edge,
         source,
         target,
         stroke,
-        markerKey: stroke,
+        markerKey: `${stroke}-${Math.round(strokeWidth * 10)}`,
         labelColor: stroke,
         strokeOpacity: opacity,
+        strokeWidth,
       };
     });
 
@@ -647,10 +731,12 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
         });
         const cx = (minX + maxX) / 2;
         const cy = (minY + maxY) / 2;
-        const paddingX = Math.max(28, Math.sqrt(componentNodes.length) * 14);
-        const paddingY = Math.max(24, Math.sqrt(componentNodes.length) * 12);
-        const rx = Math.max((maxX - minX) / 2 + paddingX, 42);
-        const ry = Math.max((maxY - minY) / 2 + paddingY, 42);
+        const paddingX = Math.max(28, Math.sqrt(componentNodes.length) * 18);
+        const paddingY = Math.max(24, Math.sqrt(componentNodes.length) * 16);
+        const width = Math.max(maxX - minX + paddingX * 2, 120);
+        const height = Math.max(maxY - minY + paddingY * 2, 120);
+        const x = cx - width / 2;
+        const y = cy - height / 2;
         let dominantType: string | null = null;
         let dominantCount = 0;
         typeCounts.forEach((count, type) => {
@@ -664,10 +750,10 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
         const label = dominantType ? `${labelBase} · ${dominantType}` : labelBase;
         return {
           id: componentId,
-          cx,
-          cy,
-          rx,
-          ry,
+          x,
+          y,
+          width,
+          height,
           fill,
           stroke,
           label,
@@ -679,6 +765,7 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       positionedNodes: styledNodes,
       positionedEdges: styledEdges,
       componentBackgrounds,
+      adjacencyMap,
       viewBox: `0 0 ${viewWidth} ${viewHeight}`,
       viewWidth,
       viewHeight,
@@ -687,6 +774,8 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
 
   useEffect(() => {
     setTransform({ scale: 1, x: 0, y: 0 });
+    setHoveredNodeId(null);
+    setHoveredEdgeId(null);
   }, [positionedNodes.length, positionedEdges.length]);
 
   const handleWheel = useCallback(
@@ -803,16 +892,75 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
   }, [zoomCentered]);
 
   const edgeMarkerMap = useMemo(() => {
-    const map = new Map<string, string>();
+    const map = new Map<string, { id: string; color: string }>();
     positionedEdges.forEach((edge) => {
       if (!map.has(edge.markerKey)) {
-        map.set(edge.markerKey, `graph-arrow-${map.size}`);
+        map.set(edge.markerKey, { id: `graph-arrow-${map.size}`, color: edge.stroke });
       }
     });
     return map;
   }, [positionedEdges]);
 
-  const markerEntries = useMemo(() => Array.from(edgeMarkerMap.entries()), [edgeMarkerMap]);
+  const markerEntries = useMemo(() => Array.from(edgeMarkerMap.values()), [edgeMarkerMap]);
+
+  const hoveredEdge = useMemo(() => {
+    if (!hoveredEdgeId) {
+      return null;
+    }
+    return positionedEdges.find((edge) => edge.id === hoveredEdgeId) ?? null;
+  }, [hoveredEdgeId, positionedEdges]);
+
+  const hoveredEdgeNodeIds = useMemo(() => {
+    if (!hoveredEdge) {
+      return null;
+    }
+    return new Set([hoveredEdge.source.node.id, hoveredEdge.target.node.id]);
+  }, [hoveredEdge]);
+
+  const hasHover = hoveredNodeId !== null || hoveredEdgeId !== null;
+
+  const nodeTypeLegend = useMemo(() => {
+    const counts = new Map<string, { label: string; color: string; shape: NodeShape; count: number }>();
+    positionedNodes.forEach((node) => {
+      const rawType = node.node.type?.trim();
+      const label = rawType ? rawType.replace(/_/g, " ") : "Unspecified";
+      const key = label.toLowerCase();
+      const existing = counts.get(key);
+      if (existing) {
+        existing.count += 1;
+        return;
+      }
+      counts.set(key, {
+        label: label.charAt(0).toUpperCase() + label.slice(1),
+        color: node.fill,
+        shape: node.shape,
+        count: 1,
+      });
+    });
+    return Array.from(counts.values())
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6);
+  }, [positionedNodes]);
+
+  const relationLegend = useMemo(() => {
+    const counts = new Map<string, { label: string; color: string; count: number }>();
+    positionedEdges.forEach((edge) => {
+      const key = edge.relation.toLowerCase();
+      const existing = counts.get(key);
+      if (existing) {
+        existing.count += 1;
+        return;
+      }
+      counts.set(key, {
+        label: edge.relation,
+        color: edge.stroke,
+        count: 1,
+      });
+    });
+    return Array.from(counts.values())
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6);
+  }, [positionedEdges]);
 
   return (
     <div
@@ -858,7 +1006,7 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
         style={{ touchAction: "none" }}
       >
         <defs>
-          {markerEntries.map(([color, id]) => (
+          {markerEntries.map(({ color, id }) => (
             <marker key={id} id={id} markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
               <path d="M0,0 L8,4 L0,8" fill={color} fillOpacity="0.85" />
             </marker>
@@ -869,33 +1017,45 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
         </defs>
         <g transform={`translate(${transform.x} ${transform.y}) scale(${transform.scale})`}>
           <g>
-            {componentBackgrounds.map((background) => (
-              <g key={`component-${background.id}`}>
-                <ellipse
-                  cx={background.cx}
-                  cy={background.cy}
-                  rx={background.rx}
-                  ry={background.ry}
-                  fill={background.fill}
-                  stroke={background.stroke}
-                  strokeWidth={1.6}
-                  strokeDasharray="12 10"
-                />
-                <text
-                  x={background.cx}
-                  y={background.cy - background.ry + 22}
-                  textAnchor="middle"
-                  fontSize="11"
-                  fontWeight={600}
-                  fill="rgba(15, 23, 42, 0.74)"
-                  paintOrder="stroke"
-                  stroke="rgba(248, 250, 252, 0.92)"
-                  strokeWidth={2.1}
-                >
-                  {background.label}
-                </text>
-              </g>
-            ))}
+            {componentBackgrounds.map((background) => {
+              const headerHeight = 34;
+              const labelY = background.y + headerHeight / 2 + 4;
+              const centerX = background.x + background.width / 2;
+              return (
+                <g key={`component-${background.id}`}>
+                  <rect
+                    x={background.x}
+                    y={background.y}
+                    width={background.width}
+                    height={background.height}
+                    rx={32}
+                    fill={background.fill}
+                    stroke={background.stroke}
+                    strokeWidth={1.4}
+                  />
+                  <rect
+                    x={background.x + 18}
+                    y={background.y + 16}
+                    width={background.width - 36}
+                    height={headerHeight}
+                    rx={18}
+                    fill="rgba(248, 250, 252, 0.85)"
+                    stroke="rgba(148, 163, 184, 0.35)"
+                    strokeWidth={0.8}
+                  />
+                  <text
+                    x={centerX}
+                    y={labelY + 2}
+                    textAnchor="middle"
+                    fontSize="12"
+                    fontWeight={600}
+                    fill="rgba(15, 23, 42, 0.78)"
+                  >
+                    {background.label}
+                  </text>
+                </g>
+              );
+            })}
           </g>
           <g>
             {positionedEdges.map((edge) => {
@@ -906,9 +1066,37 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
               const angle = flipped ? rawAngle + 180 : rawAngle;
               const label = edge.relation;
               const labelWidth = Math.min(160, Math.max(56, label.length * 6));
-              const markerId = edgeMarkerMap.get(edge.markerKey);
+              const markerId = edgeMarkerMap.get(edge.markerKey)?.id;
+              const sharesHoveredEdgeNode =
+                hoveredEdgeNodeIds?.has(edge.source.node.id) === true ||
+                hoveredEdgeNodeIds?.has(edge.target.node.id) === true;
+              const isDirectHoveredEdge = hoveredEdgeId === edge.id;
+              const isEdgeHighlighted =
+                isDirectHoveredEdge ||
+                (hoveredNodeId !== null &&
+                  (edge.source.node.id === hoveredNodeId || edge.target.node.id === hoveredNodeId)) ||
+                sharesHoveredEdgeNode;
+              const isEdgeDimmed = hasHover && !isEdgeHighlighted;
+              const strokeOpacity = isEdgeDimmed
+                ? edge.strokeOpacity * 0.25
+                : isEdgeHighlighted
+                  ? Math.min(1, edge.strokeOpacity + 0.3)
+                  : edge.strokeOpacity;
+              const strokeWidth =
+                edge.strokeWidth + (isDirectHoveredEdge ? 1.4 : isEdgeHighlighted ? 0.8 : 0);
+              const labelOpacity = isEdgeDimmed ? 0.55 : 1;
+              const backgroundOpacity = isEdgeDimmed ? 0.6 : 0.92;
               return (
-                <g key={edge.id}>
+                <g
+                  key={edge.id}
+                  onPointerEnter={() => {
+                    setHoveredEdgeId(edge.id);
+                    setHoveredNodeId(null);
+                  }}
+                  onPointerLeave={() => {
+                    setHoveredEdgeId((current) => (current === edge.id ? null : current));
+                  }}
+                >
                   <line
                     x1={edge.source.x}
                     y1={edge.source.y}
@@ -916,8 +1104,9 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
                     y2={edge.target.y}
                     markerEnd={markerId ? `url(#${markerId})` : undefined}
                     stroke={edge.stroke}
-                    strokeWidth={1.2}
-                    strokeOpacity={edge.strokeOpacity}
+                    strokeWidth={strokeWidth}
+                    strokeOpacity={strokeOpacity}
+                    strokeLinecap="round"
                   />
                   <g transform={`translate(${midX}, ${midY}) rotate(${angle})`}>
                     <rect
@@ -926,12 +1115,13 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
                       width={labelWidth}
                       height={20}
                       rx={6}
-                      fill="rgba(248, 250, 252, 0.9)"
+                      fill={`rgba(248, 250, 252, ${backgroundOpacity.toFixed(2)})`}
                     />
                     <text
                       textAnchor="middle"
                       fontSize="9"
                       fill={edge.labelColor}
+                      fillOpacity={labelOpacity}
                       transform={flipped ? "scale(-1, -1)" : undefined}
                     >
                       {label}
@@ -942,15 +1132,35 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
             })}
           </g>
           <g>
-            {positionedNodes.map((entry) => (
-              <g key={entry.node.id} transform={`translate(${entry.x}, ${entry.y})`}>
-                <circle
-                  r={entry.radius}
-                  fill={entry.fill}
-                  stroke={entry.strokeColor}
-                  strokeWidth={entry.strokeWidth}
-                  opacity={0.92}
-                  filter="url(#node-shadow)"
+            {positionedNodes.map((entry) => {
+              const isHovered = hoveredNodeId === entry.node.id;
+              const isConnectedToHovered =
+                hoveredNodeId !== null && adjacencyMap.get(hoveredNodeId)?.has(entry.node.id) === true;
+              const isEdgeHighlighted = hoveredEdgeNodeIds?.has(entry.node.id) === true;
+              const isHighlighted = isHovered || isConnectedToHovered || isEdgeHighlighted;
+              const isDimmed = hasHover && !isHighlighted;
+              const nodeOpacity = isDimmed ? 0.35 : 0.95;
+              const strokeWidth = entry.strokeWidth + (isHovered ? 1.4 : isHighlighted ? 0.9 : 0);
+              const textOpacity = isDimmed ? 0.55 : 1;
+              const shapeElement = renderShape(entry.shape, entry.radius, {
+                fill: entry.fill,
+                stroke: entry.strokeColor,
+                strokeWidth,
+                opacity: nodeOpacity,
+                filter: "url(#node-shadow)",
+              });
+              return (
+                <g
+                  key={entry.node.id}
+                  transform={`translate(${entry.x}, ${entry.y})`}
+                  onPointerEnter={() => {
+                    setHoveredNodeId(entry.node.id);
+                    setHoveredEdgeId(null);
+                  }}
+                  onPointerLeave={() => {
+                    setHoveredNodeId((current) => (current === entry.node.id ? null : current));
+                  }}
+                  style={{ cursor: "pointer" }}
                 >
                   <title>
                     {entry.node.label}
@@ -962,28 +1172,83 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
                         : 0
                     }`}
                   </title>
-                </circle>
-                {entry.labelLines.map((line, index) => {
-                  const offset = (index - (entry.labelLines.length - 1) / 2) * 12;
-                  return (
-                    <text
-                      key={`${entry.node.id}-label-${index}`}
-                      x={0}
-                      y={offset + 4}
-                      textAnchor="middle"
-                      fontSize="11"
-                      fontWeight={600}
-                      fill={entry.labelColor}
-                    >
-                      {line}
-                    </text>
-                  );
-                })}
-              </g>
-            ))}
+                  {shapeElement}
+                  {entry.labelLines.map((line, index) => {
+                    const offset = (index - (entry.labelLines.length - 1) / 2) * 12;
+                    return (
+                      <text
+                        key={`${entry.node.id}-label-${index}`}
+                        x={0}
+                        y={offset + 4}
+                        textAnchor="middle"
+                        fontSize="11"
+                        fontWeight={600}
+                        fill={entry.labelColor}
+                        fillOpacity={textOpacity}
+                      >
+                        {line}
+                      </text>
+                    );
+                  })}
+                </g>
+              );
+            })}
           </g>
         </g>
       </svg>
+      {(nodeTypeLegend.length > 0 || relationLegend.length > 0) && (
+        <div className="pointer-events-none absolute bottom-3 left-3 flex flex-col gap-2 text-xs">
+          {nodeTypeLegend.length > 0 && (
+            <div className="pointer-events-auto rounded-md border border-border/60 bg-background/85 p-3 shadow-sm backdrop-blur">
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Node types</div>
+              <div className="flex flex-wrap gap-3">
+                {nodeTypeLegend.map((entry) => (
+                  <div key={`legend-node-${entry.label}`} className="flex items-center gap-2">
+                    <svg width="30" height="20" viewBox="-15 -10 30 20" aria-hidden="true">
+                      {renderShape(entry.shape, 8, {
+                        fill: entry.color,
+                        stroke: NODE_STROKE_COLOR,
+                        strokeWidth: 1.6,
+                        opacity: 1,
+                      })}
+                    </svg>
+                    <div className="flex items-baseline gap-1 text-slate-700">
+                      <span className="font-medium">{entry.label}</span>
+                      <span className="text-[10px] text-slate-400">{entry.count}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {relationLegend.length > 0 && (
+            <div className="pointer-events-auto rounded-md border border-border/60 bg-background/85 p-3 shadow-sm backdrop-blur">
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Relations</div>
+              <div className="flex flex-wrap gap-3">
+                {relationLegend.map((entry) => (
+                  <div key={`legend-relation-${entry.label}`} className="flex items-center gap-2 text-slate-700">
+                    <svg width="38" height="12" viewBox="0 0 38 12" aria-hidden="true">
+                      <line x1="2" y1="6" x2="32" y2="6" stroke={entry.color} strokeWidth="2.4" strokeLinecap="round" />
+                      <polygon points="32,6 38,3 38,9" fill={entry.color} opacity={0.85} />
+                    </svg>
+                    <div className="flex items-baseline gap-1">
+                      <span className="font-medium">{entry.label}</span>
+                      <span className="text-[10px] text-slate-400">{entry.count}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="pointer-events-none absolute bottom-3 right-3 hidden max-w-[220px] rounded-md border border-border/60 bg-background/80 p-3 text-[11px] text-slate-600 shadow-sm backdrop-blur sm:block">
+        <p className="font-semibold uppercase tracking-wide text-slate-500">Tips</p>
+        <ul className="mt-1 list-disc space-y-1 pl-4">
+          <li>Hover nodes to spotlight their neighborhood.</li>
+          <li>Scroll to zoom, drag to pan, double-click to reset.</li>
+        </ul>
+      </div>
     </div>
   );
 };
