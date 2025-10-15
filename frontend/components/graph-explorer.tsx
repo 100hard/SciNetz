@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Eraser, Filter, Loader2, RefreshCw } from "lucide-react";
+import { AlertCircle, Eraser, Filter, Loader2, Maximize2, Minimize2, RefreshCw } from "lucide-react";
 
 import GraphVisualization, { GRAPH_VISUALIZATION_NODE_LIMIT } from "./graph-visualization";
 import apiClient, { extractErrorMessage } from "../lib/http";
@@ -101,7 +101,9 @@ const GraphExplorer = () => {
   const [error, setError] = useState<string | null>(null);
   const [autoFetchEnabled, setAutoFetchEnabled] = useState<boolean | null>(null);
   const [isClearing, setIsClearing] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const skipNextAutoFetchRef = useRef(false);
+  const visualizationContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -117,6 +119,20 @@ const GraphExplorer = () => {
       return;
     }
     setAutoFetchEnabled(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const handleChange = () => {
+      const target = visualizationContainerRef.current;
+      setIsFullscreen(document.fullscreenElement === target);
+    };
+    document.addEventListener("fullscreenchange", handleChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", handleChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -150,6 +166,38 @@ const GraphExplorer = () => {
 
     void loadSettings();
   }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const target = visualizationContainerRef.current;
+    if (!target) {
+      return;
+    }
+    if (document.fullscreenElement === target) {
+      void document.exitFullscreen().catch(() => {});
+      return;
+    }
+    if (!document.fullscreenElement) {
+      void target.requestFullscreen().catch(() => {});
+      return;
+    }
+    void document
+      .exitFullscreen()
+      .then(() => {
+        void target.requestFullscreen().catch(() => {});
+      })
+      .catch(() => {});
+  }, []);
+
+  const sectionClassName = isFullscreen
+    ? "fixed inset-0 z-50 flex flex-col overflow-hidden bg-card"
+    : "rounded-lg border bg-card p-6 shadow-sm";
+  const contentClassName = isFullscreen ? "flex h-full flex-col gap-4" : "space-y-4";
+  const headerClassName = `flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between ${isFullscreen ? "px-6 pt-6" : ""}`;
+  const controlsClassName = "flex flex-col items-start gap-2 sm:items-end";
+  const graphContainerClass = isFullscreen ? "flex-1 px-6 pb-6 min-h-0" : undefined;
 
   const fetchGraph = useCallback(async () => {
     setIsLoading(true);
@@ -388,27 +436,41 @@ const GraphExplorer = () => {
 
       {graph && (
         <Fragment>
-          <section className="space-y-4 rounded-lg border bg-card p-6 shadow-sm">
-            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 className="text-lg font-semibold text-foreground">Graph preview</h3>
-                <p className="text-sm text-muted-foreground">
-                  Lightweight layout for visually exploring the current filters.
-                </p>
+          <section ref={visualizationContainerRef} className={sectionClassName}>
+            <div className={contentClassName}>
+              <div className={headerClassName}>
+                <div>
+                  <h3 className="text-lg font-semibold text-foreground">Graph preview</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Lightweight layout for visually exploring the current filters.
+                  </p>
+                </div>
+                <div className={controlsClassName}>
+                  {graph.nodes.length > GRAPH_VISUALIZATION_NODE_LIMIT && (
+                    <p className="text-xs text-muted-foreground">
+                      Showing first {GRAPH_VISUALIZATION_NODE_LIMIT} nodes out of {graph.nodes.length}.
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={toggleFullscreen}
+                    className="inline-flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium text-foreground transition hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2"
+                  >
+                    {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                    {isFullscreen ? "Exit full screen" : "Full screen"}
+                  </button>
+                </div>
               </div>
-              {graph.nodes.length > GRAPH_VISUALIZATION_NODE_LIMIT && (
-                <p className="text-xs text-muted-foreground">
-                  Showing first {GRAPH_VISUALIZATION_NODE_LIMIT} nodes out of {graph.nodes.length}.
+              {graph.nodes.length === 0 ? (
+                <p className={`text-sm text-muted-foreground ${isFullscreen ? "px-6" : ""}`}>
+                  No nodes found for the selected filters.
                 </p>
+              ) : (
+                <div className={graphContainerClass}>
+                  <GraphVisualization nodes={graph.nodes} edges={graph.edges} />
+                </div>
               )}
             </div>
-            {graph.nodes.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No nodes found for the selected filters.
-              </p>
-            ) : (
-              <GraphVisualization nodes={graph.nodes} edges={graph.edges} />
-            )}
           </section>
 
           <div className="grid gap-6 xl:grid-cols-2">

@@ -17,7 +17,12 @@ from backend.app.config import AppConfig, load_config
 from backend.app.contracts import Evidence, PaperMetadata, ParsedElement, TextSpan, Triplet
 from backend.app.extraction import ExtractionResult
 from backend.app.orchestration import ExtractionOrchestrator
-from backend.app.orchestration.orchestrator import OrchestrationResult, ProcessedChunkStore
+from backend.app.orchestration.orchestrator import (
+    BatchExtractionInput,
+    BatchOrchestrationResult,
+    OrchestrationResult,
+    ProcessedChunkStore,
+)
 from backend.app.parsing.pipeline import ParseResult
 
 
@@ -31,6 +36,18 @@ class StubParsingPipeline:
     def parse_document(self, doc_id: str, pdf_path: Path) -> ParseResult:
         self.calls += 1
         return self.result
+
+
+class MappingParsingPipeline:
+    """Parsing pipeline that returns results from a mapping keyed by doc id."""
+
+    def __init__(self, results: Dict[str, ParseResult]) -> None:
+        self._results = results
+        self.calls: List[str] = []
+
+    def parse_document(self, doc_id: str, pdf_path: Path) -> ParseResult:
+        self.calls.append(doc_id)
+        return self._results[doc_id]
 
 
 class StubTripletExtractor:
@@ -291,3 +308,87 @@ def test_orchestrator_force_reprocesses_when_requested(config: AppConfig, tmp_pa
     assert rerun.processed_chunks == 1
     assert extractor.calls == [element.element_id, element.element_id]
     assert len(graph_writer.edges) == 2
+
+
+def test_run_batch_merges_cross_papers(config: AppConfig, tmp_path: Path) -> None:
+    doc_a = "paper-a"
+    doc_b = "paper-b"
+    element_a = _parsed_element(doc_a, f"{doc_a}:0", "Methods", "Model A uses dataset X.")
+    element_b = _parsed_element(doc_b, f"{doc_b}:0", "Evaluation", "Model A evaluates dataset Y.")
+    metadata_a = PaperMetadata(doc_id=doc_a, title="Paper A")
+    metadata_b = PaperMetadata(doc_id=doc_b, title="Paper B")
+    parse_result_a = ParseResult(doc_id=doc_a, metadata=metadata_a, elements=[element_a], errors=[])
+    parse_result_b = ParseResult(doc_id=doc_b, metadata=metadata_b, elements=[element_b], errors=[])
+    parsing = MappingParsingPipeline({doc_a: parse_result_a, doc_b: parse_result_b})
+
+    triplet_a = _triplet("Model A", "uses", "dataset X", element_a)
+    triplet_b = _triplet("Model A", "evaluates", "dataset Y", element_b)
+    extraction_a = ExtractionResult(
+        triplets=[triplet_a],
+        section_distribution={"Model A": {"Methods": 1}, "dataset X": {"Methods": 1}},
+        relation_verbatims=["uses"],
+    )
+    extraction_b = ExtractionResult(
+        triplets=[triplet_b],
+        section_distribution={"Model A": {"Evaluation": 1}, "dataset Y": {"Evaluation": 1}},
+        relation_verbatims=["evaluates"],
+    )
+    extractor = StubTripletExtractor(
+        {
+            element_a.element_id: extraction_a,
+            element_b.element_id: extraction_b,
+        }
+    )
+    inventory = StubInventoryBuilder({})
+    graph_writer = StubGraphWriter()
+
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=HashingEmbeddingBackend(),
+        embedding_dir=tmp_path / "embeddings",
+        report_dir=tmp_path / "reports",
+    )
+    canonicalization = CanonicalizationPipeline(config=config, canonicalizer=canonicalizer)
+    chunk_store = ProcessedChunkStore(tmp_path / "processed.json")
+    orchestrator = ExtractionOrchestrator(
+        config=config,
+        parsing_pipeline=parsing,
+        inventory_builder=inventory,
+        triplet_extractor=extractor,
+        canonicalization=canonicalization,
+        graph_writer=graph_writer,
+        chunk_store=chunk_store,
+    )
+
+    pdf_a = tmp_path / "paper_a.pdf"
+    pdf_b = tmp_path / "paper_b.pdf"
+    pdf_a.write_text("placeholder a")
+    pdf_b.write_text("placeholder b")
+
+    batch_result = orchestrator.run_batch(
+        [
+            BatchExtractionInput(paper_id=doc_a, pdf_path=pdf_a),
+            BatchExtractionInput(paper_id=doc_b, pdf_path=pdf_b),
+        ]
+    )
+
+    assert isinstance(batch_result, BatchOrchestrationResult)
+    assert batch_result.total_processed_chunks == 2
+    assert batch_result.total_edges_written == 2
+    assert batch_result.total_nodes_written == 3
+    assert set(batch_result.documents.keys()) == {doc_a, doc_b}
+
+    per_doc_a = batch_result.documents[doc_a]
+    per_doc_b = batch_result.documents[doc_b]
+
+    assert per_doc_a.processed_chunks == 1
+    assert per_doc_b.processed_chunks == 1
+    assert per_doc_a.nodes_written == 2
+    assert per_doc_b.nodes_written == 2
+    assert per_doc_a.edges_written == 1
+    assert per_doc_b.edges_written == 1
+
+    assert len(graph_writer.nodes) == 3
+    model_nodes = [node for node in graph_writer.nodes if node.name == "Model A"]
+    assert len(model_nodes) == 1
+    assert set(model_nodes[0].source_document_ids) == {doc_a, doc_b}

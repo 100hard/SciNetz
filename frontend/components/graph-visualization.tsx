@@ -68,6 +68,7 @@ const NODE_LABEL_FONT_WEIGHT = 700;
 const NODE_LABEL_LINE_HEIGHT = 16;
 const NODE_LABEL_VERTICAL_PADDING = 10;
 const MIN_NODE_RADIUS = 30;
+const NODE_RADIUS_SCALE = 1.35;
 const TYPE_COLOR_MAP: Record<string, string> = {
   method: "#2563eb",
   methods: "#2563eb",
@@ -587,7 +588,7 @@ const calculateNodeRadius = (node: GraphNode, degree: number, labelLines: string
   const horizontalRadius = longestLine > 0 ? (longestLine * approxCharWidth) / 2 : 0;
   const verticalRadius = (labelLines.length * NODE_LABEL_LINE_HEIGHT) / 2 + NODE_LABEL_VERTICAL_PADDING;
   const minimum = Math.max(MIN_NODE_RADIUS, horizontalRadius, verticalRadius);
-  return minimum + importanceContribution + degreeContribution;
+  return (minimum + importanceContribution + degreeContribution) * NODE_RADIUS_SCALE;
 };
 
 const getRelationColor = (relation: string): string => {
@@ -857,11 +858,15 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       const zoomFactor = event.deltaY < 0 ? 1.12 : 0.88;
       setTransform((current) => {
         const nextScale = clamp(current.scale * zoomFactor, MIN_SCALE, MAX_SCALE);
-        const delta = current.scale - nextScale;
+        if (nextScale === current.scale) {
+          return current;
+        }
+        const pointerGraphX = (pointer.x - current.x) / current.scale;
+        const pointerGraphY = (pointer.y - current.y) / current.scale;
         return {
           scale: nextScale,
-          x: current.x + delta * pointer.x,
-          y: current.y + delta * pointer.y,
+          x: pointer.x - pointerGraphX * nextScale,
+          y: pointer.y - pointerGraphY * nextScale,
         };
       });
     },
@@ -937,11 +942,15 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       const center = { x: viewWidth / 2, y: viewHeight / 2 };
       setTransform((current) => {
         const nextScale = clamp(current.scale * factor, MIN_SCALE, MAX_SCALE);
-        const delta = current.scale - nextScale;
+        if (nextScale === current.scale) {
+          return current;
+        }
+        const centerGraphX = (center.x - current.x) / current.scale;
+        const centerGraphY = (center.y - current.y) / current.scale;
         return {
           scale: nextScale,
-          x: current.x + delta * center.x,
-          y: current.y + delta * center.y,
+          x: center.x - centerGraphX * nextScale,
+          y: center.y - centerGraphY * nextScale,
         };
       });
     },
@@ -971,7 +980,7 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
   return (
     <div
       ref={containerRef}
-      className="relative h-[420px] w-full overflow-hidden rounded-md border border-border bg-gradient-to-br from-background via-background/70 to-background"
+      className="relative h-full min-h-[420px] w-full overflow-hidden rounded-md border border-border bg-gradient-to-br from-background via-background/70 to-background"
     >
       <div className="pointer-events-none absolute left-3 top-3 flex gap-2">
         <button

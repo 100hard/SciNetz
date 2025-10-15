@@ -7,7 +7,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from backend.app.canonicalization import CanonicalizationPipeline
 from backend.app.config import AppConfig
@@ -30,6 +30,28 @@ class OrchestrationResult:
     nodes_written: int
     edges_written: int
     co_mention_edges: int
+    errors: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BatchExtractionInput:
+    """Payload describing a document to process in a batch run."""
+
+    paper_id: str
+    pdf_path: Path
+    force: bool = False
+
+
+@dataclass(frozen=True)
+class BatchOrchestrationResult:
+    """Summary payload for a batch orchestration run."""
+
+    documents: Mapping[str, OrchestrationResult]
+    total_processed_chunks: int
+    total_skipped_chunks: int
+    total_nodes_written: int
+    total_edges_written: int
+    total_co_mention_edges: int
     errors: List[str] = field(default_factory=list)
 
 
@@ -79,6 +101,20 @@ class _CoMentionProduct:
 
     extraction: ExtractionResult
     edge: _EdgeRecord
+
+
+@dataclass
+class _DocumentProcessingState:
+    """Mutable accumulator capturing per-document processing data."""
+
+    doc_id: str
+    metadata: PaperMetadata
+    processed_chunks: int = 0
+    skipped_chunks: int = 0
+    co_mention_edges: int = 0
+    errors: List[str] = field(default_factory=list)
+    extractions: List[ExtractionResult] = field(default_factory=list)
+    edge_records: List[_EdgeRecord] = field(default_factory=list)
 
 
 class ProcessedChunkStore:
@@ -325,32 +361,19 @@ class ExtractionOrchestrator:
         self._graph_writer = graph_writer
         self._chunk_store = chunk_store
 
-    def run(self, *, paper_id: str, pdf_path: Path, force: bool = False) -> OrchestrationResult:
-        """Execute the full extraction pipeline for a given paper."""
+    def _process_document(self, request: BatchExtractionInput) -> _DocumentProcessingState:
+        """Parse and extract a single document without performing canonicalization."""
 
-        if force:
-            self._chunk_store.reset_document(paper_id)
+        if request.force:
+            self._chunk_store.reset_document(request.paper_id)
 
-        parse_result = self._parsing.parse_document(doc_id=paper_id, pdf_path=pdf_path)
+        parse_result = self._parsing.parse_document(doc_id=request.paper_id, pdf_path=request.pdf_path)
+        state = _DocumentProcessingState(doc_id=request.paper_id, metadata=parse_result.metadata)
         if parse_result.errors:
-            LOGGER.error("Parsing failed for %s: %s", paper_id, parse_result.errors)
-            return OrchestrationResult(
-                doc_id=paper_id,
-                metadata=parse_result.metadata,
-                processed_chunks=0,
-                skipped_chunks=0,
-                nodes_written=0,
-                edges_written=0,
-                co_mention_edges=0,
-                errors=list(parse_result.errors),
-            )
+            LOGGER.error("Parsing failed for %s: %s", request.paper_id, parse_result.errors)
+            state.errors.extend(str(error) for error in parse_result.errors)
+            return state
 
-        extraction_results: List[ExtractionResult] = []
-        edge_records: List[_EdgeRecord] = []
-        errors: List[str] = []
-        skipped_chunks = 0
-        processed_chunks = 0
-        co_mention_edges = 0
         pipeline_version = self._config.pipeline.version
         co_mention_accumulator: Optional[CoMentionAccumulator] = None
         if self._config.co_mention.enabled:
@@ -360,7 +383,7 @@ class ExtractionOrchestrator:
             if not self._chunk_store.should_process(
                 element.doc_id, element.content_hash, pipeline_version
             ):
-                skipped_chunks += 1
+                state.skipped_chunks += 1
                 continue
             candidate_entities: Optional[List[str]] = None
             if self._config.extraction.use_entity_inventory:
@@ -371,20 +394,20 @@ class ExtractionOrchestrator:
                 )
             except Exception as exc:  # noqa: BLE001 - third-party errors bubble up
                 LOGGER.exception("Triplet extraction failed for %s", element.element_id)
-                errors.append(str(exc))
+                state.errors.append(str(exc))
                 if co_mention_accumulator is not None:
                     fallback_candidates = candidate_entities
                     if fallback_candidates is None:
                         fallback_candidates = self._inventory_builder.build_inventory(element)
                     co_mention_accumulator.record(element, fallback_candidates)
-                    processed_chunks += 1
+                    state.processed_chunks += 1
                     self._chunk_store.mark_processed(
                         element.doc_id, element.content_hash, pipeline_version
                     )
                 continue
 
-            extraction_results.append(extraction)
-            processed_chunks += 1
+            state.extractions.append(extraction)
+            state.processed_chunks += 1
             self._chunk_store.mark_processed(element.doc_id, element.content_hash, pipeline_version)
             for idx, triplet in enumerate(extraction.triplets):
                 relation_verbatim = triplet.predicate
@@ -392,7 +415,7 @@ class ExtractionOrchestrator:
                     candidate = extraction.relation_verbatims[idx]
                     if candidate:
                         relation_verbatim = candidate
-                edge_records.append(
+                state.edge_records.append(
                     _EdgeRecord(
                         triplet=triplet,
                         relation_verbatim=relation_verbatim,
@@ -403,13 +426,45 @@ class ExtractionOrchestrator:
 
         if co_mention_accumulator is not None:
             products = co_mention_accumulator.finalize()
-            co_mention_edges = len(products)
+            state.co_mention_edges += len(products)
             for product in products:
-                extraction_results.append(product.extraction)
-                edge_records.append(product.edge)
+                state.extractions.append(product.extraction)
+                state.edge_records.append(product.edge)
+
+        return state
+
+    def run(self, *, paper_id: str, pdf_path: Path, force: bool = False) -> OrchestrationResult:
+        """Execute the full extraction pipeline for a given paper."""
+
+    def run(self, *, paper_id: str, pdf_path: Path, force: bool = False) -> OrchestrationResult:
+        """Execute the full extraction pipeline for a given paper."""
+
+        batch = self.run_batch([BatchExtractionInput(paper_id=paper_id, pdf_path=pdf_path, force=force)])
+        return batch.documents[paper_id]
+
+    def run_batch(self, requests: Sequence[BatchExtractionInput]) -> BatchOrchestrationResult:
+        """Execute the extraction pipeline for multiple documents in a single canonicalization pass."""
+
+        if not requests:
+            msg = "requests must not be empty"
+            raise ValueError(msg)
+
+        states: List[_DocumentProcessingState] = []
+        for request in requests:
+            state = self._process_document(request)
+            states.append(state)
+
+        extraction_results: List[ExtractionResult] = []
+        edge_records: List[_EdgeRecord] = []
+        for state in states:
+            extraction_results.extend(state.extractions)
+            edge_records.extend(state.edge_records)
 
         nodes_written = 0
         edges_written = 0
+        doc_node_map: Dict[str, Set[str]] = {}
+        doc_edge_counts: Dict[str, int] = {}
+        batch_errors: List[str] = []
         try:
             canonical_result = self._canonicalization.run(extraction_results)
             alias_lookup = self._build_alias_lookup(
@@ -418,6 +473,10 @@ class ExtractionOrchestrator:
             for node in canonical_result.nodes:
                 self._graph_writer.upsert_entity(node)
                 nodes_written += 1
+                for doc_id in node.source_document_ids:
+                    if not doc_id:
+                        continue
+                    doc_node_map.setdefault(doc_id, set()).add(node.node_id)
             for record in edge_records:
                 src_id = self._resolve_node(alias_lookup, record.triplet.subject)
                 dst_id = self._resolve_node(alias_lookup, record.triplet.object)
@@ -440,26 +499,60 @@ class ExtractionOrchestrator:
                     times_seen=record.times_seen,
                 )
                 edges_written += 1
+                doc_id = record.triplet.evidence.doc_id
+                if doc_id:
+                    doc_edge_counts[doc_id] = doc_edge_counts.get(doc_id, 0) + 1
             self._graph_writer.flush()
         except Exception as exc:  # noqa: BLE001 - protective barrier around persistence
-            LOGGER.exception("Failed to persist extraction results for %s", paper_id)
-            errors.append(str(exc))
+            LOGGER.exception("Failed to persist extraction results for batch")
+            message = str(exc)
+            batch_errors.append(message)
+            for state in states:
+                state.errors.append(message)
+            nodes_written = 0
+            edges_written = 0
 
         try:
             self._chunk_store.flush()
         except OSError as exc:
             LOGGER.exception("Failed to persist processed chunk registry")
-            errors.append(str(exc))
+            message = str(exc)
+            batch_errors.append(message)
+            for state in states:
+                state.errors.append(message)
 
-        return OrchestrationResult(
-            doc_id=paper_id,
-            metadata=parse_result.metadata,
-            processed_chunks=processed_chunks,
-            skipped_chunks=skipped_chunks,
-            nodes_written=nodes_written,
-            edges_written=edges_written,
-            co_mention_edges=co_mention_edges,
-            errors=errors,
+        documents: Dict[str, OrchestrationResult] = {}
+        for state in states:
+            doc_nodes = len(doc_node_map.get(state.doc_id, set()))
+            doc_edges = doc_edge_counts.get(state.doc_id, 0)
+            documents[state.doc_id] = OrchestrationResult(
+                doc_id=state.doc_id,
+                metadata=state.metadata,
+                processed_chunks=state.processed_chunks,
+                skipped_chunks=state.skipped_chunks,
+                nodes_written=doc_nodes,
+                edges_written=doc_edges,
+                co_mention_edges=state.co_mention_edges,
+                errors=list(state.errors),
+            )
+
+        total_processed = sum(state.processed_chunks for state in states)
+        total_skipped = sum(state.skipped_chunks for state in states)
+        total_co_mentions = sum(state.co_mention_edges for state in states)
+        aggregated_errors = list(
+            dict.fromkeys(
+                [error for state in states for error in state.errors] + batch_errors
+            )
+        )
+
+        return BatchOrchestrationResult(
+            documents=documents,
+            total_processed_chunks=total_processed,
+            total_skipped_chunks=total_skipped,
+            total_nodes_written=nodes_written,
+            total_edges_written=edges_written,
+            total_co_mention_edges=total_co_mentions,
+            errors=aggregated_errors,
         )
 
     @staticmethod
