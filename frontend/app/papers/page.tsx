@@ -205,10 +205,14 @@ export default function PapersPage() {
   }, [papers, titleQuery, authorQuery, statusFilter]);
 
   const summary = useMemo(() => {
+    const pendingIds = new Set(Object.keys(pendingExtraction));
+    const deriveStatus = (paper: PaperSummary) =>
+      (pendingIds.has(paper.paper_id) ? "processing" : paper.status).toLowerCase();
+
     const total = papers.length;
-    const complete = papers.filter((paper) => paper.status.toLowerCase() === "complete").length;
-    const failed = papers.filter((paper) => paper.status.toLowerCase() === "failed").length;
-    const inFlight = papers.filter((paper) => ACTIVE_STATUSES.has(paper.status.toLowerCase())).length;
+    const complete = papers.filter((paper) => deriveStatus(paper) === "complete").length;
+    const failed = papers.filter((paper) => deriveStatus(paper) === "failed").length;
+    const inFlight = papers.filter((paper) => ACTIVE_STATUSES.has(deriveStatus(paper))).length;
 
     return [
       { label: "Total papers", value: total },
@@ -216,7 +220,7 @@ export default function PapersPage() {
       { label: "In progress", value: inFlight },
       { label: "Failed", value: failed },
     ];
-  }, [papers]);
+  }, [papers, pendingExtraction]);
 
   const handleRefresh = useCallback(() => {
     void fetchPapers("refresh");
@@ -399,6 +403,8 @@ export default function PapersPage() {
                   ))
                 : filteredPapers.length > 0
                 ? filteredPapers.map((paper) => {
+                    const isPending = Boolean(pendingExtraction[paper.paper_id]);
+                    const derivedStatus = isPending ? "processing" : paper.status;
                     const metadataSummary = summariseMetadata(paper.metadata);
                     return (
                       <tr key={paper.paper_id} className="fade-in transition-colors duration-200 hover:bg-muted/40">
@@ -423,7 +429,7 @@ export default function PapersPage() {
                           {metadataSummary}
                         </td>
                         <td className="px-4 py-4">
-                          <StatusBadge status={paper.status} />
+                          <StatusBadge status={derivedStatus} />
                         </td>
                         <td className="px-4 py-4 text-sm text-muted-foreground">{formatDate(paper.uploaded_at)}</td>
                         <td className="px-4 py-4 text-sm text-muted-foreground">{formatDate(paper.updated_at)}</td>

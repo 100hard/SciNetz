@@ -100,6 +100,12 @@ class ProcessedChunkStore:
         doc_records = self._records.setdefault(doc_id, {})
         doc_records[content_hash] = pipeline_version
 
+    def reset_document(self, doc_id: str) -> None:
+        """Forget all cached chunks for the supplied document."""
+
+        if doc_id in self._records:
+            del self._records[doc_id]
+
     def flush(self) -> None:
         """Persist the registry to disk."""
 
@@ -319,8 +325,11 @@ class ExtractionOrchestrator:
         self._graph_writer = graph_writer
         self._chunk_store = chunk_store
 
-    def run(self, *, paper_id: str, pdf_path: Path) -> OrchestrationResult:
+    def run(self, *, paper_id: str, pdf_path: Path, force: bool = False) -> OrchestrationResult:
         """Execute the full extraction pipeline for a given paper."""
+
+        if force:
+            self._chunk_store.reset_document(paper_id)
 
         parse_result = self._parsing.parse_document(doc_id=paper_id, pdf_path=pdf_path)
         if parse_result.errors:

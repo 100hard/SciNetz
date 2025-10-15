@@ -35,6 +35,7 @@ from backend.app.ui import (
     Neo4jGraphViewRepository,
     PaperRecord,
     PaperRegistry,
+    PaperStatus,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -263,6 +264,7 @@ def create_app(
         record = registry.get(paper_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Paper not found")
+        force_reprocess = record.status in {PaperStatus.COMPLETE, PaperStatus.FAILED}
         orchestrator_obj = getattr(app.state, "orchestrator", None)
         if orchestrator_obj is None:
             raise HTTPException(status_code=503, detail="Extraction orchestrator unavailable")
@@ -271,6 +273,7 @@ def create_app(
             result: OrchestrationResult = orchestrator_obj.run(
                 paper_id=paper_id,
                 pdf_path=record.pdf_path,
+                force=force_reprocess,
             )
         except Exception as exc:  # noqa: BLE001 - propagate failure to caller
             registry.mark_failed(paper_id, [str(exc)])

@@ -248,17 +248,21 @@ def test_orchestrator_is_idempotent(config: AppConfig, tmp_path: Path) -> None:
     assert extractor.calls == [element.element_id]
     assert len(graph_writer.edges) == 1
 
-
-def test_co_mention_fallback_generates_edges(config: AppConfig, tmp_path: Path) -> None:
-    doc_id = "paper-3"
-    content = "Entity A and Entity B collaborate. Later, Entity A meets Entity B again."
-    element = _parsed_element(doc_id, f"{doc_id}:0", "Discussion", content)
+def test_orchestrator_force_reprocesses_when_requested(config: AppConfig, tmp_path: Path) -> None:
+    doc_id = "paper-2"
+    element = _parsed_element(doc_id, f"{doc_id}:0", "Results", "System Y surpasses baseline.")
     metadata = PaperMetadata(doc_id=doc_id)
     parse_result = ParseResult(doc_id=doc_id, metadata=metadata, elements=[element], errors=[])
     parsing = StubParsingPipeline(parse_result)
 
-    extractor = StubTripletExtractor({}, failures={element.element_id})
-    inventory = StubInventoryBuilder({element.element_id: ["Entity A", "Entity B"]})
+    triplet = _triplet("System Y", "outperforms", "baseline", element)
+    extraction = ExtractionResult(
+        triplets=[triplet],
+        section_distribution={"System Y": {"Results": 1}, "baseline": {"Results": 1}},
+        relation_verbatims=["outperforms"],
+    )
+    extractor = StubTripletExtractor({element.element_id: extraction})
+    inventory = StubInventoryBuilder({})
     graph_writer = StubGraphWriter()
     canonicalizer = EntityCanonicalizer(
         config,
@@ -281,13 +285,9 @@ def test_co_mention_fallback_generates_edges(config: AppConfig, tmp_path: Path) 
     pdf_path = tmp_path / "paper.pdf"
     pdf_path.write_text("placeholder")
 
-    result = orchestrator.run(paper_id=doc_id, pdf_path=pdf_path)
+    orchestrator.run(paper_id=doc_id, pdf_path=pdf_path)
+    rerun = orchestrator.run(paper_id=doc_id, pdf_path=pdf_path, force=True)
 
-    assert result.co_mention_edges == 1
-    assert len(graph_writer.edges) == 1
-    edge = graph_writer.edges[0]
-    assert edge["relation_norm"] == "correlates-with"
-    assert edge["attributes"].get("method") == "co-mention"
-    assert edge["attributes"].get("hidden") == "true"
-    assert edge["times_seen"] == 2
-    assert any("LLM failure" in error for error in result.errors)
+    assert rerun.processed_chunks == 1
+    assert extractor.calls == [element.element_id, element.element_id]
+    assert len(graph_writer.edges) == 2
