@@ -342,15 +342,15 @@ const runForceLayout = (
     const seeded = createSeededGenerator(`component-${index}`);
     const weight = componentSizes[index] / componentSpreadBase;
     const angle = index === 0 ? 0 : goldenAngle * index + seeded() * 0.24;
-    const radialStep = minDimension * (0.08 + weight * 0.06);
+    const radialStep = minDimension * (0.052 + weight * 0.045);
     const distance =
       index === 0
         ? 0
         : Math.min(
-            minDimension * 0.26,
-            Math.sqrt(index + 1) * radialStep + seeded() * minDimension * 0.02,
+            minDimension * 0.18,
+            Math.sqrt(index + 1) * radialStep + seeded() * minDimension * 0.015,
           );
-    const spread = minDimension * (0.18 + weight * 0.14 + seeded() * 0.04);
+    const spread = minDimension * (0.17 + weight * 0.12 + seeded() * 0.035);
     const noise = (seeded() - 0.5) * minDimension * 0.015;
     componentAnchors.set(index, {
       x: centerX + Math.cos(angle) * distance,
@@ -393,7 +393,7 @@ const runForceLayout = (
   const centerGravity = 0.02;
   const repulsionStrength = 0.95;
   const attractionStrength = 0.06;
-  const crossComponentPull = 0.015;
+  const crossComponentPull = 0.028;
   const epsilon = 0.0001;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
