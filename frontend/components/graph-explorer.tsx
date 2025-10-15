@@ -24,6 +24,7 @@ export type GraphNode = {
   type?: string | null;
   aliases: string[];
   times_seen: number;
+  importance?: number | null;
   section_distribution: Record<string, number>;
 };
 

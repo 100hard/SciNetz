@@ -34,6 +34,7 @@ type StyledNode = PositionedNode & {
   fill: string;
   labelLines: string[];
   labelColor: string;
+  labelOutline: string;
   strokeColor: string;
   strokeWidth: number;
 };
@@ -60,7 +61,13 @@ const DEFAULT_HEIGHT = 420;
 const MIN_SCALE = 0.35;
 const MAX_SCALE = 4.2;
 const NODE_STROKE_COLOR = "#0f172a";
-const NODE_LABEL_COLOR = "#f8fafc";
+const NODE_LABEL_LIGHT_COLOR = "#f8fafc";
+const NODE_LABEL_DARK_COLOR = "#0f172a";
+const NODE_LABEL_FONT_SIZE = 13;
+const NODE_LABEL_FONT_WEIGHT = 700;
+const NODE_LABEL_LINE_HEIGHT = 16;
+const NODE_LABEL_VERTICAL_PADDING = 10;
+const MIN_NODE_RADIUS = 30;
 const TYPE_COLOR_MAP: Record<string, string> = {
   method: "#2563eb",
   methods: "#2563eb",
@@ -91,6 +98,135 @@ const hashColor = (value: string | null | undefined): string => {
   }
   const hue = Math.abs(hash);
   return `hsl(${hue}, 65%, 65%)`;
+};
+
+type RgbColor = { r: number; g: number; b: number };
+
+const parseHexColor = (value: string): RgbColor | null => {
+  const hex = value.replace("#", "").trim();
+  if (hex.length === 3) {
+    const r = Number.parseInt(hex[0] + hex[0], 16);
+    const g = Number.parseInt(hex[1] + hex[1], 16);
+    const b = Number.parseInt(hex[2] + hex[2], 16);
+    if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+      return null;
+    }
+    return { r, g, b };
+  }
+  if (hex.length === 6) {
+    const r = Number.parseInt(hex.slice(0, 2), 16);
+    const g = Number.parseInt(hex.slice(2, 4), 16);
+    const b = Number.parseInt(hex.slice(4, 6), 16);
+    if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+      return null;
+    }
+    return { r, g, b };
+  }
+  return null;
+};
+
+const parseRgbColor = (value: string): RgbColor | null => {
+  const match = value.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+  if (!match) {
+    return null;
+  }
+  const r = Math.min(255, Math.max(0, Number.parseFloat(match[1])));
+  const g = Math.min(255, Math.max(0, Number.parseFloat(match[2])));
+  const b = Math.min(255, Math.max(0, Number.parseFloat(match[3])));
+  if ([r, g, b].some((channel) => Number.isNaN(channel))) {
+    return null;
+  }
+  return { r, g, b };
+};
+
+const parseHslColor = (value: string): RgbColor | null => {
+  const match = value.match(/hsla?\(\s*([\d.+-]+)(deg|rad|turn)?\s*,\s*([\d.+-]+)%\s*,\s*([\d.+-]+)%/i);
+  if (!match) {
+    return null;
+  }
+  let hue = Number.parseFloat(match[1]);
+  if (Number.isNaN(hue)) {
+    return null;
+  }
+  const unit = (match[2] ?? "deg").toLowerCase();
+  if (unit === "rad") {
+    hue = (hue * 180) / Math.PI;
+  } else if (unit === "turn") {
+    hue *= 360;
+  }
+  const saturation = Math.min(100, Math.max(0, Number.parseFloat(match[3]))) / 100;
+  const lightness = Math.min(100, Math.max(0, Number.parseFloat(match[4]))) / 100;
+  if ([saturation, lightness].some((component) => Number.isNaN(component))) {
+    return null;
+  }
+  const h = (((hue % 360) + 360) % 360) / 360;
+  const q = lightness < 0.5 ? lightness * (1 + saturation) : lightness + saturation - lightness * saturation;
+  const p = 2 * lightness - q;
+  const hueToRgb = (t: number) => {
+    let temp = t;
+    if (temp < 0) {
+      temp += 1;
+    }
+    if (temp > 1) {
+      temp -= 1;
+    }
+    if (temp < 1 / 6) {
+      return p + (q - p) * 6 * temp;
+    }
+    if (temp < 1 / 2) {
+      return q;
+    }
+    if (temp < 2 / 3) {
+      return p + (q - p) * (2 / 3 - temp) * 6;
+    }
+    return p;
+  };
+  const r = Math.round(hueToRgb(h + 1 / 3) * 255);
+  const g = Math.round(hueToRgb(h) * 255);
+  const b = Math.round(hueToRgb(h - 1 / 3) * 255);
+  return { r, g, b };
+};
+
+const toRgbColor = (value: string): RgbColor | null => {
+  const trimmed = value.trim();
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("#")) {
+    return parseHexColor(trimmed);
+  }
+  if (lower.startsWith("rgb")) {
+    return parseRgbColor(trimmed);
+  }
+  if (lower.startsWith("hsl")) {
+    return parseHslColor(trimmed);
+  }
+  return null;
+};
+
+const channelToLinear = (channel: number): number => {
+  const normalized = channel / 255;
+  if (normalized <= 0.03928) {
+    return normalized / 12.92;
+  }
+  return ((normalized + 0.055) / 1.055) ** 2.4;
+};
+
+const getRelativeLuminance = ({ r, g, b }: RgbColor): number => {
+  const red = channelToLinear(r);
+  const green = channelToLinear(g);
+  const blue = channelToLinear(b);
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+};
+
+const getContrastingLabelColors = (fill: string): { color: string; outline: string } => {
+  const rgb = toRgbColor(fill);
+  if (!rgb) {
+    return { color: NODE_LABEL_LIGHT_COLOR, outline: "rgba(15, 23, 42, 0.45)" };
+  }
+  const luminance = getRelativeLuminance(rgb);
+  if (luminance > 0.55) {
+    return { color: NODE_LABEL_DARK_COLOR, outline: "rgba(255, 255, 255, 0.7)" };
+  }
+  return { color: NODE_LABEL_LIGHT_COLOR, outline: "rgba(15, 23, 42, 0.5)" };
 };
 
 type SimulationNode = {
@@ -428,14 +564,30 @@ const getNodeFill = (type: string | null | undefined): string => {
   return TYPE_COLOR_MAP[key] ?? hashColor(type);
 };
 
+const getNodeImportance = (node: GraphNode): number => {
+  const provided = typeof node.importance === "number" ? node.importance : null;
+  if (provided !== null && Number.isFinite(provided) && provided > 0) {
+    return provided;
+  }
+  const sectionTotal = Object.values(node.section_distribution ?? {}).reduce(
+    (accumulator, value) => accumulator + value,
+    0,
+  );
+  const base = Math.max(node.times_seen, 0);
+  const fallback = base + sectionTotal;
+  return Math.max(fallback, 1);
+};
+
 const calculateNodeRadius = (node: GraphNode, degree: number, labelLines: string[]): number => {
-  const timesSeenContribution = Math.log10(Math.max(node.times_seen, 1)) * 6;
-  const degreeContribution = Math.sqrt(Math.max(degree, 1)) * 4;
+  const importance = getNodeImportance(node);
+  const importanceContribution = Math.log10(importance + 1) * 11;
+  const degreeContribution = Math.sqrt(Math.max(degree, 1)) * 3.5;
   const longestLine = labelLines.reduce((acc, line) => Math.max(acc, line.length), 0);
-  const labelRadius = longestLine > 0 ? longestLine * 3.6 : 0;
-  const labelHeight = labelLines.length * 8 + 10;
-  const minimum = Math.max(24, labelRadius, labelHeight);
-  return minimum + timesSeenContribution + degreeContribution;
+  const approxCharWidth = NODE_LABEL_FONT_SIZE * 0.68;
+  const horizontalRadius = longestLine > 0 ? (longestLine * approxCharWidth) / 2 : 0;
+  const verticalRadius = (labelLines.length * NODE_LABEL_LINE_HEIGHT) / 2 + NODE_LABEL_VERTICAL_PADDING;
+  const minimum = Math.max(MIN_NODE_RADIUS, horizontalRadius, verticalRadius);
+  return minimum + importanceContribution + degreeContribution;
 };
 
 const getRelationColor = (relation: string): string => {
@@ -444,10 +596,9 @@ const getRelationColor = (relation: string): string => {
 };
 
 const estimateCollisionRadius = (node: GraphNode, degree: number): number => {
-  const base = 20;
-  const degreeContribution = Math.sqrt(Math.max(degree, 1)) * 3.2;
-  const timesSeenContribution = Math.log10(Math.max(node.times_seen, 1)) * 5.2;
-  return base + degreeContribution + timesSeenContribution;
+  const labelLines = formatNodeLabel(node.label);
+  const radius = calculateNodeRadius(node, degree, labelLines);
+  return radius + 6;
 };
 
 const getComponentColors = (componentId: number): { fill: string; stroke: string } => {
@@ -586,12 +737,15 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
 
     const styledNodes: StyledNode[] = translatedNodes.map((entry) => {
       const labelLines = formatNodeLabel(entry.node.label);
+      const fill = getNodeFill(entry.node.type ?? null);
+      const { color: labelColor, outline: labelOutline } = getContrastingLabelColors(fill);
       return {
         ...entry,
         labelLines,
         radius: calculateNodeRadius(entry.node, entry.degree, labelLines),
-        fill: getNodeFill(entry.node.type ?? null),
-        labelColor: NODE_LABEL_COLOR,
+        fill,
+        labelColor,
+        labelOutline,
         strokeColor: NODE_STROKE_COLOR,
         strokeWidth: 3,
       };
@@ -942,45 +1096,55 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
             })}
           </g>
           <g>
-            {positionedNodes.map((entry) => (
-              <g key={entry.node.id} transform={`translate(${entry.x}, ${entry.y})`}>
-                <circle
-                  r={entry.radius}
-                  fill={entry.fill}
-                  stroke={entry.strokeColor}
-                  strokeWidth={entry.strokeWidth}
-                  opacity={0.92}
-                  filter="url(#node-shadow)"
-                >
-                  <title>
-                    {entry.node.label}
-                    {entry.node.type ? `\nType: ${entry.node.type}` : ""}
-                    {`\nTimes seen: ${entry.node.times_seen}`}
-                    {`\nConfidence-weighted edges: ${
-                      entry.node.section_distribution
-                        ? Object.values(entry.node.section_distribution).reduce((acc, value) => acc + value, 0)
-                        : 0
-                    }`}
-                  </title>
-                </circle>
-                {entry.labelLines.map((line, index) => {
-                  const offset = (index - (entry.labelLines.length - 1) / 2) * 12;
-                  return (
-                    <text
-                      key={`${entry.node.id}-label-${index}`}
-                      x={0}
-                      y={offset + 4}
-                      textAnchor="middle"
-                      fontSize="11"
-                      fontWeight={600}
-                      fill={entry.labelColor}
-                    >
-                      {line}
-                    </text>
-                  );
-                })}
-              </g>
-            ))}
+            {positionedNodes.map((entry) => {
+              const importanceScore = getNodeImportance(entry.node);
+              const confidenceWeightedEdges = entry.node.section_distribution
+                ? Object.values(entry.node.section_distribution).reduce((acc, value) => acc + value, 0)
+                : 0;
+              const tooltipLines = [
+                entry.node.label,
+                entry.node.type ? `Type: ${entry.node.type}` : null,
+                `Times seen: ${entry.node.times_seen}`,
+                `Importance score: ${importanceScore.toFixed(2)}`,
+                `Confidence-weighted edges: ${confidenceWeightedEdges}`,
+              ]
+                .filter((line): line is string => Boolean(line))
+                .join("\n");
+              return (
+                <g key={entry.node.id} transform={`translate(${entry.x}, ${entry.y})`}>
+                  <circle
+                    r={entry.radius}
+                    fill={entry.fill}
+                    stroke={entry.strokeColor}
+                    strokeWidth={entry.strokeWidth}
+                    opacity={0.92}
+                    filter="url(#node-shadow)"
+                  >
+                    <title>{tooltipLines}</title>
+                  </circle>
+                  {entry.labelLines.map((line, index) => {
+                    const offset = (index - (entry.labelLines.length - 1) / 2) * NODE_LABEL_LINE_HEIGHT;
+                    return (
+                      <text
+                        key={`${entry.node.id}-label-${index}`}
+                        x={0}
+                        y={offset + NODE_LABEL_FONT_SIZE / 3}
+                        textAnchor="middle"
+                        fontSize={NODE_LABEL_FONT_SIZE}
+                        fontWeight={NODE_LABEL_FONT_WEIGHT}
+                        fill={entry.labelColor}
+                        paintOrder="stroke"
+                        stroke={entry.labelOutline}
+                        strokeWidth={1.2}
+                        letterSpacing="0.25px"
+                      >
+                        {line}
+                      </text>
+                    );
+                  })}
+                </g>
+              );
+            })}
           </g>
         </g>
       </svg>
