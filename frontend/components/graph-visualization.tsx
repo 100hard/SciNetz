@@ -45,6 +45,17 @@ type StyledEdge = PositionedEdge & {
   strokeOpacity: number;
 };
 
+type ComponentBackground = {
+  id: number;
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  fill: string;
+  stroke: string;
+  label: string;
+};
+
 const DEFAULT_HEIGHT = 420;
 const MIN_SCALE = 0.35;
 const MAX_SCALE = 4.2;
@@ -439,6 +450,19 @@ const estimateCollisionRadius = (node: GraphNode, degree: number): number => {
   return base + degreeContribution + timesSeenContribution;
 };
 
+const getComponentColors = (componentId: number): { fill: string; stroke: string } => {
+  const seeded = createSeededGenerator(`component-color-${componentId}`);
+  const hue = Math.floor(seeded() * 360);
+  const saturation = 58 + seeded() * 12;
+  const lightness = 68 + seeded() * 10;
+  const strokeLightness = Math.max(38, lightness - 22);
+  const strokeSaturation = Math.max(38, saturation - 18);
+  return {
+    fill: `hsla(${hue}, ${saturation.toFixed(1)}%, ${lightness.toFixed(1)}%, 0.22)`,
+    stroke: `hsla(${hue}, ${strokeSaturation.toFixed(1)}%, ${strokeLightness.toFixed(1)}%, 0.55)`,
+  };
+};
+
 const resolveCollisions = (nodes: PositionedNode[]): void => {
   const padding = 16;
   const epsilon = 0.0001;
@@ -527,7 +551,7 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
     };
   }, []);
 
-  const { positionedNodes, positionedEdges, viewBox, viewWidth, viewHeight } = useMemo(() => {
+  const { positionedNodes, positionedEdges, componentBackgrounds, viewBox, viewWidth, viewHeight } = useMemo(() => {
     const limitedNodes = nodes.slice(0, GRAPH_VISUALIZATION_NODE_LIMIT);
     const width = Math.max(dimensions.width, 320);
     const height = Math.max(dimensions.height, DEFAULT_HEIGHT);
@@ -535,6 +559,7 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       return {
         positionedNodes: [] as StyledNode[],
         positionedEdges: [] as StyledEdge[],
+        componentBackgrounds: [] as ComponentBackground[],
         viewBox: `0 0 ${width} ${height}`,
         viewWidth: width,
         viewHeight: height,
@@ -592,9 +617,68 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       };
     });
 
+    const componentMap = new Map<number, StyledNode[]>();
+    styledNodes.forEach((entry) => {
+      const group = componentMap.get(entry.componentId);
+      if (group) {
+        group.push(entry);
+        return;
+      }
+      componentMap.set(entry.componentId, [entry]);
+    });
+
+    const componentBackgrounds: ComponentBackground[] = Array.from(componentMap.entries()).map(
+      ([componentId, componentNodes]) => {
+        let minX = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let maxY = Number.NEGATIVE_INFINITY;
+        const typeCounts = new Map<string, number>();
+        componentNodes.forEach((node) => {
+          minX = Math.min(minX, node.x - node.radius);
+          maxX = Math.max(maxX, node.x + node.radius);
+          minY = Math.min(minY, node.y - node.radius);
+          maxY = Math.max(maxY, node.y + node.radius);
+          const type = node.node.type?.toLowerCase();
+          if (!type) {
+            return;
+          }
+          typeCounts.set(type, (typeCounts.get(type) ?? 0) + 1);
+        });
+        const cx = (minX + maxX) / 2;
+        const cy = (minY + maxY) / 2;
+        const paddingX = Math.max(28, Math.sqrt(componentNodes.length) * 14);
+        const paddingY = Math.max(24, Math.sqrt(componentNodes.length) * 12);
+        const rx = Math.max((maxX - minX) / 2 + paddingX, 42);
+        const ry = Math.max((maxY - minY) / 2 + paddingY, 42);
+        let dominantType: string | null = null;
+        let dominantCount = 0;
+        typeCounts.forEach((count, type) => {
+          if (count > dominantCount) {
+            dominantType = type;
+            dominantCount = count;
+          }
+        });
+        const { fill, stroke } = getComponentColors(componentId);
+        const labelBase = `${componentNodes.length} node${componentNodes.length === 1 ? "" : "s"}`;
+        const label = dominantType ? `${labelBase} · ${dominantType}` : labelBase;
+        return {
+          id: componentId,
+          cx,
+          cy,
+          rx,
+          ry,
+          fill,
+          stroke,
+          label,
+        };
+      },
+    );
+
     return {
       positionedNodes: styledNodes,
       positionedEdges: styledEdges,
+      componentBackgrounds,
       viewBox: `0 0 ${viewWidth} ${viewHeight}`,
       viewWidth,
       viewHeight,
@@ -784,6 +868,35 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
           </filter>
         </defs>
         <g transform={`translate(${transform.x} ${transform.y}) scale(${transform.scale})`}>
+          <g>
+            {componentBackgrounds.map((background) => (
+              <g key={`component-${background.id}`}>
+                <ellipse
+                  cx={background.cx}
+                  cy={background.cy}
+                  rx={background.rx}
+                  ry={background.ry}
+                  fill={background.fill}
+                  stroke={background.stroke}
+                  strokeWidth={1.6}
+                  strokeDasharray="12 10"
+                />
+                <text
+                  x={background.cx}
+                  y={background.cy - background.ry + 22}
+                  textAnchor="middle"
+                  fontSize="11"
+                  fontWeight={600}
+                  fill="rgba(15, 23, 42, 0.74)"
+                  paintOrder="stroke"
+                  stroke="rgba(248, 250, 252, 0.92)"
+                  strokeWidth={2.1}
+                >
+                  {background.label}
+                </text>
+              </g>
+            ))}
+          </g>
           <g>
             {positionedEdges.map((edge) => {
               const midX = (edge.source.x + edge.target.x) / 2;

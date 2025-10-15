@@ -12,6 +12,7 @@ except Exception:  # pragma: no cover - skip when neo4j driver missing or incomp
 
 from backend.app.contracts import Evidence, Node, TextSpan
 from backend.app.graph import GraphWriter
+from backend.app.graph.section_distribution import decode_section_distribution
 
 try:  # pragma: no cover - optional dependency for integration environment
     from testcontainers.neo4j import Neo4jContainer
