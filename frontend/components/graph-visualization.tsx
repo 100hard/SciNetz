@@ -341,17 +341,17 @@ const runForceLayout = (
   for (let index = 0; index < componentSizes.length; index += 1) {
     const seeded = createSeededGenerator(`component-${index}`);
     const weight = componentSizes[index] / componentSpreadBase;
-    const angle = index === 0 ? 0 : goldenAngle * index + seeded() * 0.24;
-    const radialStep = minDimension * (0.052 + weight * 0.045);
+    const angle = index === 0 ? 0 : goldenAngle * index + seeded() * 0.16;
+    const radialStep = minDimension * (0.035 + weight * 0.032);
     const distance =
       index === 0
         ? 0
         : Math.min(
-            minDimension * 0.18,
-            Math.sqrt(index + 1) * radialStep + seeded() * minDimension * 0.015,
+            minDimension * 0.095,
+            Math.sqrt(index + 1) * radialStep + seeded() * minDimension * 0.01,
           );
-    const spread = minDimension * (0.17 + weight * 0.12 + seeded() * 0.035);
-    const noise = (seeded() - 0.5) * minDimension * 0.015;
+    const spread = minDimension * (0.11 + weight * 0.085 + seeded() * 0.02);
+    const noise = (seeded() - 0.5) * minDimension * 0.01;
     componentAnchors.set(index, {
       x: centerX + Math.cos(angle) * distance,
       y: centerY + Math.sin(angle) * distance,
@@ -365,8 +365,8 @@ const runForceLayout = (
     const seeded = createSeededGenerator(`${node.id}-${index}`);
     const angle = seeded() * Math.PI * 2;
     const spread = anchor?.spread ?? minDimension * 0.4;
-    const radius = spread * (0.12 + seeded() * 0.48);
-    const jitterMagnitude = spread * 0.08;
+    const radius = spread * (0.12 + seeded() * 0.4);
+    const jitterMagnitude = spread * 0.05;
     const jitterX = (seeded() - 0.5) * 2 * jitterMagnitude;
     const jitterY = (seeded() - 0.5) * 2 * jitterMagnitude;
     const noise = anchor?.noise ?? 0;
@@ -390,10 +390,10 @@ const runForceLayout = (
   let temperature = maxDimension / 1.25;
   const coolingFactor = 0.94;
   const gravity = 0.028;
-  const centerGravity = 0.02;
-  const repulsionStrength = 0.95;
-  const attractionStrength = 0.06;
-  const crossComponentPull = 0.028;
+  const centerGravity = 0.032;
+  const repulsionStrength = 0.9;
+  const attractionStrength = 0.068;
+  const crossComponentPull = 0.064;
   const epsilon = 0.0001;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
