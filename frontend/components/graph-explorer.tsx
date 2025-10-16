@@ -468,7 +468,11 @@ const GraphExplorer = () => {
                 </p>
               ) : (
                 <div className={graphContainerClass}>
-                  <GraphVisualization nodes={graph.nodes} edges={graph.edges} />
+                  <GraphVisualization
+                    nodes={graph.nodes}
+                    edges={graph.edges}
+                    showComponentBackgrounds={false}
+                  />
                 </div>
               )}
             </div>

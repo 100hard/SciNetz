@@ -44,6 +44,9 @@ type StyledEdge = PositionedEdge & {
   markerKey: string;
   labelColor: string;
   strokeOpacity: number;
+  strokeWidth: number;
+  markerColor: string;
+  markerOpacity: number;
 };
 
 type ComponentBackground = {
@@ -55,6 +58,12 @@ type ComponentBackground = {
   fill: string;
   stroke: string;
   label: string;
+};
+
+type GraphVisualizationProps = {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  showComponentBackgrounds?: boolean;
 };
 
 const DEFAULT_HEIGHT = 420;
@@ -712,7 +721,67 @@ const resolveCollisions = (nodes: PositionedNode[]): void => {
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
-const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: GraphEdge[] }) => {
+const EDGE_MIN_STROKE_WIDTH = 1.6;
+const EDGE_MAX_STROKE_WIDTH = 3.6;
+const EDGE_MIN_OPACITY = 0.55;
+const EDGE_MAX_OPACITY = 0.95;
+const EDGE_LABEL_FONT_SIZE = 10;
+const EDGE_LABEL_FONT_WEIGHT = 600;
+const EDGE_LABEL_MIN_WIDTH = 72;
+const EDGE_LABEL_MAX_WIDTH = 220;
+const EDGE_LABEL_HORIZONTAL_PADDING = 14;
+const EDGE_LABEL_RECT_HEIGHT = 26;
+const EDGE_DARKEN_BASE = "#0f172a";
+const EDGE_LABEL_LIGHTEN_TARGET = "#f8fafc";
+
+const rgbToCss = (color: RgbColor): string => `rgb(${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(color.b)})`;
+
+const blendColors = (baseColor: string, mixColor: string, amount: number): string | null => {
+  const base = toRgbColor(baseColor);
+  const mix = toRgbColor(mixColor);
+  if (!base || !mix) {
+    return null;
+  }
+  const ratio = clamp(amount, 0, 1);
+  const blended: RgbColor = {
+    r: base.r * (1 - ratio) + mix.r * ratio,
+    g: base.g * (1 - ratio) + mix.g * ratio,
+    b: base.b * (1 - ratio) + mix.b * ratio,
+  };
+  return rgbToCss(blended);
+};
+
+const getEdgeStrokeColor = (baseColor: string, confidence: number): string => {
+  const normalized = clamp(confidence, 0, 1);
+  const blendAmount = 0.25 + normalized * 0.45;
+  return blendColors(baseColor, EDGE_DARKEN_BASE, blendAmount) ?? baseColor;
+};
+
+const getEdgeStrokeWidth = (confidence: number): number => {
+  const normalized = clamp(confidence, 0, 1);
+  const emphasis = Math.sqrt(normalized);
+  return EDGE_MIN_STROKE_WIDTH + (EDGE_MAX_STROKE_WIDTH - EDGE_MIN_STROKE_WIDTH) * emphasis;
+};
+
+const getEdgeStrokeOpacity = (confidence: number): number => {
+  const normalized = clamp(confidence, 0, 1);
+  return EDGE_MIN_OPACITY + (EDGE_MAX_OPACITY - EDGE_MIN_OPACITY) * Math.pow(normalized, 0.65);
+};
+
+const getEdgeMarkerOpacity = (confidence: number): number => {
+  const normalized = clamp(confidence, 0, 1);
+  return EDGE_MIN_OPACITY + (EDGE_MAX_OPACITY - EDGE_MIN_OPACITY) * Math.pow(normalized, 0.5);
+};
+
+const getEdgeLabelColor = (strokeColor: string): string => {
+  return blendColors(strokeColor, EDGE_LABEL_LIGHTEN_TARGET, 0.32) ?? strokeColor;
+};
+
+const GraphVisualization = ({
+  nodes,
+  edges,
+  showComponentBackgrounds = true,
+}: GraphVisualizationProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const previousPositionsRef = useRef<Map<string, CachedPosition>>(new Map());
@@ -810,31 +879,40 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       if (!source || !target) {
         throw new Error("Graph layout attempted to render an edge without positioned nodes");
       }
-      const stroke = getRelationColor(edge.relation);
-      const opacity = 0.25 + Math.min(Math.max(edge.confidence, 0), 1) * 0.45;
+      const baseStroke = getRelationColor(edge.relation);
+      const stroke = getEdgeStrokeColor(baseStroke, edge.confidence);
+      const strokeWidth = getEdgeStrokeWidth(edge.confidence);
+      const strokeOpacity = getEdgeStrokeOpacity(edge.confidence);
+      const markerOpacity = getEdgeMarkerOpacity(edge.confidence);
+      const labelColor = getEdgeLabelColor(stroke);
+      const markerKey = `${stroke}-${markerOpacity.toFixed(2)}`;
       return {
         ...edge,
         source,
         target,
         stroke,
-        markerKey: stroke,
-        labelColor: stroke,
-        strokeOpacity: opacity,
+        markerKey,
+        markerColor: stroke,
+        markerOpacity,
+        labelColor,
+        strokeOpacity,
+        strokeWidth,
       };
     });
 
-    const componentMap = new Map<number, StyledNode[]>();
-    styledNodes.forEach((entry) => {
-      const group = componentMap.get(entry.componentId);
-      if (group) {
-        group.push(entry);
-        return;
-      }
-      componentMap.set(entry.componentId, [entry]);
-    });
+    let componentBackgrounds: ComponentBackground[] = [];
+    if (showComponentBackgrounds) {
+      const componentMap = new Map<number, StyledNode[]>();
+      styledNodes.forEach((entry) => {
+        const group = componentMap.get(entry.componentId);
+        if (group) {
+          group.push(entry);
+          return;
+        }
+        componentMap.set(entry.componentId, [entry]);
+      });
 
-    const componentBackgrounds: ComponentBackground[] = Array.from(componentMap.entries()).map(
-      ([componentId, componentNodes]) => {
+      componentBackgrounds = Array.from(componentMap.entries()).map(([componentId, componentNodes]) => {
         let minX = Number.POSITIVE_INFINITY;
         let maxX = Number.NEGATIVE_INFINITY;
         let minY = Number.POSITIVE_INFINITY;
@@ -897,8 +975,8 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
           stroke,
           label,
         };
-      },
-    );
+      });
+    }
 
     return {
       positionedNodes: styledNodes,
@@ -908,7 +986,7 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       viewWidth,
       viewHeight,
     };
-  }, [dimensions.height, dimensions.width, edges, nodes]);
+  }, [dimensions.height, dimensions.width, edges, nodes, showComponentBackgrounds]);
 
   useEffect(() => {
     setTransform({ scale: 1, x: 0, y: 0 });
@@ -1035,17 +1113,32 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
     zoomCentered(0.88);
   }, [zoomCentered]);
 
-  const edgeMarkerMap = useMemo(() => {
-    const map = new Map<string, string>();
+  const markerDefinitions = useMemo(() => {
+    const definitions: Array<{ key: string; id: string; color: string; opacity: number }> = [];
+    const indexByKey = new Map<string, number>();
     positionedEdges.forEach((edge) => {
-      if (!map.has(edge.markerKey)) {
-        map.set(edge.markerKey, `graph-arrow-${map.size}`);
+      if (indexByKey.has(edge.markerKey)) {
+        return;
       }
+      const id = `graph-arrow-${definitions.length}`;
+      indexByKey.set(edge.markerKey, definitions.length);
+      definitions.push({
+        key: edge.markerKey,
+        id,
+        color: edge.markerColor,
+        opacity: edge.markerOpacity,
+      });
     });
-    return map;
+    return definitions;
   }, [positionedEdges]);
 
-  const markerEntries = useMemo(() => Array.from(edgeMarkerMap.entries()), [edgeMarkerMap]);
+  const markerIdByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    markerDefinitions.forEach((entry) => {
+      map.set(entry.key, entry.id);
+    });
+    return map;
+  }, [markerDefinitions]);
 
   return (
     <div
@@ -1091,11 +1184,23 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
         style={{ touchAction: "none" }}
       >
         <defs>
-          {markerEntries.map(([color, id]) => (
-            <marker key={id} id={id} markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L8,4 L0,8" fill={color} fillOpacity="0.85" />
+          {markerDefinitions.map((definition) => (
+            <marker
+              key={definition.key}
+              id={definition.id}
+              markerWidth="8"
+              markerHeight="8"
+              refX="8"
+              refY="4"
+              orient="auto"
+              markerUnits="strokeWidth"
+            >
+              <path d="M0,0 L8,4 L0,8" fill={definition.color} fillOpacity={definition.opacity} />
             </marker>
           ))}
+          <filter id="edge-label-shadow" x="-50%" y="-50%" width="200%" height="200%">
+            <feDropShadow dx="0" dy="0.6" stdDeviation="0.8" floodColor="rgba(15, 23, 42, 0.22)" />
+          </filter>
           <filter id="node-shadow" x="-50%" y="-50%" width="200%" height="200%">
             <feDropShadow dx="0" dy="1" stdDeviation="1.4" floodColor="rgba(0,0,0,0.25)" />
           </filter>
@@ -1138,8 +1243,13 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
               const flipped = rawAngle > 90 || rawAngle < -90;
               const angle = flipped ? rawAngle + 180 : rawAngle;
               const label = edge.relation;
-              const labelWidth = Math.min(160, Math.max(56, label.length * 6));
-              const markerId = edgeMarkerMap.get(edge.markerKey);
+              const approxLabelWidth =
+                label.length * EDGE_LABEL_FONT_SIZE * 0.62 + EDGE_LABEL_HORIZONTAL_PADDING * 2;
+              const labelWidth = Math.min(
+                EDGE_LABEL_MAX_WIDTH,
+                Math.max(EDGE_LABEL_MIN_WIDTH, approxLabelWidth),
+              );
+              const markerId = markerIdByKey.get(edge.markerKey);
               return (
                 <g key={edge.id}>
                   <line
@@ -1149,23 +1259,34 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
                     y2={edge.target.y}
                     markerEnd={markerId ? `url(#${markerId})` : undefined}
                     stroke={edge.stroke}
-                    strokeWidth={1.2}
+                    strokeWidth={edge.strokeWidth}
                     strokeOpacity={edge.strokeOpacity}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
                   />
                   <g transform={`translate(${midX}, ${midY}) rotate(${angle})`}>
                     <rect
                       x={-labelWidth / 2}
-                      y={-10}
+                      y={-EDGE_LABEL_RECT_HEIGHT / 2}
                       width={labelWidth}
-                      height={20}
-                      rx={6}
-                      fill="rgba(248, 250, 252, 0.9)"
+                      height={EDGE_LABEL_RECT_HEIGHT}
+                      rx={8}
+                      fill="rgba(248, 250, 252, 0.98)"
+                      stroke={edge.stroke}
+                      strokeWidth={0.9}
+                      strokeOpacity={Math.min(1, edge.strokeOpacity + 0.12)}
+                      filter="url(#edge-label-shadow)"
                     />
                     <text
                       textAnchor="middle"
-                      fontSize="9"
+                      fontSize={EDGE_LABEL_FONT_SIZE}
+                      fontWeight={EDGE_LABEL_FONT_WEIGHT}
                       fill={edge.labelColor}
                       transform={flipped ? "scale(-1, -1)" : undefined}
+                      paintOrder="stroke"
+                      stroke="rgba(15, 23, 42, 0.08)"
+                      strokeWidth={0.6}
+                      letterSpacing="0.3px"
                     >
                       {label}
                     </text>
