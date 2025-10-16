@@ -341,17 +341,17 @@ const runForceLayout = (
   for (let index = 0; index < componentSizes.length; index += 1) {
     const seeded = createSeededGenerator(`component-${index}`);
     const weight = componentSizes[index] / componentSpreadBase;
-    const angle = index === 0 ? 0 : goldenAngle * index + seeded() * 0.24;
-    const radialStep = minDimension * (0.052 + weight * 0.045);
+    const angle = index === 0 ? 0 : goldenAngle * index + seeded() * 0.18;
+    const radialStep = minDimension * (0.03 + weight * 0.028);
     const distance =
       index === 0
         ? 0
         : Math.min(
-            minDimension * 0.18,
-            Math.sqrt(index + 1) * radialStep + seeded() * minDimension * 0.015,
+            minDimension * 0.05,
+            Math.sqrt(index + 1) * radialStep * 0.4 + seeded() * minDimension * 0.008,
           );
-    const spread = minDimension * (0.17 + weight * 0.12 + seeded() * 0.035);
-    const noise = (seeded() - 0.5) * minDimension * 0.015;
+    const spread = minDimension * (0.09 + weight * 0.05 + seeded() * 0.02);
+    const noise = (seeded() - 0.5) * minDimension * 0.006;
     componentAnchors.set(index, {
       x: centerX + Math.cos(angle) * distance,
       y: centerY + Math.sin(angle) * distance,
@@ -385,15 +385,15 @@ const runForceLayout = (
   const nodeIndex = new Map(simulationNodes.map((entry) => [entry.node.id, entry]));
 
   const iterations = Math.min(560, 220 + simulationNodes.length * 3);
-  const area = width * height;
+  const area = width * height * 0.35;
   const k = Math.sqrt(area / simulationNodes.length);
-  let temperature = maxDimension / 1.25;
-  const coolingFactor = 0.94;
-  const gravity = 0.028;
-  const centerGravity = 0.02;
-  const repulsionStrength = 0.95;
-  const attractionStrength = 0.06;
-  const crossComponentPull = 0.028;
+  let temperature = maxDimension / 3.2;
+  const coolingFactor = 0.87;
+  const gravity = 0.032;
+  const centerGravity = 0.038;
+  const repulsionStrength = 0.26;
+  const attractionStrength = 0.075;
+  const crossComponentPull = 0.052;
   const epsilon = 0.0001;
 
   for (let iteration = 0; iteration < iterations; iteration += 1) {
@@ -440,8 +440,8 @@ const runForceLayout = (
     for (const node of simulationNodes) {
       const toAnchorX = node.x - node.anchorX;
       const toAnchorY = node.y - node.anchorY;
-      node.dx -= toAnchorX * gravity;
-      node.dy -= toAnchorY * gravity;
+      node.dx -= toAnchorX * (gravity * 0.55);
+      node.dy -= toAnchorY * (gravity * 0.55);
       const toCenterX = node.x - centerX;
       const toCenterY = node.y - centerY;
       node.dx -= toCenterX * centerGravity;
@@ -457,17 +457,19 @@ const runForceLayout = (
       const limited = Math.min(displacement, temperature);
       node.x += (node.dx / displacement) * limited;
       node.y += (node.dy / displacement) * limited;
+      node.dx = 0;
+      node.dy = 0;
     }
 
     temperature *= coolingFactor;
-    if (temperature < 0.4) {
+    if (temperature < 0.2) {
       break;
     }
   }
 
   const positionedNodes: PositionedNode[] = simulationNodes.map((node, index) => {
     const jitterGenerator = createSeededGenerator(`post-${node.node.id}-${index}`);
-    const jitterScale = maxDimension * 0.012;
+    const jitterScale = maxDimension * 0.004;
     const jitterX = (jitterGenerator() - 0.5) * 2 * jitterScale;
     const jitterY = (jitterGenerator() - 0.5) * 2 * jitterScale;
     node.x += jitterX;
