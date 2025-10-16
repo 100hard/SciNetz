@@ -78,10 +78,14 @@ const NODE_LABEL_LINE_HEIGHT = 16;
 const NODE_LABEL_VERTICAL_PADDING = 10;
 const MIN_NODE_RADIUS = 30;
 const NODE_RADIUS_SCALE = 1.35;
-const LAYOUT_AREA_SCALE = 0.52;
-const LAYOUT_ATTRACTION_STRENGTH = 0.062;
-const LAYOUT_REPULSION_STRENGTH = 0.29;
-const LAYOUT_CROSS_COMPONENT_PULL = 0.045;
+const LAYOUT_AREA_SCALE = 0.74;
+const LAYOUT_ATTRACTION_STRENGTH = 0.044;
+const LAYOUT_REPULSION_STRENGTH = 0.32;
+const LAYOUT_CROSS_COMPONENT_PULL = 0.032;
+const LAYOUT_ANCHOR_GRAVITY = 0.024;
+const LAYOUT_CENTER_GRAVITY = 0.03;
+const LAYOUT_TEMPERATURE_DIVISOR = 2.45;
+const LAYOUT_COOLING_FACTOR = 0.89;
 const TYPE_COLOR_MAP: Record<string, string> = {
   method: "#2563eb",
   methods: "#2563eb",
@@ -374,7 +378,7 @@ const runForceLayout = (
             minDimension * 0.05,
             Math.sqrt(index + 1) * radialStep * 0.4 + seeded() * minDimension * 0.008,
           );
-    const spread = minDimension * (0.11 + weight * 0.055 + seeded() * 0.02);
+    const spread = minDimension * (0.14 + weight * 0.075 + seeded() * 0.024);
     const noise = (seeded() - 0.5) * minDimension * 0.006;
     componentAnchors.set(index, {
       x: centerX + Math.cos(angle) * distance,
@@ -388,8 +392,8 @@ const runForceLayout = (
     const anchor = componentAnchors.get(componentId);
     const seeded = createSeededGenerator(`${node.id}-${index}`);
     const angle = seeded() * Math.PI * 2;
-    const spread = anchor?.spread ?? minDimension * 0.4;
-    const radius = spread * (0.12 + seeded() * 0.48);
+    const spread = anchor?.spread ?? minDimension * 0.46;
+    const radius = spread * (0.18 + seeded() * 0.52);
     const jitterMagnitude = spread * 0.08;
     const jitterX = (seeded() - 0.5) * 2 * jitterMagnitude;
     const jitterY = (seeded() - 0.5) * 2 * jitterMagnitude;
@@ -418,10 +422,10 @@ const runForceLayout = (
   const iterations = Math.min(560, 220 + simulationNodes.length * 3);
   const area = width * height * LAYOUT_AREA_SCALE;
   const k = Math.sqrt(area / simulationNodes.length);
-  let temperature = maxDimension / 3.2;
-  const coolingFactor = 0.87;
-  const gravity = 0.032;
-  const centerGravity = 0.038;
+  let temperature = maxDimension / LAYOUT_TEMPERATURE_DIVISOR;
+  const coolingFactor = LAYOUT_COOLING_FACTOR;
+  const gravity = LAYOUT_ANCHOR_GRAVITY;
+  const centerGravity = LAYOUT_CENTER_GRAVITY;
   const repulsionStrength = LAYOUT_REPULSION_STRENGTH;
   const attractionStrength = LAYOUT_ATTRACTION_STRENGTH;
   const crossComponentPull = LAYOUT_CROSS_COMPONENT_PULL;
