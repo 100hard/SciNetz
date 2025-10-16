@@ -569,40 +569,11 @@ const GraphExplorer = () => {
                 </p>
               ) : (
                 <div className={graphContainerClass}>
-                  <div className="flex flex-col gap-6">
-                    {partitionedGraphs.map((paperGraph) => (
-                      <div
-                        key={paperGraph.id ?? "unattributed"}
-                        className="space-y-4 rounded-lg border border-border/60 bg-muted/10 p-4"
-                      >
-                        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                          <div>
-                            <p className="text-xs font-semibold uppercase tracking-wide text-primary/80">
-                              Paper
-                            </p>
-                            <h4 className="text-base font-semibold text-foreground">
-                              {paperGraph.id ?? "Unattributed entities"}
-                            </h4>
-                            <p className="text-xs text-muted-foreground">
-                              {paperGraph.nodes.length} node
-                              {paperGraph.nodes.length === 1 ? "" : "s"} · {paperGraph.edges.length} edge
-                              {paperGraph.edges.length === 1 ? "" : "s"}
-                            </p>
-                          </div>
-                          {paperGraph.nodes.length > GRAPH_VISUALIZATION_NODE_LIMIT && (
-                            <p className="text-xs text-muted-foreground">
-                              Showing first {GRAPH_VISUALIZATION_NODE_LIMIT} nodes out of {paperGraph.nodes.length}.
-                            </p>
-                          )}
-                        </div>
-                        <GraphVisualization
-                          nodes={paperGraph.nodes}
-                          edges={paperGraph.edges}
-                          showComponentBackgrounds={false}
-                        />
-                      </div>
-                    ))}
-                  </div>
+                  <GraphVisualization
+                    nodes={graph.nodes}
+                    edges={graph.edges}
+                    showComponentBackgrounds={false}
+                  />
                 </div>
               )}
             </div>
