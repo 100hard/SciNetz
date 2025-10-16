@@ -39,6 +39,7 @@ class GraphNodeRecord:
     aliases: Sequence[str]
     times_seen: int
     section_distribution: Mapping[str, int]
+    source_document_ids: Sequence[str]
 
 
 @dataclass(frozen=True)
@@ -270,6 +271,8 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
         aliases = list(data.get("aliases", []) or [])
         distribution = decode_distribution_from_mapping(data)
         node_type = data.get("type")
+        doc_ids_raw = data.get("source_document_ids", []) or []
+        doc_ids = [str(doc_id) for doc_id in doc_ids_raw if str(doc_id).strip()]
         return GraphNodeRecord(
             node_id=str(data.get("node_id")),
             name=str(data.get("name")),
@@ -277,6 +280,7 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
             aliases=[str(alias) for alias in aliases],
             times_seen=int(data.get("times_seen", 0) or 0),
             section_distribution=distribution,
+            source_document_ids=doc_ids,
         )
 
     @staticmethod

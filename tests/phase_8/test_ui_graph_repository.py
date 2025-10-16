@@ -116,6 +116,7 @@ def _node_stub(identifier: str) -> GraphNodeRecord:
         aliases=[],
         times_seen=1,
         section_distribution={},
+        source_document_ids=[f"{identifier}-doc"],
     )
 
 
@@ -175,6 +176,7 @@ def test_section_filter_falls_back_to_node_distribution() -> None:
         aliases=[],
         times_seen=1,
         section_distribution={"Methods": 2},
+        source_document_ids=["n1-doc"],
     )
     target = GraphNodeRecord(
         node_id="n2",
@@ -183,6 +185,7 @@ def test_section_filter_falls_back_to_node_distribution() -> None:
         aliases=[],
         times_seen=1,
         section_distribution={"Results": 1},
+        source_document_ids=["n2-doc"],
     )
     edges = [
         GraphEdgeRecord(

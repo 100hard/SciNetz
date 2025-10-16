@@ -30,6 +30,7 @@ def _make_node(node_id: str, name: str) -> GraphNodeRecord:
         aliases=[name.upper()],
         times_seen=3,
         section_distribution={"Results": 2},
+        source_document_ids=[f"{node_id}-doc"],
     )
 
 

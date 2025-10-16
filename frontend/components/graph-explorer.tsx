@@ -26,6 +26,7 @@ export type GraphNode = {
   times_seen: number;
   importance?: number | null;
   section_distribution: Record<string, number>;
+  source_document_ids: string[];
 };
 
 export type GraphEdge = {

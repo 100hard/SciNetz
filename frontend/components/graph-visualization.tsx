@@ -241,10 +241,19 @@ type SimulationNode = {
   dy: number;
 };
 
+type CachedPosition = {
+  x: number;
+  y: number;
+  anchorX: number;
+  anchorY: number;
+  componentId: number;
+};
+
 type LayoutResult = {
   nodes: PositionedNode[];
   edges: PositionedEdge[];
   bounds: { minX: number; maxX: number; minY: number; maxY: number };
+  positions: Map<string, CachedPosition>;
 };
 
 type GraphTransform = {
@@ -275,12 +284,14 @@ const runForceLayout = (
   edges: GraphEdge[],
   width: number,
   height: number,
+  previousPositions: Map<string, CachedPosition>,
 ): LayoutResult => {
   if (!nodes.length) {
     return {
       nodes: [],
       edges: [],
       bounds: { minX: 0, maxX: width, minY: 0, maxY: height },
+      positions: new Map(),
     };
   }
 
@@ -370,13 +381,20 @@ const runForceLayout = (
     const jitterX = (seeded() - 0.5) * 2 * jitterMagnitude;
     const jitterY = (seeded() - 0.5) * 2 * jitterMagnitude;
     const noise = anchor?.noise ?? 0;
+    const previous = previousPositions.get(node.id);
+    const baseAnchorX = (anchor?.x ?? centerX) + noise;
+    const baseAnchorY = (anchor?.y ?? centerY) - noise;
+    const anchorX = previous ? previous.anchorX : baseAnchorX;
+    const anchorY = previous ? previous.anchorY : baseAnchorY;
+    const startX = previous ? previous.x : baseAnchorX + Math.cos(angle) * radius + jitterX;
+    const startY = previous ? previous.y : baseAnchorY + Math.sin(angle) * radius + jitterY;
     return {
       node,
       componentId,
-      anchorX: (anchor?.x ?? centerX) + noise,
-      anchorY: (anchor?.y ?? centerY) - noise,
-      x: (anchor?.x ?? centerX) + Math.cos(angle) * radius + jitterX + noise,
-      y: (anchor?.y ?? centerY) + Math.sin(angle) * radius + jitterY - noise,
+      anchorX,
+      anchorY,
+      x: startX,
+      y: startY,
       dx: 0,
       dy: 0,
     };
@@ -516,10 +534,22 @@ const runForceLayout = (
     };
   });
 
+  const positionCache = new Map<string, CachedPosition>();
+  for (const entry of positionedNodes) {
+    positionCache.set(entry.node.id, {
+      x: entry.x,
+      y: entry.y,
+      anchorX: entry.anchorX,
+      anchorY: entry.anchorY,
+      componentId: entry.componentId,
+    });
+  }
+
   return {
     nodes: positionedNodes,
     edges: positionedEdges,
     bounds: { minX, maxX, minY, maxY },
+    positions: positionCache,
   };
 };
 
@@ -604,7 +634,24 @@ const estimateCollisionRadius = (node: GraphNode, degree: number): number => {
   return radius + 6;
 };
 
-const getComponentColors = (componentId: number): { fill: string; stroke: string } => {
+const getDocumentColors = (docId: string): { fill: string; stroke: string } => {
+  const normalized = docId.trim();
+  const seeded = createSeededGenerator(`paper-color-${normalized}`);
+  const baseHue = Math.floor(seeded() * 360);
+  const saturation = 62 + seeded() * 10;
+  const lightness = 70 + seeded() * 8;
+  const strokeLightness = Math.max(42, lightness - 18);
+  const strokeSaturation = Math.max(40, saturation - 14);
+  return {
+    fill: `hsla(${baseHue}, ${saturation.toFixed(1)}%, ${lightness.toFixed(1)}%, 0.26)`,
+    stroke: `hsla(${baseHue}, ${strokeSaturation.toFixed(1)}%, ${strokeLightness.toFixed(1)}%, 0.6)`,
+  };
+};
+
+const getComponentColors = (componentId: number, dominantDocId: string | null): { fill: string; stroke: string } => {
+  if (dominantDocId) {
+    return getDocumentColors(dominantDocId);
+  }
   const seeded = createSeededGenerator(`component-color-${componentId}`);
   const hue = Math.floor(seeded() * 360);
   const saturation = 58 + seeded() * 12;
@@ -668,6 +715,7 @@ const clamp = (value: number, min: number, max: number): number => Math.min(max,
 const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: GraphEdge[] }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const previousPositionsRef = useRef<Map<string, CachedPosition>>(new Map());
   const [dimensions, setDimensions] = useState<Dimensions>({ width: 0, height: DEFAULT_HEIGHT });
   const [transform, setTransform] = useState<GraphTransform>({ scale: 1, x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -720,7 +768,8 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       };
     }
 
-    const layout = runForceLayout(limitedNodes, edges, width, height);
+      const layout = runForceLayout(limitedNodes, edges, width, height, previousPositionsRef.current);
+      previousPositionsRef.current = layout.positions;
     const margin = 30;
     const minX = layout.bounds.minX - margin;
     const maxX = layout.bounds.maxX + margin;
@@ -791,16 +840,23 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
         let minY = Number.POSITIVE_INFINITY;
         let maxY = Number.NEGATIVE_INFINITY;
         const typeCounts = new Map<string, number>();
+        const docCounts = new Map<string, number>();
         componentNodes.forEach((node) => {
           minX = Math.min(minX, node.x - node.radius);
           maxX = Math.max(maxX, node.x + node.radius);
           minY = Math.min(minY, node.y - node.radius);
           maxY = Math.max(maxY, node.y + node.radius);
           const type = node.node.type?.toLowerCase();
-          if (!type) {
-            return;
+          if (type) {
+            typeCounts.set(type, (typeCounts.get(type) ?? 0) + 1);
           }
-          typeCounts.set(type, (typeCounts.get(type) ?? 0) + 1);
+          const docs = Array.isArray(node.node.source_document_ids) ? node.node.source_document_ids : [];
+          docs.forEach((docId) => {
+            const trimmed = docId.trim();
+            if (trimmed) {
+              docCounts.set(trimmed, (docCounts.get(trimmed) ?? 0) + 1);
+            }
+          });
         });
         const cx = (minX + maxX) / 2;
         const cy = (minY + maxY) / 2;
@@ -816,7 +872,19 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
             dominantCount = count;
           }
         });
-        const { fill, stroke } = getComponentColors(componentId);
+        let dominantDoc: string | null = null;
+        let dominantDocCount = 0;
+        docCounts.forEach((count, docId) => {
+          if (
+            dominantDoc === null ||
+            count > dominantDocCount ||
+            (count === dominantDocCount && docId < dominantDoc)
+          ) {
+            dominantDoc = docId;
+            dominantDocCount = count;
+          }
+        });
+        const { fill, stroke } = getComponentColors(componentId, dominantDoc);
         const labelBase = `${componentNodes.length} node${componentNodes.length === 1 ? "" : "s"}`;
         const label = dominantType ? `${labelBase} · ${dominantType}` : labelBase;
         return {

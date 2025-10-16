@@ -90,6 +90,7 @@ class GraphNodePayload(BaseModel):
     aliases: List[str] = Field(default_factory=list)
     times_seen: int
     section_distribution: Dict[str, int] = Field(default_factory=dict)
+    source_document_ids: List[str] = Field(default_factory=list)
 
 
 class GraphEdgePayload(BaseModel):
@@ -473,6 +474,7 @@ def _graph_response_from_view(view: GraphView) -> GraphResponse:
             aliases=list(node.aliases),
             times_seen=node.times_seen,
             section_distribution=dict(node.section_distribution),
+            source_document_ids=list(node.source_document_ids),
         )
         for node in view.nodes
     ]

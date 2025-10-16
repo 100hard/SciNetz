@@ -23,6 +23,7 @@ class GraphNode:
     aliases: List[str]
     times_seen: int
     section_distribution: Dict[str, int]
+    source_document_ids: List[str]
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,7 @@ class GraphViewService:
             aliases=list(record.aliases),
             times_seen=record.times_seen,
             section_distribution=dict(record.section_distribution),
+            source_document_ids=list(record.source_document_ids),
         )
 
     @staticmethod
