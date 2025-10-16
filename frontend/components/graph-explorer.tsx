@@ -50,6 +50,13 @@ type GraphResponse = {
   edge_count: number;
 };
 
+type PartitionedGraph = {
+  id: string | null;
+  label: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+};
+
 const formatTimestamp = (value?: string | null) => {
   if (!value) {
     return "—";
@@ -253,6 +260,100 @@ const GraphExplorer = () => {
       nodes: graph.node_count,
       edges: graph.edge_count,
     };
+  }, [graph]);
+
+  const partitionedGraphs = useMemo<PartitionedGraph[]>(() => {
+    if (!graph) {
+      return [];
+    }
+
+    const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+    const nodeDocs = new Map<string, Set<string>>();
+    const docEntries = new Map<
+      string,
+      { nodes: GraphNode[]; nodeIds: Set<string>; edges: GraphEdge[] }
+    >();
+    const doclessNodeIds = new Set<string>();
+    const doclessEdges: GraphEdge[] = [];
+
+    for (const node of graph.nodes) {
+      const docs = Array.isArray(node.source_document_ids)
+        ? node.source_document_ids
+            .map((docId) => docId.trim())
+            .filter((docId) => docId.length > 0)
+        : [];
+      if (docs.length === 0) {
+        doclessNodeIds.add(node.id);
+        continue;
+      }
+      const uniqueDocs = Array.from(new Set(docs));
+      const docSet = new Set(uniqueDocs);
+      nodeDocs.set(node.id, docSet);
+      for (const docId of docSet) {
+        let entry = docEntries.get(docId);
+        if (!entry) {
+          entry = { nodes: [], nodeIds: new Set(), edges: [] };
+          docEntries.set(docId, entry);
+        }
+        if (!entry.nodeIds.has(node.id)) {
+          entry.nodeIds.add(node.id);
+          entry.nodes.push(node);
+        }
+      }
+    }
+
+    for (const edge of graph.edges) {
+      const sourceDocs = nodeDocs.get(edge.source) ?? new Set<string>();
+      const targetDocs = nodeDocs.get(edge.target) ?? new Set<string>();
+      const sharedDocs: string[] = [];
+      sourceDocs.forEach((docId) => {
+        if (targetDocs.has(docId)) {
+          sharedDocs.push(docId);
+        }
+      });
+      if (sharedDocs.length > 0) {
+        for (const docId of sharedDocs) {
+          const entry = docEntries.get(docId);
+          if (!entry) {
+            continue;
+          }
+          entry.edges.push(edge);
+        }
+        continue;
+      }
+      doclessEdges.push(edge);
+      doclessNodeIds.add(edge.source);
+      doclessNodeIds.add(edge.target);
+    }
+
+    const results: PartitionedGraph[] = Array.from(docEntries.entries())
+      .map(([docId, entry]) => ({
+        id: docId,
+        label: docId,
+        nodes: entry.nodes,
+        edges: entry.edges,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+
+    if (doclessNodeIds.size > 0) {
+      const nodes = Array.from(doclessNodeIds)
+        .map((nodeId) => nodeById.get(nodeId))
+        .filter((node): node is GraphNode => Boolean(node));
+      if (nodes.length > 0) {
+        const nodeIdSet = new Set(nodes.map((node) => node.id));
+        const edges = doclessEdges.filter(
+          (edge) => nodeIdSet.has(edge.source) && nodeIdSet.has(edge.target),
+        );
+        results.push({
+          id: null,
+          label: "Unattributed entities",
+          nodes,
+          edges,
+        });
+      }
+    }
+
+    return results;
   }, [graph]);
 
   const toggleSelection = (value: string, current: string[], setFn: (next: string[]) => void) => {
@@ -468,7 +569,36 @@ const GraphExplorer = () => {
                 </p>
               ) : (
                 <div className={graphContainerClass}>
-                  <GraphVisualization nodes={graph.nodes} edges={graph.edges} />
+                  <div className="flex flex-col gap-6">
+                    {partitionedGraphs.map((paperGraph) => (
+                      <div
+                        key={paperGraph.id ?? "unattributed"}
+                        className="space-y-4 rounded-lg border border-border/60 bg-muted/10 p-4"
+                      >
+                        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-wide text-primary/80">
+                              Paper
+                            </p>
+                            <h4 className="text-base font-semibold text-foreground">
+                              {paperGraph.id ?? "Unattributed entities"}
+                            </h4>
+                            <p className="text-xs text-muted-foreground">
+                              {paperGraph.nodes.length} node
+                              {paperGraph.nodes.length === 1 ? "" : "s"} · {paperGraph.edges.length} edge
+                              {paperGraph.edges.length === 1 ? "" : "s"}
+                            </p>
+                          </div>
+                          {paperGraph.nodes.length > GRAPH_VISUALIZATION_NODE_LIMIT && (
+                            <p className="text-xs text-muted-foreground">
+                              Showing first {GRAPH_VISUALIZATION_NODE_LIMIT} nodes out of {paperGraph.nodes.length}.
+                            </p>
+                          )}
+                        </div>
+                        <GraphVisualization nodes={paperGraph.nodes} edges={paperGraph.edges} />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
