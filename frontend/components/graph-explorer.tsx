@@ -595,7 +595,11 @@ const GraphExplorer = () => {
                             </p>
                           )}
                         </div>
-                        <GraphVisualization nodes={paperGraph.nodes} edges={paperGraph.edges} />
+                        <GraphVisualization
+                          nodes={paperGraph.nodes}
+                          edges={paperGraph.edges}
+                          showComponentBackgrounds={false}
+                        />
                       </div>
                     ))}
                   </div>
