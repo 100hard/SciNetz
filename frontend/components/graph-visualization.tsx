@@ -57,6 +57,12 @@ type ComponentBackground = {
   label: string;
 };
 
+type GraphVisualizationProps = {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  showComponentBackgrounds?: boolean;
+};
+
 const DEFAULT_HEIGHT = 420;
 const MIN_SCALE = 0.35;
 const MAX_SCALE = 4.2;
@@ -712,7 +718,11 @@ const resolveCollisions = (nodes: PositionedNode[]): void => {
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
-const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: GraphEdge[] }) => {
+const GraphVisualization = ({
+  nodes,
+  edges,
+  showComponentBackgrounds = true,
+}: GraphVisualizationProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const previousPositionsRef = useRef<Map<string, CachedPosition>>(new Map());
@@ -823,18 +833,19 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       };
     });
 
-    const componentMap = new Map<number, StyledNode[]>();
-    styledNodes.forEach((entry) => {
-      const group = componentMap.get(entry.componentId);
-      if (group) {
-        group.push(entry);
-        return;
-      }
-      componentMap.set(entry.componentId, [entry]);
-    });
+    let componentBackgrounds: ComponentBackground[] = [];
+    if (showComponentBackgrounds) {
+      const componentMap = new Map<number, StyledNode[]>();
+      styledNodes.forEach((entry) => {
+        const group = componentMap.get(entry.componentId);
+        if (group) {
+          group.push(entry);
+          return;
+        }
+        componentMap.set(entry.componentId, [entry]);
+      });
 
-    const componentBackgrounds: ComponentBackground[] = Array.from(componentMap.entries()).map(
-      ([componentId, componentNodes]) => {
+      componentBackgrounds = Array.from(componentMap.entries()).map(([componentId, componentNodes]) => {
         let minX = Number.POSITIVE_INFINITY;
         let maxX = Number.NEGATIVE_INFINITY;
         let minY = Number.POSITIVE_INFINITY;
@@ -897,8 +908,8 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
           stroke,
           label,
         };
-      },
-    );
+      });
+    }
 
     return {
       positionedNodes: styledNodes,
@@ -908,7 +919,7 @@ const GraphVisualization = ({ nodes, edges }: { nodes: GraphNode[]; edges: Graph
       viewWidth,
       viewHeight,
     };
-  }, [dimensions.height, dimensions.width, edges, nodes]);
+  }, [dimensions.height, dimensions.width, edges, nodes, showComponentBackgrounds]);
 
   useEffect(() => {
     setTransform({ scale: 1, x: 0, y: 0 });
