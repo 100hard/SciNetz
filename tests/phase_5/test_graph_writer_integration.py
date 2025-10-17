@@ -10,6 +10,7 @@ try:  # pragma: no cover - optional dependency for integration environment
 except Exception:  # pragma: no cover - skip when neo4j driver missing or incompatible
     GraphDatabase = None  # type: ignore[assignment]
 
+from backend.app.config import load_config
 from backend.app.contracts import Evidence, Node, TextSpan
 from backend.app.graph import GraphWriter
 from backend.app.graph.section_distribution import decode_section_distribution
@@ -261,6 +262,90 @@ def test_entity_update_without_new_documents_preserves_counts() -> None:
         assert sections == {"Methods": 2}
         assert record["times_seen"] == 2
         assert record["docs"] == ["doc-static"]
+    finally:
+        if driver is not None:
+            driver.close()
+        if container is not None:
+            container.stop()
+
+
+@pytest.mark.skipif(
+    Neo4jContainer is None or GraphDatabase is None,
+    reason="neo4j driver and testcontainers are required for integration tests",
+)
+def test_deprecate_edges_marks_previous_pipeline_versions() -> None:
+    """Ensure edges from prior pipeline versions can be marked as deprecated."""
+
+    container = None
+    driver = None
+
+    try:
+        container = Neo4jContainer("neo4j:5.21").with_env("NEO4J_AUTH", "neo4j/test")
+        container.start()
+    except DockerException as exc:  # pragma: no cover - environment without Docker
+        pytest.skip(f"Docker is not available: {exc}")
+    except Exception as exc:  # pragma: no cover - surface unexpected startup issues
+        pytest.skip(f"Unable to start Neo4j test container: {exc}")
+
+    try:
+        uri = container.get_connection_url()
+        driver = GraphDatabase.driver(uri, auth=("neo4j", "test"))
+        config = load_config().model_copy()
+        graph_config = config.graph.model_copy(
+            update={"uri": uri, "username": "neo4j", "password": "test"}
+        )
+        config_v1 = config.model_copy(update={"graph": graph_config})
+        writer_v1 = GraphWriter(driver=driver, config=config_v1, entity_batch_size=10, edge_batch_size=10)
+
+        node_a = Node(
+            node_id="node-a",
+            name="Model A",
+            type="Model",
+            aliases=[],
+            section_distribution={"Methods": 1},
+            times_seen=1,
+            source_document_ids=["doc-old"],
+        )
+        node_b = Node(
+            node_id="node-b",
+            name="Dataset B",
+            type="Dataset",
+            aliases=[],
+            section_distribution={"Methods": 1},
+            times_seen=1,
+            source_document_ids=["doc-old"],
+        )
+        writer_v1.upsert_entity(node_a)
+        writer_v1.upsert_entity(node_b)
+        evidence = Evidence(
+            element_id="chunk-1",
+            doc_id="doc-old",
+            text_span=TextSpan(start=0, end=50),
+            full_sentence="Model A uses Dataset B.",
+        )
+        writer_v1.upsert_edge(
+            src_id=node_a.node_id,
+            dst_id=node_b.node_id,
+            relation_norm="uses",
+            relation_verbatim="uses",
+            evidence=evidence,
+            confidence=0.9,
+        )
+        writer_v1.flush()
+
+        pipeline_config_new = config.pipeline.model_copy(update={"version": "1.1.0"})
+        config_v2 = config.model_copy(update={"graph": graph_config, "pipeline": pipeline_config_new})
+        writer_v2 = GraphWriter(driver=driver, config=config_v2, entity_batch_size=10, edge_batch_size=10)
+        deprecated = writer_v2.deprecate_edges("doc-old")
+        assert deprecated == 1
+
+        with driver.session() as session:
+            record = session.run(
+                "MATCH ()-[r:RELATION {doc_id: $doc_id}]->() RETURN r.deprecated AS deprecated",
+                doc_id="doc-old",
+            ).single()
+        assert record is not None
+        assert record["deprecated"] is True
     finally:
         if driver is not None:
             driver.close()
