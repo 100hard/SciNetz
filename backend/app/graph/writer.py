@@ -47,7 +47,9 @@ class GraphWriter:
     MERGE (src)-[rel:RELATION {
         relation_norm: edge.relation_norm,
         src_id: edge.src_id,
-        dst_id: edge.dst_id
+        dst_id: edge.dst_id,
+        doc_id: edge.doc_id,
+        pipeline_version: edge.pipeline_version
     }]->(dst)
     ON CREATE SET
         rel.relation_verbatim = edge.relation_verbatim,
@@ -57,7 +59,10 @@ class GraphWriter:
         rel.times_seen = edge.times_seen,
         rel.created_at = edge.created_at,
         rel.attributes = edge.attributes,
-        rel.conflicting = false
+        rel.conflicting = false,
+        rel.deprecated = false,
+        rel.deprecated_at = null,
+        rel.doc_id = edge.doc_id
     ON MATCH SET
         rel.relation_verbatim = edge.relation_verbatim,
         rel.pipeline_version = edge.pipeline_version,
@@ -70,7 +75,10 @@ class GraphWriter:
         rel.confidence = CASE
             WHEN edge.confidence > rel.confidence THEN edge.confidence
             ELSE rel.confidence
-        END
+        END,
+        rel.deprecated = false,
+        rel.deprecated_at = null,
+        rel.doc_id = edge.doc_id
     WITH edge, rel, src, dst
     OPTIONAL MATCH (dst)-[reverse:RELATION {
         relation_norm: edge.relation_norm,
@@ -97,6 +105,14 @@ class GraphWriter:
         edge.evidence AS evidence,
         reverse.evidence AS reverse_evidence,
         reverse IS NOT NULL AS has_reverse
+    """
+
+    _DEPRECATE_QUERY = """
+    MATCH ()-[rel:RELATION {doc_id: $doc_id}]->()
+    WHERE rel.pipeline_version <> $current_version AND coalesce(rel.deprecated, false) = false
+    SET rel.deprecated = true,
+        rel.deprecated_at = $deprecated_at
+    RETURN count(rel) AS count
     """
 
     def __init__(
@@ -273,6 +289,40 @@ class GraphWriter:
     def _write_edge_batch(self, tx: Any, edges: Iterable[MutableMapping[str, Any]]) -> None:
         result = tx.run(self._EDGE_QUERY, edges=list(edges))
         self._log_conflicts(result)
+
+    def deprecate_edges(self, doc_id: str) -> int:
+        """Mark edges from previous pipeline versions as deprecated for a document."""
+
+        trimmed = doc_id.strip()
+        if not trimmed:
+            return 0
+        timestamp = datetime.now(timezone.utc)
+
+        def _execute(tx: Any) -> int:  # type: ignore[no-untyped-def]
+            record = tx.run(
+                self._DEPRECATE_QUERY,
+                doc_id=trimmed,
+                current_version=self._pipeline_version,
+                deprecated_at=timestamp,
+            ).single()
+            if record is None:
+                return 0
+            if isinstance(record, Mapping):
+                value = record.get("count")
+            else:  # pragma: no cover - neo4j Record path
+                try:
+                    value = record["count"]
+                except Exception:
+                    value = 0
+            return int(value or 0)
+
+        try:
+            with self._driver.session() as session:
+                deprecated = session.execute_write(_execute)
+        except Exception:  # pragma: no cover - surfaced to callers for handling
+            LOGGER.exception("Failed to deprecate edges for %s", trimmed)
+            raise
+        return int(deprecated or 0)
 
     def _prepare_entity_batch(self, batch: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Combine staged entity payloads with existing graph state."""
@@ -487,6 +537,10 @@ class GraphWriter:
     ) -> Dict[str, Any]:
         attribute_payload = self._serialize_attributes(attributes)
         evidence_payload = self._serialize_evidence(evidence)
+        doc_id = evidence.doc_id.strip()
+        if not doc_id:
+            msg = "evidence.doc_id must be a non-empty string"
+            raise ValueError(msg)
         return {
             "src_id": src_id,
             "dst_id": dst_id,
@@ -499,6 +553,7 @@ class GraphWriter:
             "created_at": created_at,
             "times_seen": times_seen,
             "pipeline_version": self._pipeline_version,
+            "doc_id": doc_id,
             "directional": self._graph_config.is_directional(relation_norm),
         }
 
