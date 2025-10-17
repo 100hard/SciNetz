@@ -95,6 +95,7 @@ class GraphWriter:
         edge.relation_norm AS relation_norm,
         edge.directional AS directional,
         edge.evidence AS evidence,
+        reverse.evidence AS reverse_evidence,
         reverse IS NOT NULL AS has_reverse
     """
 
@@ -547,27 +548,32 @@ class GraphWriter:
             dst_id = self._record_value(record, "dst_id")
             relation = self._record_value(record, "relation_norm")
             evidence = self._record_value(record, "evidence")
+            reverse_evidence = self._record_value(record, "reverse_evidence")
             metadata = self._parse_evidence_metadata(evidence)
+            reverse_metadata = self._parse_evidence_metadata(reverse_evidence)
+            fragments = []
             doc_id = metadata.get("doc_id")
             element_id = metadata.get("element_id")
-            if doc_id and element_id:
+            reverse_doc_id = reverse_metadata.get("doc_id")
+            reverse_element_id = reverse_metadata.get("element_id")
+            if doc_id:
+                fragment = f"new_doc_id={doc_id}"
+                if element_id:
+                    fragment += f", new_element_id={element_id}"
+                fragments.append(fragment)
+            if reverse_doc_id:
+                fragment = f"existing_doc_id={reverse_doc_id}"
+                if reverse_element_id:
+                    fragment += f", existing_element_id={reverse_element_id}"
+                fragments.append(fragment)
+            if fragments:
                 LOGGER.warning(
                     "Directional relation '%s' between %s and %s conflicts with an "
-                    "existing reverse edge (doc_id=%s, element_id=%s)",
+                    "existing reverse edge (%s)",
                     relation,
                     src_id,
                     dst_id,
-                    doc_id,
-                    element_id,
-                )
-            elif doc_id:
-                LOGGER.warning(
-                    "Directional relation '%s' between %s and %s conflicts with an "
-                    "existing reverse edge (doc_id=%s)",
-                    relation,
-                    src_id,
-                    dst_id,
-                    doc_id,
+                    "; ".join(fragments),
                 )
             else:
                 LOGGER.warning(
