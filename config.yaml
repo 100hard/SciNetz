@@ -47,7 +47,7 @@ extraction:
   openai_model: "gpt-4o-mini"
   openai_base_url: "https://api.openai.com/v1"
   openai_timeout_seconds: 60
-  openai_prompt_version: "phase3-v3"
+  openai_prompt_version: "phase3-v4"
   openai_max_retries: 2
   openai_temperature: 0.0
   openai_max_output_tokens: 3200
@@ -132,6 +132,12 @@ relations:
         - compared to
         - compared with
         - contrasted with
+    - canonical: benchmarked-against
+      swap: false
+      phrases:
+        - benchmarked against
+        - benchmarked versus
+        - benchmarked against the
     - canonical: outperforms
       swap: false
       phrases:
@@ -139,6 +145,12 @@ relations:
         - performs better than
         - surpasses
         - is superior to
+    - canonical: achieves-state-of-the-art-on
+      swap: false
+      phrases:
+        - achieves state of the art on
+        - achieves state-of-the-art on
+        - achieves sota on
     - canonical: improves
       swap: false
       phrases:
@@ -155,14 +167,106 @@ relations:
         - lowers
         - mitigates
         - diminishes
+    - canonical: builds-upon
+      swap: false
+      phrases:
+        - builds upon
+        - builds on
+        - built upon
+    - canonical: extends-architecture-of
+      swap: false
+      phrases:
+        - extends the architecture of
+        - extends architecture of
+        - extension of
+    - canonical: introduces-concept-of
+      swap: false
+      phrases:
+        - introduces the concept of
+        - introduces concept of
+        - introduces the notion of
+    - canonical: proposes
+      swap: false
+      phrases:
+        - proposes
+        - we propose
+        - proposed
+    - canonical: demonstrates
+      swap: false
+      phrases:
+        - demonstrates
+        - demonstrate that
+        - demonstrated that
+    - canonical: depends-on
+      swap: false
+      phrases:
+        - depends on
+        - relies on
+        - reliant on
+    - canonical: validated-by
+      swap: false
+      phrases:
+        - validates
+        - validation via
+        - validates the
+    - canonical: validated-by
+      swap: true
+      phrases:
+        - validated by
+        - confirmed by
+        - corroborated by
+    - canonical: implemented-in
+      swap: false
+      phrases:
+        - implemented in
+        - implemented with
+        - implemented using
+    - canonical: requires
+      swap: false
+      phrases:
+        - requires
+        - requirement for
+        - needs
+        - necessitates
+    - canonical: requires-for
+      swap: false
+      phrases:
+        - required for
+        - required to
+        - required in
+    - canonical: enables
+      swap: false
+      phrases:
+        - enables
+        - allows
+        - facilitates
+        - makes it possible
+    - canonical: enables
+      swap: true
+      phrases:
+        - enabled by
+        - made possible by
+    - canonical: mediates
+      swap: false
+      phrases:
+        - mediates
+        - mediates the effect of
+        - mediated the
+        - mediate
     - canonical: causes
       swap: false
       phrases:
         - causes
-        - results in
         - leads to
-        - produces
         - induces
+        - drives
+    - canonical: results-in
+      swap: false
+      phrases:
+        - results in
+        - gives rise to
+        - produces
+        - emits
     - canonical: correlates-with
       swap: false
       phrases:
@@ -181,14 +285,129 @@ relations:
       swap: false
       phrases:
         - part of
+    - canonical: component-of
+      swap: false
+      phrases:
         - component of
+        - module of
+        - subcomponent of
+    - canonical: belongs-to
+      swap: false
+      phrases:
         - belongs to
+        - member of
+        - falls under
     - canonical: is-a
       swap: false
       phrases:
         - is a
         - is an
         - represents a
+    - canonical: instance-of
+      swap: false
+      phrases:
+        - instance of
+        - specific instance of
+        - concrete instance of
+    - canonical: composed-of
+      swap: false
+      phrases:
+        - composed of
+        - consists of
+        - comprised of
+    - canonical: synthesized-from
+      swap: false
+      phrases:
+        - synthesized from
+        - synthesised from
+        - synthesized using
+    - canonical: crystallizes-as
+      swap: false
+      phrases:
+        - crystallizes as
+        - crystallises as
+        - crystallizes into
+    - canonical: derived-from
+      swap: false
+      phrases:
+        - derived from
+        - obtained from
+        - derived through
+    - canonical: present-in
+      swap: false
+      phrases:
+        - present in
+        - expressed in
+        - localized in
+    - canonical: interacts-with
+      swap: false
+      phrases:
+        - interacts with
+        - interacting with
+        - interacts via
+        - interact with
+    - canonical: inhibits
+      swap: false
+      phrases:
+        - inhibits
+        - suppresses
+        - represses
+    - canonical: activates
+      swap: false
+      phrases:
+        - activates
+        - triggers
+        - activates the
+    - canonical: binds-to
+      swap: false
+      phrases:
+        - binds to
+        - binds with
+        - binds onto
+    - canonical: catalyzes
+      swap: false
+      phrases:
+        - catalyzes
+        - catalyses
+    - canonical: detects
+      swap: false
+      phrases:
+        - detects
+        - detected
+        - detects the
+    - canonical: detects
+      swap: true
+      phrases:
+        - detected by
+        - detected via
+    - canonical: observes
+      swap: false
+      phrases:
+        - observes
+        - observed
+        - observes the
+    - canonical: observes
+      swap: true
+      phrases:
+        - observed by
+        - observed via
+    - canonical: measures
+      swap: false
+      phrases:
+        - measures
+        - measured
+        - measures the
+    - canonical: measures
+      swap: true
+      phrases:
+        - measured by
+        - measured using
+    - canonical: infers-from
+      swap: false
+      phrases:
+        - infers from
+        - inferred from
+        - infers the presence from
 
 graph:
   relation_semantics:
@@ -208,6 +427,38 @@ graph:
     compared-to: bidirectional
     similar-to: bidirectional
     correlates-with: bidirectional
+    benchmarked-against: bidirectional
+    achieves-state-of-the-art-on: directional
+    builds-upon: directional
+    extends-architecture-of: directional
+    introduces-concept-of: directional
+    proposes: directional
+    demonstrates: directional
+    depends-on: directional
+    validated-by: directional
+    implemented-in: directional
+    requires: directional
+    requires-for: directional
+    enables: directional
+    mediates: directional
+    results-in: directional
+    instance-of: directional
+    component-of: directional
+    belongs-to: directional
+    composed-of: directional
+    synthesized-from: directional
+    crystallizes-as: directional
+    derived-from: directional
+    present-in: directional
+    interacts-with: bidirectional
+    inhibits: directional
+    activates: directional
+    binds-to: bidirectional
+    catalyzes: directional
+    detects: directional
+    observes: directional
+    measures: directional
+    infers-from: directional
   uri: "bolt://neo4j:7687"
   username: "neo4j"
   password: "neo4jpassword"
@@ -241,12 +492,54 @@ ui:
     - "http://0.0.0.0:3000"
   graph_defaults:
     relations:
-      - defined-as
       - uses
       - trained-on
       - evaluated-on
-      - compared-to
       - outperforms
+      - beats
+      - improves
+      - reduces
+      - causes
+      - alleviates
+      - defined-as
+      - part-of
+      - is-a
+      - related-to
+      - compared-to
+      - similar-to
+      - correlates-with
+      - benchmarked-against
+      - achieves-state-of-the-art-on
+      - builds-upon
+      - extends-architecture-of
+      - introduces-concept-of
+      - proposes
+      - demonstrates
+      - depends-on
+      - validated-by
+      - implemented-in
+      - requires
+      - requires-for
+      - enables
+      - mediates
+      - results-in
+      - instance-of
+      - component-of
+      - belongs-to
+      - composed-of
+      - synthesized-from
+      - crystallizes-as
+      - derived-from
+      - present-in
+      - interacts-with
+      - inhibits
+      - activates
+      - binds-to
+      - catalyzes
+      - detects
+      - observes
+      - measures
+      - infers-from
     min_confidence: 0.5
     sections:
       - Results

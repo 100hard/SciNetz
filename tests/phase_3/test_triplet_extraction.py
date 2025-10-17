@@ -104,6 +104,50 @@ def test_normalize_relation_rejects_unknown_relation() -> None:
         normalize_relation("collaborates with")
 
 
+@pytest.mark.parametrize(
+    ("phrase", "expected"),
+    [
+        ("This paper introduces the concept of diffusion models.", "introduces-concept-of"),
+        ("BERT extends the architecture of Transformer.", "extends-architecture-of"),
+        ("We propose DiffusionFormer.", "proposes"),
+        ("Our approach builds upon the ResNet backbone.", "builds-upon"),
+        ("The experiment demonstrates that the inhibitor works.", "demonstrates"),
+        ("Model A was benchmarked against Model B.", "benchmarked-against"),
+        ("The pipeline depends on high-quality pretraining data.", "depends-on"),
+        ("The hypothesis was validated by a double-blind study.", "validated-by"),
+        ("Our system achieves state of the art on ImageNet.", "achieves-state-of-the-art-on"),
+        ("The algorithm is implemented in PyTorch.", "implemented-in"),
+        ("This procedure requires sterile equipment.", "requires"),
+        ("ATP is required for the contraction response.", "requires-for"),
+        ("Calcium influx enables neurotransmitter release.", "enables"),
+        ("Secondary metabolites mediate the plant response.", "mediates"),
+        ("Sample X is an instance of the MNIST dataset.", "instance-of"),
+        ("The attention layer is a component of the encoder.", "component-of"),
+        ("Transformer belongs to natural language processing.", "belongs-to"),
+        ("The inhibitor suppresses the kinase and inhibits phosphorylation.", "inhibits"),
+        ("cAMP activates protein kinase A.", "activates"),
+        ("Protein X binds to DNA.", "binds-to"),
+        ("Enzyme A catalyzes Reaction B.", "catalyzes"),
+        ("Biomarker Y is present in liver tissue.", "present-in"),
+        ("Protein complexes interact with the signaling pathway.", "interacts-with"),
+        ("The detector observes gravitational waves.", "observes"),
+        ("The interferometer detects the passing signal.", "detects"),
+        ("The instrument measures magnetic flux.", "measures"),
+        ("The parameter is inferred from spectral data.", "infers-from"),
+        ("The collision results in high-energy photons.", "results-in"),
+        ("Alloy Z is composed of iron and nickel.", "composed-of"),
+        ("Nanotubes are synthesized from methane feedstock.", "synthesized-from"),
+        ("Sodium chloride crystallizes as a cubic lattice.", "crystallizes-as"),
+        ("Isotope ratios are derived from mass spectrometry.", "derived-from"),
+    ],
+)
+def test_normalize_relation_accepts_new_relations(config, phrase: str, expected: str) -> None:
+    """Newly added canonical relations should normalize successfully."""
+
+    canonical, _ = normalize_relation(phrase, config=config)
+    assert canonical == expected
+
+
 def test_triplet_with_missing_span_is_rejected(config) -> None:
     """Triples without resolvable spans should be dropped."""
 

@@ -18,13 +18,13 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.extraction.openai_model == "gpt-4o-mini"
     assert config.extraction.openai_base_url == "https://api.openai.com/v1"
     assert config.extraction.openai_timeout_seconds == 60
-    assert config.extraction.openai_prompt_version == "phase3-v3"
+    assert config.extraction.openai_prompt_version == "phase3-v4"
     settings = config.extraction.openai
     assert config.extraction.cache_dir == "data/cache"
     assert config.extraction.response_cache_filename == "openai_responses.json"
     assert config.extraction.token_cache_filename == "openai_token_budget.json"
     assert settings.model == "gpt-4o-mini"
-    assert settings.prompt_version == "phase3-v3"
+    assert settings.prompt_version == "phase3-v4"
     assert settings.max_retries == 2
     assert settings.temperature == 0.0
     assert settings.max_output_tokens == 3200
@@ -39,12 +39,17 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.export.max_size_mb == 5
     assert config.extraction.use_entity_inventory is False
     assert "model" in config.canonicalization.polysemy_blocklist
-    assert "uses" in config.relations.canonical_relation_names()
+    relation_names = config.relations.canonical_relation_names()
+    assert "uses" in relation_names
+    assert "introduces-concept-of" in relation_names
+    assert "benchmarked-against" in relation_names
     graph_defaults = config.ui.graph_defaults
     assert graph_defaults.min_confidence == 0.5
     assert graph_defaults.relations[:2] == ["defined-as", "uses"]
     assert graph_defaults.sections == ["Results", "Methods"]
     assert graph_defaults.show_co_mentions is False
+    assert config.graph.relation_semantics["binds-to"] == "bidirectional"
+    assert config.graph.relation_semantics["interacts-with"] == "bidirectional"
     assert config.graph.entity_batch_size == 200
     assert config.graph.edge_batch_size == 500
 
