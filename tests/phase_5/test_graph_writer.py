@@ -135,6 +135,11 @@ class _InMemoryTransaction:
                     "directional": payload["directional"],
                     "has_reverse": reverse_exists,
                     "evidence": payload["evidence"],
+                    "reverse_evidence": (
+                        json.dumps(self._store.edges[reverse_key].evidence, sort_keys=True)
+                        if reverse_exists
+                        else None
+                    ),
                 }
             )
         return _Result(records=records)
@@ -499,8 +504,11 @@ def test_edge_upsert_counts_and_conflicts(
         if "conflicts with an existing reverse edge" in record.message
     ]
     assert conflict_logs
-    assert "doc_id=doc-2" in conflict_logs[-1]
-    assert "element_id=el-2" in conflict_logs[-1]
+    latest = conflict_logs[-1]
+    assert "new_doc_id=doc-2" in latest
+    assert "new_element_id=el-2" in latest
+    assert "existing_doc_id=doc-1" in latest
+    assert "existing_element_id=el-1" in latest
 
 
 def test_bidirectional_relations_do_not_conflict(
