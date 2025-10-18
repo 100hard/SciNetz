@@ -98,7 +98,6 @@ const stringify = (value: Record<string, unknown>) => {
 };
 
 const AUTO_FETCH_STORAGE_KEY = "graphAutoFetchEnabled";
-const RELATION_PREVIEW_LIMIT = 12;
 
 const GraphExplorer = () => {
   const [defaults, setDefaults] = useState<GraphDefaults | null>(null);
@@ -115,9 +114,10 @@ const GraphExplorer = () => {
   const [autoFetchEnabled, setAutoFetchEnabled] = useState<boolean | null>(null);
   const [isClearing, setIsClearing] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [showAllRelations, setShowAllRelations] = useState(false);
+  const [isRelationMenuOpen, setIsRelationMenuOpen] = useState(false);
   const skipNextAutoFetchRef = useRef(false);
   const visualizationContainerRef = useRef<HTMLDivElement | null>(null);
+  const relationMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -256,17 +256,13 @@ const GraphExplorer = () => {
   }, [autoFetchEnabled, defaults, fetchGraph]);
 
   const relationOptions = useMemo(() => defaults?.relations ?? [], [defaults]);
-  const relationPreview = useMemo(
-    () => relationOptions.slice(0, RELATION_PREVIEW_LIMIT),
-    [relationOptions],
-  );
-  const visibleRelationOptions = showAllRelations ? relationOptions : relationPreview;
-  const showRelationToggle = relationOptions.length > relationPreview.length;
-  const relationPreviewCount = relationPreview.length;
-  const hiddenSelectedRelations = showAllRelations
-    ? 0
-    : selectedRelations.filter((relation) => !relationPreview.includes(relation)).length;
+  const relationCount = relationOptions.length;
   const sectionOptions = defaults?.sections ?? [];
+  useEffect(() => {
+    if (relationCount === 0) {
+      setIsRelationMenuOpen(false);
+    }
+  }, [relationCount]);
 
   const summary = useMemo(() => {
     if (!graph) {
@@ -380,6 +376,40 @@ const GraphExplorer = () => {
     }
   };
 
+  useEffect(() => {
+    if (!isRelationMenuOpen) {
+      return;
+    }
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!relationMenuRef.current) {
+        return;
+      }
+      if (event.target instanceof Node && relationMenuRef.current.contains(event.target)) {
+        return;
+      }
+      setIsRelationMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsRelationMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isRelationMenuOpen]);
+
+  const handleSelectAllRelations = useCallback(() => {
+    setSelectedRelations(relationOptions);
+  }, [relationOptions]);
+
+  const handleClearRelations = useCallback(() => {
+    setSelectedRelations([]);
+  }, []);
+
   const handleClearGraph = useCallback(async () => {
     if (isClearing) {
       return;
@@ -437,45 +467,86 @@ const GraphExplorer = () => {
         </div>
 
         <div className="mt-6 grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-sm font-medium text-foreground">Relations</p>
-              {showRelationToggle ? (
-                <button
-                  type="button"
-                  onClick={() => setShowAllRelations((prev) => !prev)}
-                  className="text-xs font-medium text-primary transition hover:underline focus:outline-none"
+          <div className="space-y-2" ref={relationMenuRef}>
+            <p className="text-sm font-medium text-foreground">Relations</p>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsRelationMenuOpen((prev) => !prev)}
+                className="flex w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={relationOptions.length === 0}
+              >
+                <span>
+                  {selectedRelations.length === 0
+                    ? "All relations"
+                    : `${selectedRelations.length} selected`}
+                </span>
+                <svg
+                  className={`h-4 w-4 transition ${isRelationMenuOpen ? "rotate-180" : ""}`}
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
                 >
-                  {showAllRelations
-                    ? "Show less"
-                    : `Show all (${relationOptions.length})`}
-                </button>
+                  <path
+                    d="M5 7.5L10 12.5L15 7.5"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              {isRelationMenuOpen ? (
+                <div className="absolute z-20 mt-2 w-72 rounded-md border border-border bg-card shadow-lg">
+                  <div className="flex items-center justify-between border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
+                    <button
+                      type="button"
+                      onClick={handleSelectAllRelations}
+                      className="text-primary transition hover:underline focus:outline-none"
+                    >
+                      Select all
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleClearRelations}
+                      className="text-primary transition hover:underline focus:outline-none"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto p-2">
+                    {relationOptions.map((relation) => {
+                      const checked = selectedRelations.includes(relation);
+                      return (
+                        <label
+                          key={relation}
+                          className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm capitalize text-foreground transition hover:bg-muted/40"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() =>
+                              toggleSelection(relation, selectedRelations, setSelectedRelations)
+                            }
+                            className="h-4 w-4 rounded border border-input text-primary focus:ring-primary"
+                          />
+                          <span>{relation.replace(/_/g, " ")}</span>
+                        </label>
+                      );
+                    })}
+                    {relationOptions.length === 0 ? (
+                      <p className="px-2 py-1 text-xs text-muted-foreground">No relations available.</p>
+                    ) : null}
+                  </div>
+                </div>
               ) : null}
             </div>
-            {!showAllRelations && showRelationToggle ? (
-              <p className="text-xs text-muted-foreground">
-                Showing first {relationPreviewCount} of {relationOptions.length}
-                {hiddenSelectedRelations > 0
-                  ? ` · ${hiddenSelectedRelations} selected hidden`
-                  : null}
-                .
-              </p>
-            ) : null}
-            <div className="flex flex-wrap gap-2">
-              {visibleRelationOptions.map((relation) => {
-                const checked = selectedRelations.includes(relation);
-                return (
-                  <button
-                    key={relation}
-                    type="button"
-                    onClick={() => toggleSelection(relation, selectedRelations, setSelectedRelations)}
-                    className={`rounded-full border px-3 py-1 text-xs font-medium capitalize transition ${checked ? "border-primary bg-primary/10 text-primary" : "border-border bg-background text-muted-foreground hover:bg-muted/40"}`}
-                  >
-                    {relation.replace(/_/g, " ")}
-                  </button>
-                );
-              })}
-            </div>
+            <p className="text-xs text-muted-foreground">
+              {selectedRelations.length === 0
+                ? "All relation types will be requested."
+                : `${selectedRelations.length} of ${relationOptions.length} selected.`}
+            </p>
           </div>
 
           <div className="space-y-2">
@@ -611,6 +682,7 @@ const GraphExplorer = () => {
                     nodes={graph.nodes}
                     edges={graph.edges}
                     showComponentBackgrounds={false}
+                    isFullscreen={isFullscreen}
                   />
                 </div>
               )}

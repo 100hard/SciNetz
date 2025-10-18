@@ -1,14 +1,12 @@
+import Link from "next/link";
 import {
   Activity,
   Database,
   FileText,
   LineChart,
+  MessageSquare,
   Users,
 } from "lucide-react";
-
-import dynamic from "next/dynamic";
-
-const QaPanel = dynamic(() => import("../components/qa-panel"), { ssr: false });
 
 const stats = [
   {
@@ -58,7 +56,36 @@ const activityFeed = [
 export default function Home() {
   return (
     <div className="space-y-6">
-      <QaPanel />
+      <section className="rounded-lg border bg-card p-6 shadow-sm">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-primary">Graph QA</p>
+            <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold text-foreground">
+              Ask the knowledge graph
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+              Explore multi-hop answers grounded in extracted evidence. Launch the conversational workspace to query methods, datasets, and findings.
+            </p>
+          </div>
+          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <MessageSquare className="h-6 w-6" />
+          </span>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <Link
+            href="/qa"
+            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2"
+          >
+            Open Graph QA
+          </Link>
+          <Link
+            href="/settings"
+            className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2"
+          >
+            Review defaults
+          </Link>
+        </div>
+      </section>
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {stats.map((stat) => {

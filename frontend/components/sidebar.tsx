@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Database,
   FileText,
   LayoutDashboard,
+  MessageSquare,
   Settings,
   Share2,
   UploadCloud,
@@ -14,7 +14,7 @@ import {
 const navigation = [
   { name: "Overview", href: "/", icon: LayoutDashboard },
   { name: "Graph", href: "/graph", icon: Share2 },
-  { name: "Datasets", href: "/datasets", icon: Database },
+  { name: "Graph QA", href: "/qa", icon: MessageSquare },
   { name: "Papers", href: "/papers", icon: FileText },
   { name: "Ingestion", href: "/ingestion", icon: UploadCloud },
   { name: "Settings", href: "/settings", icon: Settings },

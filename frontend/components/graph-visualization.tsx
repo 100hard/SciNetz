@@ -64,6 +64,7 @@ type GraphVisualizationProps = {
   nodes: GraphNode[];
   edges: GraphEdge[];
   showComponentBackgrounds?: boolean;
+  isFullscreen?: boolean;
 };
 
 const DEFAULT_HEIGHT = 420;
@@ -789,6 +790,7 @@ const GraphVisualization = ({
   nodes,
   edges,
   showComponentBackgrounds = true,
+  isFullscreen = false,
 }: GraphVisualizationProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -1148,11 +1150,12 @@ const GraphVisualization = ({
     return map;
   }, [markerDefinitions]);
 
+  const containerBaseClass =
+    "relative h-full w-full overflow-hidden rounded-md border border-border bg-gradient-to-br from-background via-background/70 to-background";
+  const containerClassName = isFullscreen ? containerBaseClass : `${containerBaseClass} min-h-[260px]`;
+
   return (
-    <div
-      ref={containerRef}
-      className="relative h-full min-h-[420px] w-full overflow-hidden rounded-md border border-border bg-gradient-to-br from-background via-background/70 to-background"
-    >
+    <div ref={containerRef} className={containerClassName}>
       <div className="pointer-events-none absolute left-3 top-3 flex gap-2">
         <button
           type="button"
