@@ -109,6 +109,7 @@ class E5EmbeddingBackend(EmbeddingBackend):
         self._model: Optional[SentenceTransformer] = None
         self._lock = Lock()
         self._cache: Dict[str, np.ndarray] = {}
+        self._fallback: Optional[HashingEmbeddingBackend] = None
 
     @classmethod
     def is_available(cls) -> bool:
@@ -132,7 +133,17 @@ class E5EmbeddingBackend(EmbeddingBackend):
         cleaned = text.strip()
         if cleaned in self._cache:
             return self._cache[cleaned].copy()
-        model = self._get_model()
+
+        try:
+            model = self._get_model()
+        except RuntimeError:
+            if self._fallback is None:
+                LOGGER.warning(
+                    "Falling back to hashing embeddings because %s could not be loaded",
+                    self._model_name,
+                )
+                self._fallback = HashingEmbeddingBackend()
+            return self._fallback.embed(cleaned)
         query = f"query: {cleaned}" if cleaned else "query:"
         try:
             embedding = model.encode(  # type: ignore[assignment]
@@ -165,7 +176,11 @@ class E5EmbeddingBackend(EmbeddingBackend):
         if self._model is None:
             with self._lock:
                 if self._model is None:
-                    self._model = SentenceTransformer(self._model_name, device=self._device)
+                    try:
+                        self._model = SentenceTransformer(self._model_name, device=self._device)
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.exception("Failed to load SentenceTransformer model '%s'", self._model_name)
+                        raise RuntimeError("sentence-transformer model unavailable") from exc
         return self._model
 
 def _normalize_name(name: str) -> str:

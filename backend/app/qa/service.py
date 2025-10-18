@@ -18,6 +18,11 @@ from backend.app.canonicalization.entity_canonicalizer import (
     HashingEmbeddingBackend,
 )
 from backend.app.config import AppConfig
+from backend.app.qa.answer_synthesis import (
+    AnswerContextEdge,
+    AnswerSynthesisRequest,
+    LLMAnswerSynthesizer,
+)
 from backend.app.qa.entity_resolution import (
     EntityResolver,
     QuestionEntityExtractor,
@@ -105,6 +110,7 @@ class QAResponse(BaseModel):
     resolved_entities: Sequence[ResolvedEntityModel]
     paths: Sequence[PathModel]
     fallback_edges: Sequence[PathEdgeModel]
+    llm_answer: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +130,7 @@ class QAService:
         embedding_backend: Optional[EmbeddingBackend] = None,
         extractor: Optional[QuestionEntityExtractor] = None,
         max_neighbor_results: int = 10,
+        answer_synthesizer: Optional[LLMAnswerSynthesizer] = None,
     ) -> None:
         self._config = config
         self._repository = repository
@@ -139,6 +146,8 @@ class QAService:
         self._allowed_relations: Optional[Tuple[str, ...]] = (
             tuple(relation_names) if relation_names else None
         )
+        self._synthesizer = answer_synthesizer
+        self._pipeline_version = self._config.pipeline.version
 
     def answer(self, question: str) -> QAResponse:
         """Answer the supplied question using the knowledge graph."""
@@ -151,6 +160,7 @@ class QAService:
                 resolved_entities=[],
                 paths=[],
                 fallback_edges=[],
+                llm_answer=None,
             )
 
         mentions = self._extractor.extract(question_text)
@@ -168,34 +178,55 @@ class QAService:
                 resolved_entities=resolved_models,
                 paths=[],
                 fallback_edges=[],
+                llm_answer=None,
             )
 
         path_scores = self._discover_paths(resolved_entities)
-        paths = [score.path for score in path_scores]
-        has_conflict = any(score.conflicting for score in path_scores)
+        top_scores = path_scores[: self._config.qa.max_results]
+        paths = [score.path for score in top_scores]
+        has_conflict = any(score.conflicting for score in top_scores)
+
+        llm_answer: Optional[str] = None
 
         if paths:
             summary = self._summarize_path(paths[0])
             mode = AnswerMode.CONFLICTING if has_conflict else AnswerMode.DIRECT
+            llm_answer = self._synthesize_answer(
+                question_text,
+                mode,
+                paths,
+                [],
+                resolved_entities,
+            )
             return QAResponse(
                 mode=mode,
                 summary=summary,
                 resolved_entities=resolved_models,
-                paths=paths[: self._config.qa.max_results],
+                paths=paths,
                 fallback_edges=[],
+                llm_answer=llm_answer,
             )
 
+        mode = AnswerMode.INSUFFICIENT
         fallback_edges = self._collect_neighbors(resolved_entities)
         if fallback_edges:
             summary = self._summarize_neighbors(fallback_edges)
         else:
             summary = "Insufficient evidence to answer the question."
+        llm_answer = self._synthesize_answer(
+            question_text,
+            mode,
+            [],
+            fallback_edges,
+            resolved_entities,
+        )
         return QAResponse(
-            mode=AnswerMode.INSUFFICIENT,
+            mode=mode,
             summary=summary,
             resolved_entities=resolved_models,
             paths=[],
             fallback_edges=fallback_edges,
+            llm_answer=llm_answer,
         )
 
     def _discover_paths(self, entities: Sequence[ResolvedEntity]) -> List[_PathScore]:
@@ -268,6 +299,86 @@ class QAService:
             key=lambda edge: (-edge.confidence, -edge.created_at.timestamp()),
         )
         return sorted_edges[: self._config.qa.max_results]
+
+    def _synthesize_answer(
+        self,
+        question: str,
+        mode: AnswerMode,
+        paths: Sequence[PathModel],
+        fallback_edges: Sequence[PathEdgeModel],
+        resolved_entities: Sequence[ResolvedEntity],
+    ) -> Optional[str]:
+        synthesizer = self._synthesizer
+        if synthesizer is None or not getattr(synthesizer, "enabled", False):
+            return None
+        if not question.strip():
+            return None
+        edge_count = sum(len(path.edges) for path in paths) + len(fallback_edges)
+        if edge_count == 0:
+            return None
+
+        path_context = self._build_path_context(paths)
+        neighbor_context = [self._edge_to_context(edge) for edge in fallback_edges]
+
+        if not path_context and not neighbor_context:
+            return None
+
+        scope_documents = self._collect_scope_documents(path_context, neighbor_context, resolved_entities)
+        request = AnswerSynthesisRequest(
+            question=question,
+            mode=mode.value,
+            graph_paths=path_context,
+            neighbor_edges=neighbor_context,
+            scope_documents=scope_documents,
+            pipeline_version=self._pipeline_version,
+        )
+        result = synthesizer.synthesize(request)
+        if result is None:
+            return None
+        answer = result.answer.strip()
+        return answer or None
+
+    def _build_path_context(self, paths: Sequence[PathModel]) -> List[List[AnswerContextEdge]]:
+        context: List[List[AnswerContextEdge]] = []
+        for path in paths:
+            edges = [self._edge_to_context(edge) for edge in path.edges]
+            if edges:
+                context.append(edges)
+        return context
+
+    def _edge_to_context(self, edge: PathEdgeModel) -> AnswerContextEdge:
+        return AnswerContextEdge(
+            subject=edge.src_name,
+            predicate=edge.relation,
+            obj=edge.dst_name,
+            doc_id=edge.evidence.doc_id,
+            element_id=edge.evidence.element_id,
+            confidence=edge.confidence,
+            relation_verbatim=edge.relation_verbatim,
+            sentence=edge.evidence.full_sentence,
+        )
+
+    def _collect_scope_documents(
+        self,
+        path_context: Sequence[Sequence[AnswerContextEdge]],
+        neighbor_context: Sequence[AnswerContextEdge],
+        resolved_entities: Sequence[ResolvedEntity],
+    ) -> List[str]:
+        doc_ids = {
+            edge.doc_id
+            for path in path_context
+            for edge in path
+            if edge.doc_id
+        }
+        doc_ids.update(edge.doc_id for edge in neighbor_context if edge.doc_id)
+
+        if not doc_ids:
+            for entity in resolved_entities:
+                for candidate in entity.candidates:
+                    doc_id = getattr(candidate, "doc_id", None)
+                    if doc_id:
+                        doc_ids.add(str(doc_id))
+        return sorted(doc_ids)
 
     def _summarize_neighbors(self, edges: Sequence[PathEdgeModel]) -> str:
         segments = [

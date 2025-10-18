@@ -477,6 +477,25 @@ qa:
   neighbor_confidence_threshold: 0.7
   max_hops: 2
   max_results: 50
+  llm:
+    enabled: true
+    provider: "openai"
+    openai_model: "gpt-4o-mini"
+    openai_base_url: "https://api.openai.com/v1"
+    openai_timeout_seconds: 60
+    openai_prompt_version: "qa-v1"
+    openai_max_retries: 2
+    openai_temperature: 0.1
+    openai_max_output_tokens: 600
+    openai_initial_output_multiplier: 1.5
+    openai_backoff_initial_seconds: 0.5
+    openai_backoff_max_seconds: 4.0
+    openai_retry_statuses:
+      - 429
+      - 500
+      - 502
+      - 503
+      - 504
 
 export:
   max_size_mb: 5
@@ -492,6 +511,7 @@ ui:
     - "http://0.0.0.0:3000"
   graph_defaults:
     relations:
+      - defined-as
       - uses
       - trained-on
       - evaluated-on
@@ -501,7 +521,6 @@ ui:
       - reduces
       - causes
       - alleviates
-      - defined-as
       - part-of
       - is-a
       - related-to

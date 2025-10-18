@@ -114,18 +114,20 @@ class Neo4jQARepository(QARepositoryProtocol):
         allowed_relations: Optional[Sequence[str]] = None,
     ) -> Sequence[PathRecord]:
         relation_filter = tuple(allowed_relations) if allowed_relations else self._allowed_relations
-        query = """
-        MATCH path = (start:Entity {node_id: $start_id})-
-            [rel:RELATION*1..$max_hops]->(end:Entity {node_id: $end_id})
-        WHERE ALL(r IN rel WHERE r.confidence >= $min_confidence AND r.relation_norm IN $allowed)
-        RETURN [node IN nodes(path) | node] AS nodes,
-               [relationship IN rel | relationship] AS relationships
-        LIMIT $limit
-        """
+        # Neo4j does not allow parameterizing the variable length in relationship patterns.
+        # Clamp hops to a safe integer and embed as a literal in the pattern; still filter by confidence and relation set.
+        hops_upper = max(1, int(max_hops))
+        query = (
+            "\n        MATCH path = (start:Entity {node_id: $start_id})-\n            "
+            f"[rel:RELATION*1..{hops_upper}]->(end:Entity {{node_id: $end_id}})\n"
+            "        WHERE ALL(r IN rel WHERE r.confidence >= $min_confidence AND r.relation_norm IN $allowed)\n"
+            "        RETURN [node IN nodes(path) | node] AS nodes,\n"
+            "               [relationship IN rel | relationship] AS relationships\n"
+            "        LIMIT $limit\n        "
+        )
         params = {
             "start_id": start_id,
             "end_id": end_id,
-            "max_hops": max_hops,
             "min_confidence": min_confidence,
             "allowed": list(relation_filter),
             "limit": limit,

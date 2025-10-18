@@ -28,7 +28,7 @@ from backend.app.graph import GraphWriter
 from backend.app.orchestration import ExtractionOrchestrator, OrchestrationResult
 from backend.app.orchestration.orchestrator import ProcessedChunkStore
 from backend.app.parsing import ParsingPipeline
-from backend.app.qa import Neo4jQARepository, QAService
+from backend.app.qa import LLMAnswerSynthesizer, Neo4jQARepository, QAService
 from backend.app.ui import (
     GraphView,
     GraphViewService,
@@ -122,6 +122,7 @@ class UISettingsResponse(BaseModel):
     """UI configuration defaults served to the frontend."""
 
     graph_defaults: Dict[str, object]
+    qa: Dict[str, object]
 
 
 def create_app(
@@ -192,7 +193,12 @@ def create_app(
             "show_co_mentions": graph_defaults.show_co_mentions,
             "layout": graph_defaults.layout,
         }
-        return UISettingsResponse(graph_defaults=payload)
+        qa_llm = getattr(resolved_config.qa, "llm", None)
+        qa_settings = {
+            "llm_enabled": bool(getattr(qa_llm, "enabled", False)),
+            "llm_provider": getattr(qa_llm, "provider", None),
+        }
+        return UISettingsResponse(graph_defaults=payload, qa=qa_settings)
 
     @app.post("/api/extract/{paper_id}", tags=["extraction"], summary="Run extraction pipeline")
     def extract(paper_id: str, request: ExtractionRequest) -> dict[str, object]:
@@ -428,9 +434,31 @@ def _build_default_qa_service(config: AppConfig, driver: Optional[object]) -> Op
         return None
     try:
         repository = Neo4jQARepository(driver, config=config)  # type: ignore[arg-type]
-        return QAService(config=config, repository=repository)
+        synthesizer = _build_qa_synthesizer(config)
+        return QAService(
+            config=config,
+            repository=repository,
+            answer_synthesizer=synthesizer,
+        )
     except Exception:  # noqa: BLE001 - QA should fail softly
         LOGGER.exception("Failed to initialize QA service")
+        return None
+
+
+def _build_qa_synthesizer(config: AppConfig) -> Optional[LLMAnswerSynthesizer]:
+    """Construct the optional QA LLM synthesizer based on configuration."""
+
+    llm_config = getattr(config.qa, "llm", None)
+    if llm_config is None or not llm_config.enabled:
+        return None
+    api_key = os.getenv("OPENAI_API_KEY")
+    try:
+        return LLMAnswerSynthesizer(
+            llm_config=llm_config,
+            api_key=api_key,
+        )
+    except Exception:  # noqa: BLE001 - failure should not disable QA entirely
+        LOGGER.exception("Failed to initialize QA LLM synthesizer")
         return None
 
 

@@ -48,6 +48,13 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert graph_defaults.relations[:2] == ["defined-as", "uses"]
     assert graph_defaults.sections == ["Results", "Methods"]
     assert graph_defaults.show_co_mentions is False
+    assert config.qa.llm.enabled is True
+    assert config.qa.llm.provider == "openai"
+    qa_openai = config.qa.llm.openai
+    assert qa_openai.prompt_version == "qa-v1"
+    assert qa_openai.max_output_tokens == 600
+    assert qa_openai.temperature == 0.1
+    assert 429 in qa_openai.retry_statuses
     assert config.graph.relation_semantics["binds-to"] == "bidirectional"
     assert config.graph.relation_semantics["interacts-with"] == "bidirectional"
     assert config.graph.entity_batch_size == 200

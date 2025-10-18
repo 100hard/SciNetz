@@ -107,6 +107,56 @@ class ExtractionConfig(_FrozenModel):
             retry_statuses=list(self.openai_retry_statuses),
         )
 
+
+class QALLMConfig(_FrozenModel):
+    """LLM configuration for QA answer synthesis."""
+
+    enabled: bool
+    provider: Literal["openai"]
+    openai_model: str = Field(..., min_length=1)
+    openai_base_url: str = Field(..., min_length=1)
+    openai_timeout_seconds: float = Field(..., gt=0)
+    openai_prompt_version: str = Field(..., min_length=1)
+    openai_max_retries: int = Field(..., ge=0)
+    openai_temperature: float = Field(..., ge=0.0, le=2.0)
+    openai_max_output_tokens: int = Field(..., ge=1)
+    openai_initial_output_multiplier: float = Field(..., gt=0)
+    openai_backoff_initial_seconds: float = Field(..., gt=0)
+    openai_backoff_max_seconds: float = Field(..., gt=0)
+    openai_retry_statuses: List[int] = Field(default_factory=list)
+
+    @field_validator("provider")
+    @classmethod
+    def _validate_provider(cls, value: str) -> str:
+        normalized = value.lower()
+        if normalized != "openai":
+            msg = f"Unsupported QA LLM provider: {value}"
+            raise ValueError(msg)
+        return "openai"
+
+    @property
+    def openai(self) -> OpenAIConfig:
+        """Return the OpenAI configuration block for QA synthesis.
+
+        Returns:
+            OpenAIConfig: Immutable OpenAI adapter configuration.
+        """
+
+        return OpenAIConfig(
+            model=self.openai_model,
+            api_base=self.openai_base_url,
+            timeout_seconds=self.openai_timeout_seconds,
+            max_retries=self.openai_max_retries,
+            temperature=self.openai_temperature,
+            max_output_tokens=self.openai_max_output_tokens,
+            prompt_version=self.openai_prompt_version,
+            initial_output_multiplier=self.openai_initial_output_multiplier,
+            backoff_initial_seconds=self.openai_backoff_initial_seconds,
+            backoff_max_seconds=self.openai_backoff_max_seconds,
+            retry_statuses=list(self.openai_retry_statuses),
+        )
+
+
 class CanonicalizationConfig(_FrozenModel):
     """Canonicalization thresholds and parameters."""
 
@@ -222,6 +272,7 @@ class QAConfig(_FrozenModel):
     neighbor_confidence_threshold: float = Field(..., ge=0.0, le=1.0)
     max_hops: int = Field(..., ge=0)
     max_results: int = Field(..., ge=1)
+    llm: QALLMConfig
 
 
 class ExportConfig(_FrozenModel):

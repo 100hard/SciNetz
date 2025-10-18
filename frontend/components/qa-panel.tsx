@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, HelpCircle, Loader2, MessageSquare } from "lucide-react";
 
 import apiClient, { extractErrorMessage } from "../lib/http";
@@ -55,6 +55,21 @@ type QAResponse = {
   resolved_entities: ResolvedEntityModel[];
   paths: PathModel[];
   fallback_edges: PathEdgeModel[];
+  llm_answer?: string | null;
+};
+
+type ChatTurn = {
+  id: string;
+  question: string;
+  response: QAResponse;
+  createdAt: string;
+};
+
+type UiSettingsResponse = {
+  qa?: {
+    llm_enabled: boolean;
+    llm_provider?: string | null;
+  };
 };
 
 const MODE_LABELS: Record<QAResponse["mode"], string> = {
@@ -184,46 +199,100 @@ const PathList = ({ paths }: { paths: PathModel[] }) => {
 
 const QaPanel = () => {
   const [question, setQuestion] = useState("");
-  const [activeQuestion, setActiveQuestion] = useState("");
-  const [response, setResponse] = useState<QAResponse | null>(null);
+  const [history, setHistory] = useState<ChatTurn[]>([]);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [qaSettings, setQaSettings] = useState<{ llmEnabled: boolean | null; provider: string | null }>({
+    llmEnabled: null,
+    provider: null,
+  });
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const { data } = await apiClient.get<UiSettingsResponse>("/api/ui/settings");
+        if (!mounted) {
+          return;
+        }
+        setQaSettings({
+          llmEnabled: data.qa ? Boolean(data.qa.llm_enabled) : false,
+          provider: data.qa?.llm_provider ?? null,
+        });
+      } catch (err) {
+        if (!mounted) {
+          return;
+        }
+        setQaSettings({ llmEnabled: false, provider: null });
+        setSettingsError(extractErrorMessage(err, "Unable to load QA settings; defaulting to graph summaries."));
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const settingsLoaded = qaSettings.llmEnabled !== null;
+  const isLlmEnabled = qaSettings.llmEnabled ?? false;
 
   const hint = useMemo(() => {
-    if (isLoading) {
-      return `Answering “${activeQuestion}”...`;
+    if (!settingsLoaded) {
+      return "Loading QA settings...";
     }
-    if (!activeQuestion) {
+    if (!isLlmEnabled) {
+      return "LLM synthesis disabled; responses will include graph summaries only.";
+    }
+    if (isLoading && pendingQuestion) {
+      return `Answering "${pendingQuestion}"...`;
+    }
+    if (history.length === 0) {
       return "Ask a question about the knowledge graph to surface relevant evidence.";
     }
     if (error) {
       return null;
     }
-    return `Results for “${activeQuestion}”.`;
-  }, [activeQuestion, error, isLoading]);
+    const latest = history[history.length - 1];
+    return `Latest results for "${latest.question}".`;
+  }, [error, history, isLoading, pendingQuestion]);
 
   const handleSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       const trimmed = question.trim();
-      setActiveQuestion(trimmed);
 
       if (!trimmed) {
-        setResponse(null);
-        setError(null);
+        setError("Please enter a question before asking.");
+        return;
+      }
+      if (!settingsLoaded) {
+        setError("QA settings are still loading. Please try again in a moment.");
         return;
       }
 
+      setPendingQuestion(trimmed);
       setIsLoading(true);
       setError(null);
       try {
         const { data } = await apiClient.post<QAResponse>("/api/qa/ask", { question: trimmed });
-        setResponse(data);
+        const id =
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `turn-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const turn: ChatTurn = {
+          id,
+          question: trimmed,
+          response: data,
+          createdAt: new Date().toISOString(),
+        };
+        setHistory((prev) => [...prev, turn]);
+        setQuestion("");
       } catch (err) {
-        setResponse(null);
         const message = extractErrorMessage(err, "Unable to answer the question right now.");
         setError(message);
       } finally {
+        setPendingQuestion(null);
         setIsLoading(false);
       }
     },
@@ -232,8 +301,8 @@ const QaPanel = () => {
 
   const handleClear = () => {
     setQuestion("");
-    setActiveQuestion("");
-    setResponse(null);
+    setHistory([]);
+    setPendingQuestion(null);
     setError(null);
   };
 
@@ -266,7 +335,7 @@ const QaPanel = () => {
           <button
             type="submit"
             className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-70"
-            disabled={isLoading}
+            disabled={isLoading || !question.trim()}
           >
             {isLoading ? (
               <span className="flex items-center gap-2">
@@ -281,7 +350,7 @@ const QaPanel = () => {
             type="button"
             onClick={handleClear}
             className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-70"
-            disabled={isLoading && !response}
+            disabled={isLoading || (history.length === 0 && !question)}
           >
             Clear
           </button>
@@ -295,47 +364,96 @@ const QaPanel = () => {
         </div>
       )}
 
-      {response && (
-        <div className="mt-6 space-y-6">
-          <div className="rounded-lg border bg-background p-4 shadow-sm">
-            <div className="flex items-center justify-between text-xs uppercase tracking-wide text-muted-foreground">
-              <span className="font-semibold text-foreground">{MODE_LABELS[response.mode]}</span>
-              <span>{response.paths.length} reasoning paths</span>
-            </div>
-            <p className="mt-2 text-sm text-foreground">{response.summary}</p>
+      <div className="mt-6 space-y-6">
+        {history.length === 0 ? (
+          <div className="rounded-lg border bg-background p-6 text-sm text-muted-foreground shadow-sm">
+            {isLoading ? (
+              <span className="flex items-center gap-2 text-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Generating the answer...
+              </span>
+            ) : (
+              <p>
+                No questions asked yet. Try queries like{" "}
+                <span className="font-medium text-foreground">"How does Method A compare to Method B?"</span> or{" "}
+                <span className="font-medium text-foreground">"What evidence links Dataset X to Metric Y?"</span>
+              </p>
+            )}
           </div>
+        ) : (
+          history
+            .slice()
+            .reverse()
+            .map((turn) => {
+              const llmAnswer = turn.response.llm_answer?.trim();
+              return (
+                <article key={turn.id} className="space-y-4 rounded-lg border bg-card/70 p-5 shadow-sm">
+                  <header className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-muted-foreground">Question</p>
+                      <p className="text-sm font-semibold text-foreground">{turn.question}</p>
+                    </div>
+                    <span className="text-xs text-muted-foreground">{formatTimestamp(turn.createdAt)}</span>
+                  </header>
 
-          <section className="space-y-4">
-            <h3 className="text-sm font-semibold text-foreground">Resolved entities</h3>
-            {response.resolved_entities.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No entities were resolved from the question.</p>
-            ) : (
-              <div className="grid gap-4 md:grid-cols-2">
-                {response.resolved_entities.map((entity) => (
-                  <div key={entity.mention} className="space-y-2 rounded-lg border bg-background p-4 shadow-sm">
-                    <p className="text-sm font-semibold text-foreground">Mention: {entity.mention}</p>
-                    <CandidateList candidates={entity.candidates} />
+                  <div className="rounded-md border border-primary/30 bg-primary/5 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+                      <span className="font-semibold text-foreground">{MODE_LABELS[turn.response.mode]}</span>
+                      <span>{turn.response.paths.length} reasoning paths</span>
+                    </div>
+                    <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+                      {llmAnswer || turn.response.summary}
+                    </p>
+                    {llmAnswer ? (
+                      <p className="mt-3 text-xs text-muted-foreground">Graph summary: {turn.response.summary}</p>
+                    ) : null}
                   </div>
-                ))}
-              </div>
-            )}
-          </section>
 
-          <section className="space-y-4">
-            <h3 className="text-sm font-semibold text-foreground">Reasoning paths</h3>
-            {response.paths.length > 0 ? <PathList paths={response.paths} /> : <p className="text-xs text-muted-foreground">No multi-hop paths discovered.</p>}
-          </section>
+                  <details className="rounded-md border border-border/60 bg-background p-4">
+                    <summary className="cursor-pointer text-sm font-semibold text-foreground">
+                      Evidence &amp; supporting details
+                    </summary>
+                    <div className="mt-4 space-y-6 text-sm">
+                      <section className="space-y-3">
+                        <h4 className="text-sm font-semibold text-foreground">Resolved entities</h4>
+                        {turn.response.resolved_entities.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">No entities were resolved from the question.</p>
+                        ) : (
+                          <div className="grid gap-4 md:grid-cols-2">
+                            {turn.response.resolved_entities.map((entity) => (
+                              <div key={entity.mention} className="space-y-2 rounded-lg border bg-card p-4 shadow-sm">
+                                <p className="text-sm font-semibold text-foreground">Mention: {entity.mention}</p>
+                                <CandidateList candidates={entity.candidates} />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </section>
 
-          <section className="space-y-4">
-            <h3 className="text-sm font-semibold text-foreground">Fallback evidence</h3>
-            {response.fallback_edges.length > 0 ? (
-              <EdgeList edges={response.fallback_edges} title="Related findings" />
-            ) : (
-              <p className="text-xs text-muted-foreground">No fallback evidence returned.</p>
-            )}
-          </section>
-        </div>
-      )}
+                      <section className="space-y-3">
+                        <h4 className="text-sm font-semibold text-foreground">Reasoning paths</h4>
+                        {turn.response.paths.length > 0 ? (
+                          <PathList paths={turn.response.paths} />
+                        ) : (
+                          <p className="text-xs text-muted-foreground">No multi-hop paths discovered.</p>
+                        )}
+                      </section>
+
+                      <section className="space-y-3">
+                        <h4 className="text-sm font-semibold text-foreground">Fallback evidence</h4>
+                        {turn.response.fallback_edges.length > 0 ? (
+                          <EdgeList edges={turn.response.fallback_edges} title="Related findings" />
+                        ) : (
+                          <p className="text-xs text-muted-foreground">No fallback evidence returned.</p>
+                        )}
+                      </section>
+                    </div>
+                  </details>
+                </article>
+              );
+            })
+        )}
+      </div>
     </section>
   );
 };

@@ -74,10 +74,12 @@ def test_qa_service_answers_and_provides_context() -> None:
         assert direct.mode == AnswerMode.DIRECT
         assert direct.paths
         assert any(edge.evidence.doc_id for edge in direct.paths[0].edges)
+        assert direct.llm_answer is None
 
         multi_hop = qa_service.answer("How is Model Alpha related to Benchmark Gamma?")
         assert multi_hop.mode == AnswerMode.DIRECT
         assert multi_hop.paths
+        assert multi_hop.llm_answer is None
         assert len(multi_hop.paths[0].edges) == 2
 
         insufficient = qa_service.answer("Does Model Beta cause Benchmark Gamma?")

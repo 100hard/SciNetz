@@ -7,6 +7,7 @@ from typing import Dict, List, Mapping, Optional, Sequence
 from backend.app.canonicalization.entity_canonicalizer import HashingEmbeddingBackend
 from backend.app.config import AppConfig, load_config
 from backend.app.qa import AnswerMode, QAService
+from backend.app.qa.answer_synthesis import AnswerSynthesisResult
 from backend.app.qa.entity_resolution import (
     CandidateNode,
     QARepositoryProtocol,
@@ -79,6 +80,19 @@ class _StubRepository(QARepositoryProtocol):
     ) -> Sequence[NeighborRecord]:
         del min_confidence, limit, allowed_relations
         return self._neighbors.get(node_id, [])
+
+
+class _StubSynthesizer:
+    """Collects synthesis requests and returns a canned answer."""
+
+    def __init__(self, answer: str = "Synthesized answer.") -> None:
+        self.enabled = True
+        self.answer = answer
+        self.requests: List[object] = []
+
+    def synthesize(self, request: object) -> AnswerSynthesisResult:
+        self.requests.append(request)
+        return AnswerSynthesisResult(answer=self.answer, raw_response={"mock": True})
 
 
 def _with_config_updates(config: AppConfig, *, qa: Optional[Mapping[str, object]] = None) -> AppConfig:
@@ -169,6 +183,7 @@ def test_qa_service_detects_conflicting_paths() -> None:
     assert response.mode == AnswerMode.CONFLICTING
     assert response.paths
     assert response.paths[0].edges[0].conflicting is True
+    assert response.llm_answer is None
 
 
 def test_qa_service_handles_blank_questions() -> None:
@@ -187,6 +202,7 @@ def test_qa_service_handles_blank_questions() -> None:
     assert response.summary == "Insufficient evidence to answer the question."
     assert response.paths == []
     assert response.fallback_edges == []
+    assert response.llm_answer is None
 
 
 def test_qa_service_returns_related_findings_when_no_paths() -> None:
@@ -210,6 +226,7 @@ def test_qa_service_returns_related_findings_when_no_paths() -> None:
     assert "Related findings:" in response.summary
     assert "doc-omega" in response.summary
     assert "0.80" in response.summary
+    assert response.llm_answer is None
 
 
 def test_collect_neighbors_aggregates_all_candidates() -> None:
@@ -256,3 +273,43 @@ def test_collect_neighbors_aggregates_all_candidates() -> None:
     doc_ids = {edge.evidence.doc_id for edge in edges}
     assert doc_ids == {"doc-alpha", "doc-gamma"}
     assert all(edge.confidence >= config.qa.neighbor_confidence_threshold for edge in edges)
+def test_qa_service_invokes_synthesizer_when_evidence_present() -> None:
+    config = load_config()
+    candidates = [_make_candidate("alpha", "Model Alpha"), _make_candidate("beta", "Model Beta")]
+    repository = _StubRepository(candidates, paths={("alpha", "beta"): [_path_record(False)]})
+    extractor = _StubExtractor(["Model Alpha", "Model Beta"])
+    synthesizer = _StubSynthesizer(
+        answer="Model Alpha outperforms Model Beta [doc-alpha-beta:alpha:0].",
+    )
+    qa_service = QAService(
+        config=config,
+        repository=repository,
+        embedding_backend=HashingEmbeddingBackend(),
+        extractor=extractor,  # type: ignore[arg-type]
+        answer_synthesizer=synthesizer,  # type: ignore[arg-type]
+    )
+
+    response = qa_service.answer("Does Model Alpha outperform Model Beta?")
+
+    assert response.mode == AnswerMode.DIRECT
+    assert response.llm_answer == "Model Alpha outperforms Model Beta [doc-alpha-beta:alpha:0]."
+    assert synthesizer.requests  # ensure synthesizer invoked
+
+
+def test_qa_service_skips_synthesizer_without_evidence() -> None:
+    config = load_config()
+    repository = _StubRepository([])
+    extractor = _StubExtractor([])
+    synthesizer = _StubSynthesizer()
+    qa_service = QAService(
+        config=config,
+        repository=repository,
+        embedding_backend=HashingEmbeddingBackend(),
+        extractor=extractor,  # type: ignore[arg-type]
+        answer_synthesizer=synthesizer,  # type: ignore[arg-type]
+    )
+
+    response = qa_service.answer("What is Model Alpha?")
+
+    assert response.llm_answer is None
+    assert synthesizer.requests == []

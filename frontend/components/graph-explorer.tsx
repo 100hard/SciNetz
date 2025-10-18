@@ -16,6 +16,10 @@ type GraphDefaults = {
 
 type UiSettingsResponse = {
   graph_defaults: GraphDefaults;
+  qa?: {
+    llm_enabled: boolean;
+    llm_provider?: string | null;
+  };
 };
 
 export type GraphNode = {
