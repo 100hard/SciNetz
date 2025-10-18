@@ -91,6 +91,7 @@ class StubGraphWriter:
     def __init__(self) -> None:
         self.nodes = []
         self.edges = []
+        self.deprecation_calls: List[str] = []
 
     def upsert_entity(self, node) -> str:  # pragma: no cover - simple data container
         self.nodes.append(node)
@@ -125,6 +126,10 @@ class StubGraphWriter:
     def flush(self) -> None:  # pragma: no cover - interface compatibility
         return None
 
+    def deprecate_edges(self, doc_id: str) -> int:  # pragma: no cover - simple counter
+        self.deprecation_calls.append(doc_id)
+        return 1
+
 
 @pytest.fixture(name="config")
 def fixture_config() -> AppConfig:
@@ -144,7 +149,14 @@ def _parsed_element(doc_id: str, element_id: str, section: str, content: str) ->
     )
 
 
-def _triplet(subject: str, predicate: str, obj: str, element: ParsedElement) -> Triplet:
+def _triplet(
+    subject: str,
+    predicate: str,
+    obj: str,
+    element: ParsedElement,
+    *,
+    pipeline_version: str = "1.0.0",
+) -> Triplet:
     evidence = Evidence(
         element_id=element.element_id,
         doc_id=element.doc_id,
@@ -157,7 +169,7 @@ def _triplet(subject: str, predicate: str, obj: str, element: ParsedElement) -> 
         object=obj,
         confidence=0.9,
         evidence=evidence,
-        pipeline_version="1.0.0",
+        pipeline_version=pipeline_version,
     )
 
 
@@ -310,6 +322,101 @@ def test_orchestrator_force_reprocesses_when_requested(config: AppConfig, tmp_pa
     assert len(graph_writer.edges) == 2
 
 
+def test_pipeline_version_upgrade_deprecates_previous_edges(
+    config: AppConfig, tmp_path: Path
+) -> None:
+    doc_id = "paper-version"
+    element = _parsed_element(doc_id, f"{doc_id}:0", "Discussion", "Model R relates to Model S.")
+    metadata = PaperMetadata(doc_id=doc_id)
+    parse_result = ParseResult(doc_id=doc_id, metadata=metadata, elements=[element], errors=[])
+    parsing_v1 = StubParsingPipeline(parse_result)
+
+    triplet_v1 = _triplet(
+        "Model R",
+        "related-to",
+        "Model S",
+        element,
+        pipeline_version=config.pipeline.version,
+    )
+    extraction_v1 = ExtractionResult(
+        triplets=[triplet_v1],
+        section_distribution={"Model R": {"Discussion": 1}, "Model S": {"Discussion": 1}},
+        relation_verbatims=["related to"],
+    )
+    extractor_v1 = StubTripletExtractor({element.element_id: extraction_v1})
+    inventory = StubInventoryBuilder({})
+    graph_writer_v1 = StubGraphWriter()
+    canonicalizer_v1 = EntityCanonicalizer(
+        config,
+        embedding_backend=HashingEmbeddingBackend(),
+        embedding_dir=tmp_path / "embeddings_v1",
+        report_dir=tmp_path / "reports_v1",
+    )
+    canonicalization_v1 = CanonicalizationPipeline(config=config, canonicalizer=canonicalizer_v1)
+    store_path = tmp_path / "processed.json"
+    chunk_store_v1 = ProcessedChunkStore(store_path)
+    orchestrator_v1 = ExtractionOrchestrator(
+        config=config,
+        parsing_pipeline=parsing_v1,
+        inventory_builder=inventory,
+        triplet_extractor=extractor_v1,
+        canonicalization=canonicalization_v1,
+        graph_writer=graph_writer_v1,
+        chunk_store=chunk_store_v1,
+    )
+
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_text("placeholder")
+
+    orchestrator_v1.run(paper_id=doc_id, pdf_path=pdf_path)
+
+    upgraded_pipeline = config.pipeline.model_copy(update={"version": "1.1.0"})
+    upgraded_config = config.model_copy(update={"pipeline": upgraded_pipeline})
+    parsing_v2 = StubParsingPipeline(parse_result)
+    triplet_v2 = _triplet(
+        "Model R",
+        "related-to",
+        "Model S",
+        element,
+        pipeline_version="1.1.0",
+    )
+    extraction_v2 = ExtractionResult(
+        triplets=[triplet_v2],
+        section_distribution={"Model R": {"Discussion": 1}, "Model S": {"Discussion": 1}},
+        relation_verbatims=["related to"],
+    )
+    extractor_v2 = StubTripletExtractor({element.element_id: extraction_v2})
+    graph_writer_v2 = StubGraphWriter()
+    canonicalizer_v2 = EntityCanonicalizer(
+        upgraded_config,
+        embedding_backend=HashingEmbeddingBackend(),
+        embedding_dir=tmp_path / "embeddings_v2",
+        report_dir=tmp_path / "reports_v2",
+    )
+    canonicalization_v2 = CanonicalizationPipeline(
+        config=upgraded_config, canonicalizer=canonicalizer_v2
+    )
+    chunk_store_v2 = ProcessedChunkStore(store_path)
+    orchestrator_v2 = ExtractionOrchestrator(
+        config=upgraded_config,
+        parsing_pipeline=parsing_v2,
+        inventory_builder=inventory,
+        triplet_extractor=extractor_v2,
+        canonicalization=canonicalization_v2,
+        graph_writer=graph_writer_v2,
+        chunk_store=chunk_store_v2,
+    )
+
+    rerun = orchestrator_v2.run(paper_id=doc_id, pdf_path=pdf_path)
+
+    assert rerun.processed_chunks == 1
+    assert graph_writer_v2.deprecation_calls == [doc_id]
+    assert (
+        chunk_store_v2.should_process(doc_id, element.content_hash, upgraded_config.pipeline.version)
+        is False
+    )
+
+
 def test_run_batch_merges_cross_papers(config: AppConfig, tmp_path: Path) -> None:
     doc_a = "paper-a"
     doc_b = "paper-b"
@@ -392,3 +499,61 @@ def test_run_batch_merges_cross_papers(config: AppConfig, tmp_path: Path) -> Non
     model_nodes = [node for node in graph_writer.nodes if node.name == "Model A"]
     assert len(model_nodes) == 1
     assert set(model_nodes[0].source_document_ids) == {doc_a, doc_b}
+
+
+def test_co_mention_fallback_creates_hidden_edges(
+    config: AppConfig, tmp_path: Path
+) -> None:
+    doc_id = "paper-co"
+    content = (
+        "Model Z collaborates with Model Q in experiments. "
+        "Furthermore, Model Q and Model Z appear together in discussions."
+    )
+    element = _parsed_element(doc_id, f"{doc_id}:0", "Discussion", content)
+    metadata = PaperMetadata(doc_id=doc_id, title="Fallback Paper")
+    parse_result = ParseResult(doc_id=doc_id, metadata=metadata, elements=[element], errors=[])
+    parsing = StubParsingPipeline(parse_result)
+
+    extractor = StubTripletExtractor({}, failures=[element.element_id])
+    inventory = StubInventoryBuilder({element.element_id: ["Model Z", "Model Q"]})
+    graph_writer = StubGraphWriter()
+
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=HashingEmbeddingBackend(),
+        embedding_dir=tmp_path / "embeddings",
+        report_dir=tmp_path / "reports",
+    )
+    canonicalization = CanonicalizationPipeline(config=config, canonicalizer=canonicalizer)
+    chunk_store = ProcessedChunkStore(tmp_path / "processed.json")
+    orchestrator = ExtractionOrchestrator(
+        config=config,
+        parsing_pipeline=parsing,
+        inventory_builder=inventory,
+        triplet_extractor=extractor,
+        canonicalization=canonicalization,
+        graph_writer=graph_writer,
+        chunk_store=chunk_store,
+    )
+
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_text("placeholder")
+
+    result = orchestrator.run(paper_id=doc_id, pdf_path=pdf_path)
+
+    assert result.processed_chunks == 1
+    assert result.co_mention_edges == 1
+    assert result.edges_written == 1
+    assert len(graph_writer.edges) == 1
+    co_edge = graph_writer.edges[0]
+    assert co_edge["relation_norm"] == "correlates-with"
+    assert co_edge["relation_verbatim"] == "co-mentioned"
+    assert co_edge["attributes"].get("method") == "co-mention"
+    assert co_edge["attributes"].get("hidden") == "true"
+    assert co_edge["confidence"] == pytest.approx(config.co_mention.confidence)
+    assert co_edge["times_seen"] == 2
+    assert any("LLM failure" in error for error in result.errors)
+    assert (
+        chunk_store.should_process(doc_id, element.content_hash, config.pipeline.version)
+        is False
+    )

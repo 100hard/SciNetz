@@ -115,6 +115,7 @@ class _DocumentProcessingState:
     errors: List[str] = field(default_factory=list)
     extractions: List[ExtractionResult] = field(default_factory=list)
     edge_records: List[_EdgeRecord] = field(default_factory=list)
+    requires_deprecation: bool = False
 
 
 class ProcessedChunkStore:
@@ -129,6 +130,11 @@ class ProcessedChunkStore:
 
         stored_version = self._records.get(doc_id, {}).get(content_hash)
         return stored_version != pipeline_version
+
+    def get_version(self, doc_id: str, content_hash: str) -> Optional[str]:
+        """Return the previously recorded pipeline version for a chunk."""
+
+        return self._records.get(doc_id, {}).get(content_hash)
 
     def mark_processed(self, doc_id: str, content_hash: str, pipeline_version: str) -> None:
         """Record that a chunk has been processed for the supplied version."""
@@ -380,11 +386,17 @@ class ExtractionOrchestrator:
             co_mention_accumulator = CoMentionAccumulator(self._config, self._inventory_builder)
 
         for element in parse_result.elements:
-            if not self._chunk_store.should_process(
+            previous_version = self._chunk_store.get_version(
+                element.doc_id, element.content_hash
+            )
+            should_process = self._chunk_store.should_process(
                 element.doc_id, element.content_hash, pipeline_version
-            ):
+            )
+            if not should_process:
                 state.skipped_chunks += 1
                 continue
+            if previous_version is not None and previous_version != pipeline_version:
+                state.requires_deprecation = True
             candidate_entities: Optional[List[str]] = None
             if self._config.extraction.use_entity_inventory:
                 candidate_entities = self._inventory_builder.build_inventory(element)
@@ -436,9 +448,6 @@ class ExtractionOrchestrator:
     def run(self, *, paper_id: str, pdf_path: Path, force: bool = False) -> OrchestrationResult:
         """Execute the full extraction pipeline for a given paper."""
 
-    def run(self, *, paper_id: str, pdf_path: Path, force: bool = False) -> OrchestrationResult:
-        """Execute the full extraction pipeline for a given paper."""
-
         batch = self.run_batch([BatchExtractionInput(paper_id=paper_id, pdf_path=pdf_path, force=force)])
         return batch.documents[paper_id]
 
@@ -477,6 +486,22 @@ class ExtractionOrchestrator:
                     if not doc_id:
                         continue
                     doc_node_map.setdefault(doc_id, set()).add(node.node_id)
+            for state in states:
+                if not state.requires_deprecation:
+                    continue
+                try:
+                    deprecated_count = self._graph_writer.deprecate_edges(state.doc_id)
+                    if deprecated_count:
+                        LOGGER.info(
+                            "Marked %s edges as deprecated for %s",
+                            deprecated_count,
+                            state.doc_id,
+                        )
+                except Exception as exc:  # noqa: BLE001 - surfaced to result payload
+                    message = f"Failed to deprecate edges for {state.doc_id}: {exc}"
+                    LOGGER.exception(message)
+                    batch_errors.append(message)
+                    state.errors.append(message)
             for record in edge_records:
                 src_id = self._resolve_node(alias_lookup, record.triplet.subject)
                 dst_id = self._resolve_node(alias_lookup, record.triplet.object)

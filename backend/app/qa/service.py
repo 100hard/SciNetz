@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from itertools import combinations
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
@@ -156,7 +156,9 @@ class QAService:
         mentions = self._extractor.extract(question_text)
         resolved_entities = [self._resolver.resolve(mention) for mention in mentions]
         resolved_models = [self._to_model(entity) for entity in resolved_entities]
-        primary_candidates = [entity.candidates[0] for entity in resolved_entities if entity.candidates]
+        primary_candidates = [
+            entity.candidates[0] for entity in resolved_entities if entity.candidates
+        ]
 
         if not primary_candidates:
             summary = "Unable to resolve any entities for the question."
@@ -183,8 +185,11 @@ class QAService:
                 fallback_edges=[],
             )
 
-        fallback_edges = self._collect_neighbors(primary_candidates)
-        summary = "Insufficient evidence to answer. Showing related findings."
+        fallback_edges = self._collect_neighbors(resolved_entities)
+        if fallback_edges:
+            summary = self._summarize_neighbors(fallback_edges)
+        else:
+            summary = "Insufficient evidence to answer the question."
         return QAResponse(
             mode=AnswerMode.INSUFFICIENT,
             summary=summary,
@@ -226,9 +231,24 @@ class QAService:
         results.sort(key=lambda item: (-item.path.score, -item.path.latest_timestamp.timestamp()))
         return results
 
-    def _collect_neighbors(self, candidates: Sequence[ResolvedCandidate]) -> List[PathEdgeModel]:
+    def _collect_neighbors(self, entities: Sequence[ResolvedEntity]) -> List[PathEdgeModel]:
+        if not self._config.qa.expand_neighbors:
+            LOGGER.debug(
+                "QA expand_neighbors disabled in config; still collecting 1-hop neighbors"
+            )
+
+        unique_candidates: Dict[str, ResolvedCandidate] = {}
+        for entity in entities:
+            for candidate in entity.candidates:
+                existing = unique_candidates.get(candidate.node_id)
+                if existing is None or candidate.similarity > existing.similarity:
+                    unique_candidates[candidate.node_id] = candidate
+
+        if not unique_candidates:
+            return []
+
         edges: List[PathEdgeModel] = []
-        for candidate in candidates:
+        for candidate in unique_candidates.values():
             neighbor_records = self._repository.fetch_neighbors(
                 candidate.node_id,
                 min_confidence=self._config.qa.neighbor_confidence_threshold,
@@ -245,16 +265,26 @@ class QAService:
                 unique[key] = edge
         sorted_edges = sorted(
             unique.values(),
-            key=lambda edge: (-edge.confidence, edge.created_at.timestamp()),
+            key=lambda edge: (-edge.confidence, -edge.created_at.timestamp()),
         )
         return sorted_edges[: self._config.qa.max_results]
+
+    def _summarize_neighbors(self, edges: Sequence[PathEdgeModel]) -> str:
+        segments = [
+            f"{edge.src_name} {edge.relation} {edge.dst_name} (doc {edge.evidence.doc_id}, conf={edge.confidence:.2f})"
+            for edge in edges[: self._config.qa.max_results]
+        ]
+        if not segments:
+            return "Insufficient evidence to answer the question."
+        details = "; ".join(segments)
+        return f"Insufficient evidence to answer. Related findings: {details}"
 
     def _build_path(self, record: PathRecord) -> PathModel:
         node_lookup = [self._normalize_node(node) for node in record.nodes]
         edges: List[PathEdgeModel] = []
         confidence_product = 1.0
         section_score = 1.0
-        latest_ts = datetime.fromtimestamp(0)
+        latest_ts = datetime.fromtimestamp(0, tz=timezone.utc)
         for idx, rel in enumerate(record.relationships):
             start_node = node_lookup[idx]
             end_node = node_lookup[idx + 1]
@@ -404,11 +434,11 @@ class QAService:
 
 def _parse_datetime(value: object) -> datetime:
     if isinstance(value, datetime):
-        return value
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if hasattr(value, "to_native"):
         native = value.to_native()  # type: ignore[call-arg]
         if isinstance(native, datetime):
-            return native
+            return native if native.tzinfo else native.replace(tzinfo=timezone.utc)
     if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
         return datetime(
             int(getattr(value, "year")),
@@ -417,5 +447,6 @@ def _parse_datetime(value: object) -> datetime:
             int(getattr(value, "hour", 0)),
             int(getattr(value, "minute", 0)),
             int(getattr(value, "second", 0)),
+            tzinfo=timezone.utc,
         )
-    return datetime.fromtimestamp(0)
+    return datetime.fromtimestamp(0, tz=timezone.utc)
