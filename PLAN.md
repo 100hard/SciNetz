@@ -12,9 +12,9 @@
 | 4 | Canonicalization | ✅ Completed (merge map, embeddings, polysemy safeguards) |
 | 5 | Graph Writer | ✅ Completed (Neo4j batching, conflict detection, upserts) |
 | 6 | Orchestrator w/ Co-mention Fallback | ✅ Completed (idempotent pipeline w/ co-mention fallback) |
-| 7 | Graph-first QA | ⏳ Pending |
+| 7 | Graph-first QA | ✅ Completed (entity resolution, multi-hop QA, fallback evidence) |
 
-> Last updated after completing the canonicalization pipeline (Phase 4) and preparing to start the graph writer implementation.
+> Last updated after completing the graph-first QA pipeline (Phase 7) with multi-hop search and fallback evidence.
 
 ---
 

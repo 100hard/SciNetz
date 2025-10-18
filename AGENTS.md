@@ -67,6 +67,6 @@ Read PLAN.md for full architecture. We're building a research paper knowledge gr
 
 ## Current Phase
 [Update this as you progress]
-Phase: 6 - Orchestrator & Co-mention Fallback
+Phase: 7 - Graph-first QA
 Status: Complete
 Blockers: None
