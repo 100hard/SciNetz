@@ -13,8 +13,13 @@
 | 5 | Graph Writer | ✅ Completed (Neo4j batching, conflict detection, upserts) |
 | 6 | Orchestrator w/ Co-mention Fallback | ✅ Completed (idempotent pipeline w/ co-mention fallback) |
 | 7 | Graph-first QA | ✅ Completed (entity resolution, multi-hop QA, fallback evidence) |
+| 8 | UI (Graph + Evidence + Smart Defaults) | ✅ Completed (paper dashboard, graph explorer, QA chat) |
+| 9 | Interactive HTML Export | Pending (export API and offline bundle not built) |
+| 10 | Observability & KPIs | Pending (metrics logging and dashboards outstanding) |
+| 11 | Reprocessing & Versioning | Pending (deprecation strategy and toggles not implemented) |
+| 12 | Acceptance Testing & Evaluation | Pending (evaluation harness and KPI review not started) |
 
-> Last updated after completing the graph-first QA pipeline (Phase 7) with multi-hop search and fallback evidence.
+> Last updated after completing Phase 8 (UI stack). Export, observability, versioning, and acceptance remain open.
 
 ---
 
@@ -613,6 +618,8 @@ For each edge in subgraph:
 ---
 
 ## Phase 8 — UI (Graph + Evidence + Smart Defaults) (3–4 days)
+
+**Status:** Completed. Frontend pages (`frontend/app/papers/page.tsx`, `frontend/components/graph-explorer.tsx`, `frontend/components/qa-panel.tsx`) implement the paper dashboard, graph explorer, and QA chat. Follow-up: add automated coverage for fullscreen toggle and QA panel once time allows.
 
 ### Goal
 Simple, readable exploration with evidence always one click away.
