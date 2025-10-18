@@ -98,6 +98,7 @@ const stringify = (value: Record<string, unknown>) => {
 };
 
 const AUTO_FETCH_STORAGE_KEY = "graphAutoFetchEnabled";
+const RELATION_PREVIEW_LIMIT = 12;
 
 const GraphExplorer = () => {
   const [defaults, setDefaults] = useState<GraphDefaults | null>(null);
@@ -114,6 +115,7 @@ const GraphExplorer = () => {
   const [autoFetchEnabled, setAutoFetchEnabled] = useState<boolean | null>(null);
   const [isClearing, setIsClearing] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showAllRelations, setShowAllRelations] = useState(false);
   const skipNextAutoFetchRef = useRef(false);
   const visualizationContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -253,7 +255,17 @@ const GraphExplorer = () => {
     void fetchGraph();
   }, [autoFetchEnabled, defaults, fetchGraph]);
 
-  const relationOptions = defaults?.relations ?? [];
+  const relationOptions = useMemo(() => defaults?.relations ?? [], [defaults]);
+  const relationPreview = useMemo(
+    () => relationOptions.slice(0, RELATION_PREVIEW_LIMIT),
+    [relationOptions],
+  );
+  const visibleRelationOptions = showAllRelations ? relationOptions : relationPreview;
+  const showRelationToggle = relationOptions.length > relationPreview.length;
+  const relationPreviewCount = relationPreview.length;
+  const hiddenSelectedRelations = showAllRelations
+    ? 0
+    : selectedRelations.filter((relation) => !relationPreview.includes(relation)).length;
   const sectionOptions = defaults?.sections ?? [];
 
   const summary = useMemo(() => {
@@ -426,9 +438,31 @@ const GraphExplorer = () => {
 
         <div className="mt-6 grid gap-6 md:grid-cols-2 xl:grid-cols-3">
           <div className="space-y-2">
-            <p className="text-sm font-medium text-foreground">Relations</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium text-foreground">Relations</p>
+              {showRelationToggle ? (
+                <button
+                  type="button"
+                  onClick={() => setShowAllRelations((prev) => !prev)}
+                  className="text-xs font-medium text-primary transition hover:underline focus:outline-none"
+                >
+                  {showAllRelations
+                    ? "Show less"
+                    : `Show all (${relationOptions.length})`}
+                </button>
+              ) : null}
+            </div>
+            {!showAllRelations && showRelationToggle ? (
+              <p className="text-xs text-muted-foreground">
+                Showing first {relationPreviewCount} of {relationOptions.length}
+                {hiddenSelectedRelations > 0
+                  ? ` · ${hiddenSelectedRelations} selected hidden`
+                  : null}
+                .
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
-              {relationOptions.map((relation) => {
+              {visibleRelationOptions.map((relation) => {
                 const checked = selectedRelations.includes(relation);
                 return (
                   <button
