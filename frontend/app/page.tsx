@@ -1,10 +1,8 @@
-import Link from "next/link";
 import {
   Activity,
   Database,
   FileText,
   LineChart,
-  MessageSquare,
   Users,
 } from "lucide-react";
 
@@ -56,37 +54,6 @@ const activityFeed = [
 export default function Home() {
   return (
     <div className="space-y-6">
-      <section className="rounded-lg border bg-card p-6 shadow-sm">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-primary">Graph QA</p>
-            <h1 className="mt-1 flex items-center gap-2 text-2xl font-semibold text-foreground">
-              Ask the knowledge graph
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-              Explore multi-hop answers grounded in extracted evidence. Launch the conversational workspace to query methods, datasets, and findings.
-            </p>
-          </div>
-          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <MessageSquare className="h-6 w-6" />
-          </span>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-3">
-          <Link
-            href="/qa"
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2"
-          >
-            Open Graph QA
-          </Link>
-          <Link
-            href="/settings"
-            className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2"
-          >
-            Review defaults
-          </Link>
-        </div>
-      </section>
-
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {stats.map((stat) => {
           const Icon = stat.icon;
@@ -110,6 +77,51 @@ export default function Home() {
             </div>
           );
         })}
+      </section>
+
+      <section className="rounded-lg border bg-card p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-foreground">Getting started with SciNets</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Follow these steps to ingest research papers and explore the knowledge graph.
+        </p>
+        <ol className="mt-4 space-y-3 text-sm text-muted-foreground">
+          <li className="flex items-start gap-3">
+            <span className="mt-1 h-6 w-6 rounded-full bg-primary/10 text-center text-xs font-semibold leading-6 text-primary">
+              1
+            </span>
+            <div className="space-y-1">
+              <p className="font-medium text-foreground">Upload papers from the Ingestion page</p>
+              <p>Drop one or more PDFs or use batch mode to process multiple documents. Each paper is parsed, chunked, and hashed for change detection.</p>
+            </div>
+          </li>
+          <li className="flex items-start gap-3">
+            <span className="mt-1 h-6 w-6 rounded-full bg-primary/10 text-center text-xs font-semibold leading-6 text-primary">
+              2
+            </span>
+            <div className="space-y-1">
+              <p className="font-medium text-foreground">Monitor extraction progress on Papers</p>
+              <p>Watch statuses update from uploaded -> processing -> complete. Re-run extraction or inspect warnings if a pipeline step fails.</p>
+            </div>
+          </li>
+          <li className="flex items-start gap-3">
+            <span className="mt-1 h-6 w-6 rounded-full bg-primary/10 text-center text-xs font-semibold leading-6 text-primary">
+              3
+            </span>
+            <div className="space-y-1">
+              <p className="font-medium text-foreground">Explore relationships in the Graph view</p>
+              <p>Filter by relation type, confidence, or section to focus on the most relevant nodes and evidence-backed edges.</p>
+            </div>
+          </li>
+          <li className="flex items-start gap-3">
+            <span className="mt-1 h-6 w-6 rounded-full bg-primary/10 text-center text-xs font-semibold leading-6 text-primary">
+              4
+            </span>
+            <div className="space-y-1">
+              <p className="font-medium text-foreground">Ask questions with Graph QA</p>
+              <p>Open the dedicated QA workspace to pose natural language questions and review evidence paths before sharing insights.</p>
+            </div>
+          </li>
+        </ol>
       </section>
 
       <section className="grid gap-6 lg:grid-cols-2">
@@ -188,3 +200,6 @@ export default function Home() {
     </div>
   );
 }
+
+
+
