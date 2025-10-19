@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SciNets Graph Export</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      integrity="sha512-4oVYpX6YsJhBKt3vnDnN/SUXOc6Bx/6CkXbkqVKgf/mBlC9ZwTe74MkRUYw35vj0IadB1iKsFcfoTmyaKOwQig=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.26.0/cytoscape.min.js"
+      integrity="sha512-pgA3+qsSVqS+8CA0nVddOZXS6jttuPAHyBs+K6TfGsDz3jAC5vVsQt1zArhcXd1LSeX776BF3nf6/Dr7guPADA=="
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    ></script>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --background: #0f172a;
+        --panel: rgba(15, 23, 42, 0.75);
+        --surface: rgba(30, 41, 59, 0.85);
+        --text: #e2e8f0;
+        --accent: #38bdf8;
+        --muted: #94a3b8;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(15, 118, 110, 0.6));
+        color: var(--text);
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 320px 1fr 360px;
+        grid-template-rows: auto 1fr;
+        grid-template-areas:
+          "header header header"
+          "sidebar graph details";
+        gap: 1.25rem;
+        padding: 1.25rem;
+      }
+
+      header {
+        grid-area: header;
+        background: var(--panel);
+        border-radius: 20px;
+        padding: 1.5rem 2rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        box-shadow: 0 20px 45px rgba(2, 6, 23, 0.35);
+        backdrop-filter: blur(20px);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 1.75rem;
+        letter-spacing: 0.03em;
+      }
+
+      .subtitle {
+        margin-top: 0.25rem;
+        font-size: 0.95rem;
+        color: var(--muted);
+      }
+
+      #graph-container {
+        grid-area: graph;
+        background: var(--surface);
+        border-radius: 20px;
+        position: relative;
+        overflow: hidden;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      }
+
+      #cy {
+        width: 100%;
+        height: 100%;
+      }
+
+      aside#sidebar {
+        grid-area: sidebar;
+        background: var(--panel);
+        border-radius: 20px;
+        padding: 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+        overflow-y: auto;
+        max-height: calc(100vh - 4rem);
+      }
+
+      aside#details {
+        grid-area: details;
+        background: var(--panel);
+        border-radius: 20px;
+        padding: 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        overflow-y: auto;
+        max-height: calc(100vh - 4rem);
+      }
+
+      .section-title {
+        font-size: 0.85rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+        margin-bottom: 0.25rem;
+      }
+
+      .control-group {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        padding: 1rem;
+        border-radius: 16px;
+        background: rgba(15, 23, 42, 0.35);
+        box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.1);
+      }
+
+      .control-row {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+
+      input[type="text"],
+      select,
+      button {
+        border-radius: 9999px;
+        border: none;
+        padding: 0.55rem 1rem;
+        font-size: 0.9rem;
+        background: rgba(15, 118, 110, 0.2);
+        color: var(--text);
+        outline: none;
+      }
+
+      input[type="text"] {
+        flex: 1;
+        background: rgba(15, 23, 42, 0.7);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+      }
+
+      input[type="range"] {
+        width: 100%;
+      }
+
+      button {
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        transition: transform 0.2s ease, background 0.2s ease;
+        background: linear-gradient(135deg, rgba(56, 189, 248, 0.3), rgba(129, 140, 248, 0.3));
+        border: 1px solid rgba(148, 163, 184, 0.25);
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        background: linear-gradient(135deg, rgba(56, 189, 248, 0.45), rgba(129, 140, 248, 0.45));
+      }
+
+      .legend {
+        display: grid;
+        gap: 0.75rem;
+        padding: 1rem;
+        border-radius: 16px;
+        background: rgba(15, 23, 42, 0.3);
+      }
+
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .legend-swatch {
+        width: 18px;
+        height: 18px;
+        border-radius: 4px;
+        border: 1px solid rgba(148, 163, 184, 0.35);
+      }
+
+      .details-card {
+        background: rgba(15, 23, 42, 0.45);
+        border-radius: 16px;
+        padding: 1rem 1.25rem;
+        box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.1);
+      }
+
+      .details-card h3 {
+        margin-top: 0;
+        margin-bottom: 0.75rem;
+        font-size: 1.1rem;
+      }
+
+      .details-card p {
+        margin: 0.25rem 0;
+        color: var(--muted);
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        background: rgba(56, 189, 248, 0.2);
+        border-radius: 9999px;
+        padding: 0.35rem 0.75rem;
+        font-size: 0.75rem;
+        margin-right: 0.35rem;
+      }
+
+      .download-links {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .download-links a {
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 0.9rem;
+      }
+
+      .info-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 0.75rem;
+      }
+
+      .stat {
+        background: rgba(15, 23, 42, 0.4);
+        border-radius: 14px;
+        padding: 0.75rem;
+      }
+
+      .stat span {
+        display: block;
+      }
+
+      .stat .label {
+        font-size: 0.75rem;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .stat .value {
+        font-size: 1.1rem;
+        font-weight: 600;
+      }
+
+      @media (max-width: 1280px) {
+        body {
+          grid-template-columns: 1fr;
+          grid-template-areas:
+            "header"
+            "sidebar"
+            "graph"
+            "details";
+        }
+
+        #graph-container {
+          min-height: 480px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>SciNets Graph Export</h1>
+        <div class="subtitle" id="summary-text"></div>
+      </div>
+      <div class="info-grid">
+        <div class="stat">
+          <span class="label">Nodes</span>
+          <span class="value" id="node-count">0</span>
+        </div>
+        <div class="stat">
+          <span class="label">Edges</span>
+          <span class="value" id="edge-count">0</span>
+        </div>
+        <div class="stat">
+          <span class="label">Snippet mode</span>
+          <span class="value" id="snippet-mode">full</span>
+        </div>
+      </div>
+    </header>
+
+    <aside id="sidebar">
+      <div class="control-group">
+        <div class="section-title">Search</div>
+        <input id="search" type="text" placeholder="Search nodes or edges" />
+      </div>
+      <div class="control-group">
+        <div class="section-title">Relation filters</div>
+        <div id="relation-filters" class="control-row"></div>
+      </div>
+      <div class="control-group">
+        <div class="section-title">Section filters</div>
+        <div id="section-filters" class="control-row"></div>
+      </div>
+      <div class="control-group">
+        <div class="section-title">Confidence</div>
+        <input id="confidence" type="range" min="0" max="1" step="0.05" />
+        <div id="confidence-value" class="badge"></div>
+      </div>
+      <div class="control-group">
+        <div class="section-title">Layout & zoom</div>
+        <div class="control-row">
+          <button id="reset-layout"><i class="fa-solid fa-rotate"></i> Reset</button>
+          <button id="zoom-in"><i class="fa-solid fa-magnifying-glass-plus"></i></button>
+          <button id="zoom-out"><i class="fa-solid fa-magnifying-glass-minus"></i></button>
+        </div>
+      </div>
+      <div class="control-group">
+        <div class="section-title">Downloads</div>
+        <div class="download-links">
+          <button id="download-png"><i class="fa-solid fa-image"></i> PNG snapshot</button>
+          <button id="download-svg"><i class="fa-solid fa-vector-square"></i> SVG snapshot</button>
+          <a href="graph.json" download>Download graph.json</a>
+          <a href="graph.graphml" download>Download graph.graphml</a>
+          <a href="full_snippets.json" download id="full-snippets-link" style="display: none;"
+            >Download full snippets</a
+          >
+        </div>
+      </div>
+      <div class="control-group legend" id="legend"></div>
+    </aside>
+
+    <div id="graph-container"><div id="cy"></div></div>
+
+    <aside id="details">
+      <div class="details-card" id="details-placeholder">
+        <h3>Evidence inspector</h3>
+        <p>Select an edge to view supporting evidence and metadata.</p>
+      </div>
+    </aside>
+
+    <script id="graph-data" type="application/json">{{GRAPH_JSON}}</script>
+    <script id="metadata" type="application/json">{{METADATA_JSON}}</script>
+
+    <script>
+      const graphData = JSON.parse(
+        document.getElementById("graph-data").textContent || "{}"
+      );
+      const metadata = JSON.parse(document.getElementById("metadata").textContent || "{}");
+
+      const layoutDefaults = { name: "fcose", animate: false };
+      const container = document.getElementById("cy");
+      const legendEl = document.getElementById("legend");
+      const relationFiltersEl = document.getElementById("relation-filters");
+      const sectionFiltersEl = document.getElementById("section-filters");
+      const detailsPanel = document.getElementById("details");
+      const summaryText = document.getElementById("summary-text");
+      const snippetMode = document.getElementById("snippet-mode");
+      const fullSnippetsLink = document.getElementById("full-snippets-link");
+      const nodeCountEl = document.getElementById("node-count");
+      const edgeCountEl = document.getElementById("edge-count");
+      const confidenceInput = document.getElementById("confidence");
+      const confidenceValue = document.getElementById("confidence-value");
+
+      nodeCountEl.textContent = graphData.nodes?.length ?? 0;
+      edgeCountEl.textContent = graphData.edges?.length ?? 0;
+      snippetMode.textContent = metadata.snippet_strategy ?? "full";
+      summaryText.textContent = `Generated ${metadata.generated_at || "unknown"} · Pipeline ${
+        metadata.pipeline_version || "?"
+      }`;
+      confidenceInput.value = metadata.filters?.min_confidence ?? 0;
+      confidenceValue.textContent = `Min confidence: ${parseFloat(confidenceInput.value).toFixed(
+        2
+      )}`;
+
+      if (metadata.includes_full_snippets_file) {
+        fullSnippetsLink.style.display = "inline-flex";
+      }
+
+      const palette = [
+        "#38bdf8",
+        "#f472b6",
+        "#c084fc",
+        "#fbbf24",
+        "#34d399",
+        "#60a5fa",
+        "#f97316",
+        "#a855f7",
+        "#e879f9",
+      ];
+
+      const relationColors = new Map();
+      const relations = Array.from(new Set((graphData.edges || []).map((e) => e.relation))).sort();
+      relations.forEach((relation, idx) => {
+        relationColors.set(relation, palette[idx % palette.length]);
+      });
+
+      const sectionSet = new Set();
+      (graphData.nodes || []).forEach((node) => {
+        Object.keys(node.section_distribution || {}).forEach((section) =>
+          sectionSet.add(section)
+        );
+      });
+
+      const sections = Array.from(sectionSet.values()).sort();
+
+      function createToggle(label, container, stateMap, onChange) {
+        const wrapper = document.createElement("label");
+        wrapper.className = "badge";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = stateMap.get(label) ?? true;
+        checkbox.style.marginRight = "0.4rem";
+        checkbox.addEventListener("change", () => {
+          stateMap.set(label, checkbox.checked);
+          onChange();
+        });
+        wrapper.appendChild(checkbox);
+        wrapper.append(label);
+        container.appendChild(wrapper);
+      }
+
+      const relationState = new Map();
+      const sectionState = new Map();
+      relations.forEach((relation) => relationState.set(relation, true));
+      sections.forEach((section) => sectionState.set(section, true));
+
+      relations.forEach((relation) =>
+        createToggle(relation, relationFiltersEl, relationState, applyFilters)
+      );
+      sections.forEach((section) =>
+        createToggle(section, sectionFiltersEl, sectionState, applyFilters)
+      );
+
+      relationColors.forEach((color, relation) => {
+        const item = document.createElement("div");
+        item.className = "legend-item";
+        const swatch = document.createElement("div");
+        swatch.className = "legend-swatch";
+        swatch.style.background = color;
+        const label = document.createElement("span");
+        label.textContent = relation;
+        item.appendChild(swatch);
+        item.appendChild(label);
+        legendEl.appendChild(item);
+      });
+
+      const elements = {
+        nodes: (graphData.nodes || []).map((node) => ({
+          data: {
+            id: node.id,
+            label: node.label,
+            type: node.type || "Entity",
+            aliases: node.aliases || [],
+            times_seen: node.times_seen || 0,
+            sections: Object.keys(node.section_distribution || {}),
+            section_distribution: node.section_distribution || {},
+            source_document_ids: node.source_document_ids || [],
+          },
+        })),
+        edges: (graphData.edges || []).map((edge) => ({
+          data: {
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            relation: edge.relation,
+            relation_verbatim: edge.relation_verbatim,
+            confidence: edge.confidence,
+            times_seen: edge.times_seen,
+            attributes: edge.attributes || {},
+            evidence: edge.evidence || {},
+            conflicting: edge.conflicting || false,
+            created_at: edge.created_at,
+            color: relationColors.get(edge.relation) || "#38bdf8",
+          },
+        })),
+      };
+
+      const cy = cytoscape({
+        container,
+        elements,
+        layout: layoutDefaults,
+        style: [
+          {
+            selector: "node",
+            style: {
+              "background-color": (ele) => relationColors.get(ele.data("type")) || "#38bdf8",
+              width: (ele) => Math.max(30, 15 + ele.degree(false) * 5),
+              height: (ele) => Math.max(30, 15 + ele.degree(false) * 5),
+              label: "data(label)",
+              color: "#f8fafc",
+              "font-size": 10,
+              "text-wrap": "wrap",
+              "text-max-width": 120,
+            },
+          },
+          {
+            selector: "edge",
+            style: {
+              width: (ele) => Math.max(2, ele.data("confidence") * 4),
+              "line-color": (ele) => ele.data("color"),
+              "target-arrow-color": (ele) => ele.data("color"),
+              "target-arrow-shape": "triangle",
+              "curve-style": "bezier",
+              label: "data(relation)",
+              "font-size": 8,
+              color: "#e2e8f0",
+              "text-background-color": "rgba(15,23,42,0.8)",
+              "text-background-opacity": 1,
+              "text-background-padding": 2,
+            },
+          },
+          {
+            selector: ":selected",
+            style: {
+              "border-width": 3,
+              "border-color": "#facc15",
+            },
+          },
+        ],
+      });
+
+      function applyFilters() {
+        const searchTerm = document.getElementById("search").value.trim().toLowerCase();
+        const minConfidence = parseFloat(confidenceInput.value) || 0;
+        confidenceValue.textContent = `Min confidence: ${minConfidence.toFixed(2)}`;
+
+        const activeRelations = new Set();
+        relationState.forEach((active, relation) => active && activeRelations.add(relation));
+        const activeSections = new Set();
+        sectionState.forEach((active, section) => active && activeSections.add(section));
+
+        cy.nodes().forEach((node) => {
+          const matchesSearch =
+            !searchTerm ||
+            node.data("label").toLowerCase().includes(searchTerm) ||
+            (node.data("aliases") || [])
+              .join(" ")
+              .toLowerCase()
+              .includes(searchTerm);
+          const matchesSection =
+            activeSections.size === 0 ||
+            (node.data("sections") || []).some((section) => activeSections.has(section));
+          const shouldShow = matchesSearch && matchesSection;
+          node.style("display", shouldShow ? "element" : "none");
+        });
+
+        cy.edges().forEach((edge) => {
+          const relation = edge.data("relation");
+          const confidence = edge.data("confidence") || 0;
+          const evidence = edge.data("evidence") || {};
+          const sectionMatches =
+            activeSections.size === 0 ||
+            Object.values(edge.data("attributes") || {})
+              .join(" ")
+              .split(/[,;]+/)
+              .some((section) => activeSections.has(section.trim()));
+          const matchesSearch =
+            !searchTerm ||
+            relation.toLowerCase().includes(searchTerm) ||
+            (evidence.full_sentence || "").toLowerCase().includes(searchTerm);
+          const shouldShow =
+            activeRelations.has(relation) &&
+            confidence >= minConfidence &&
+            matchesSearch &&
+            sectionMatches;
+          edge.style("display", shouldShow ? "element" : "none");
+        });
+      }
+
+      confidenceInput.addEventListener("input", applyFilters);
+      document.getElementById("search").addEventListener("input", applyFilters);
+
+      document.getElementById("reset-layout").addEventListener("click", () => {
+        cy.layout(layoutDefaults).run();
+      });
+      document.getElementById("zoom-in").addEventListener("click", () => {
+        cy.zoom({ level: cy.zoom() * 1.2 });
+      });
+      document.getElementById("zoom-out").addEventListener("click", () => {
+        cy.zoom({ level: cy.zoom() * 0.8 });
+      });
+
+      document.getElementById("download-png").addEventListener("click", () => {
+        const data = cy.png({ scale: 2, bg: "#0f172a" });
+        downloadData(data, "scinets_graph.png");
+      });
+      document.getElementById("download-svg").addEventListener("click", () => {
+        const data = cy.svg({ scale: 1, full: true });
+        downloadData(
+          "data:image/svg+xml;charset=utf-8," + encodeURIComponent(data),
+          "scinets_graph.svg"
+        );
+      });
+
+      function downloadData(uri, filename) {
+        const link = document.createElement("a");
+        link.href = uri;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+
+      function renderEdgeDetails(edge) {
+        detailsPanel.innerHTML = "";
+        const card = document.createElement("div");
+        card.className = "details-card";
+        const title = document.createElement("h3");
+        title.textContent = `${edge.data("relation")} · ${edge.data("confidence").toFixed(2)}`;
+        card.appendChild(title);
+
+        const context = document.createElement("p");
+        context.innerHTML = `<strong>From:</strong> ${edge.data("source")}<br/><strong>To:</strong> ${edge.data(
+          "target"
+        )}`;
+        card.appendChild(context);
+
+        const evidence = edge.data("evidence") || {};
+        const snippet = document.createElement("p");
+        snippet.textContent = evidence.full_sentence || "Evidence snippet unavailable.";
+        card.appendChild(snippet);
+
+        const meta = document.createElement("p");
+        meta.innerHTML = `<strong>Document:</strong> ${evidence.doc_id || "?"} · <strong>Element:</strong> ${
+          evidence.element_id || "?"
+        }`;
+        card.appendChild(meta);
+
+        const span = document.createElement("p");
+        if (evidence.text_span) {
+          span.textContent = `Span: ${evidence.text_span.start} – ${evidence.text_span.end}`;
+        }
+        card.appendChild(span);
+
+        if (evidence.snippet_truncated) {
+          const notice = document.createElement("p");
+          notice.innerHTML =
+            "<em>Snippet truncated. Download full_snippets.json for complete text.</em>";
+          card.appendChild(notice);
+        }
+
+        const attrs = edge.data("attributes") || {};
+        if (Object.keys(attrs).length) {
+          const attrList = document.createElement("p");
+          attrList.innerHTML = `<strong>Attributes:</strong> ${JSON.stringify(attrs)}`;
+          card.appendChild(attrList);
+        }
+
+        const footer = document.createElement("p");
+        footer.innerHTML = `<strong>Created:</strong> ${edge.data("created_at") || "n/a"}`;
+        card.appendChild(footer);
+
+        detailsPanel.appendChild(card);
+      }
+
+      function renderNodeDetails(node) {
+        detailsPanel.innerHTML = "";
+        const card = document.createElement("div");
+        card.className = "details-card";
+        const title = document.createElement("h3");
+        title.textContent = node.data("label");
+        card.appendChild(title);
+
+        const type = document.createElement("p");
+        type.innerHTML = `<strong>Type:</strong> ${node.data("type")}`;
+        card.appendChild(type);
+
+        const aliases = node.data("aliases") || [];
+        if (aliases.length) {
+          const aliasEl = document.createElement("p");
+          aliasEl.innerHTML = `<strong>Aliases:</strong> ${aliases.join(", ")}`;
+          card.appendChild(aliasEl);
+        }
+
+        const degree = document.createElement("p");
+        degree.innerHTML = `<strong>Times seen:</strong> ${node.data("times_seen")}`;
+        card.appendChild(degree);
+
+        const sectionsData = node.data("section_distribution") || {};
+        const sectionsText = Object.entries(sectionsData)
+          .map(([section, count]) => `${section}: ${count}`)
+          .join(", ");
+        if (sectionsText) {
+          const sectionsEl = document.createElement("p");
+          sectionsEl.innerHTML = `<strong>Sections:</strong> ${sectionsText}`;
+          card.appendChild(sectionsEl);
+        }
+
+        const docs = node.data("source_document_ids") || [];
+        if (docs.length) {
+          const docsEl = document.createElement("p");
+          docsEl.innerHTML = `<strong>Documents:</strong> ${docs.join(", ")}`;
+          card.appendChild(docsEl);
+        }
+
+        detailsPanel.appendChild(card);
+      }
+
+      cy.on("tap", "edge", (event) => renderEdgeDetails(event.target));
+      cy.on("tap", "node", (event) => renderNodeDetails(event.target));
+
+      applyFilters();
+    </script>
+  </body>
+</html>

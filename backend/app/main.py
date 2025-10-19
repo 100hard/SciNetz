@@ -11,7 +11,7 @@ from uuid import uuid4
 import base64
 import binascii
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,13 @@ from backend.app.extraction import (
     OpenAIExtractor,
     TokenBudgetCache,
     TwoPassTripletExtractor,
+)
+from backend.app.export import (
+    ExportOptions,
+    ExportRequest,
+    ExportSizeExceeded,
+    ExportSizeWarning,
+    GraphExportService,
 )
 from backend.app.graph import GraphWriter
 from backend.app.orchestration import ExtractionOrchestrator, OrchestrationResult
@@ -174,6 +181,8 @@ def create_app(
     app.state.ui_config = resolved_config.ui
     graph_view_service = _build_graph_view_service(neo4j_driver)
     app.state.graph_view_service = graph_view_service
+    export_service = _build_export_service(resolved_config, graph_view_service)
+    app.state.export_service = export_service
 
     @app.get("/health", tags=["system"], summary="Service health probe")
     def health() -> dict[str, str]:
@@ -348,6 +357,57 @@ def create_app(
         )
         return _graph_response_from_view(view)
 
+    @app.get(
+        "/api/export/html",
+        tags=["export"],
+        summary="Export filtered graph as a standalone HTML bundle",
+    )
+    def export_html(
+        relations: Optional[str] = Query(None, description="Comma-separated relation filters"),
+        min_confidence: Optional[float] = Query(None, ge=0.0, le=1.0),
+        sections: Optional[str] = Query(None, description="Comma-separated section filters"),
+        include_snippets: bool = Query(True, description="Include evidence snippets in export"),
+        truncate_snippets: bool = Query(
+            False, description="Truncate snippets to reduce archive size"
+        ),
+        papers: Optional[str] = Query(None, description="Comma-separated paper identifiers"),
+        include_co_mentions: Optional[bool] = Query(
+            None, description="Whether to include co-mention edges"
+        ),
+        limit: int = Query(500, ge=1, le=2000),
+    ) -> Response:
+        """Return a zipped HTML export for the requested filters."""
+
+        service = _require_export_service(app)
+        defaults = getattr(app.state, "ui_config").graph_defaults
+        relation_list = _parse_csv(relations) or list(defaults.relations)
+        section_list = _parse_csv(sections) or list(defaults.sections)
+        paper_list = _parse_csv(papers)
+        min_conf = min_confidence if min_confidence is not None else defaults.min_confidence
+        include = (
+            include_co_mentions if include_co_mentions is not None else defaults.show_co_mentions
+        )
+        request = ExportRequest(
+            relations=relation_list,
+            min_confidence=min_conf,
+            sections=section_list,
+            include_co_mentions=include,
+            papers=paper_list,
+            limit=limit,
+        )
+        options = ExportOptions(
+            include_snippets=include_snippets,
+            truncate_snippets=truncate_snippets,
+        )
+        try:
+            bundle = service.generate_bundle(request, options)
+        except ExportSizeExceeded as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except ExportSizeWarning as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        headers = {"Content-Disposition": f"attachment; filename={bundle.filename}"}
+        return Response(content=bundle.archive, media_type="application/zip", headers=headers)
+
     @app.post(
         "/api/ui/graph/clear",
         tags=["ui"],
@@ -475,6 +535,26 @@ def _build_graph_view_service(driver: Optional[object]) -> Optional[GraphViewSer
         return None
 
 
+def _build_export_service(
+    config: AppConfig, graph_service: Optional[GraphViewService]
+) -> Optional[GraphExportService]:
+    """Construct the HTML export service when dependencies are present."""
+
+    if graph_service is None:
+        return None
+    template_path = Path(__file__).resolve().parents[2] / "export" / "scinets_view.html"
+    try:
+        return GraphExportService(
+            graph_service=graph_service,
+            export_config=config.export,
+            pipeline_version=config.pipeline.version,
+            template_path=template_path,
+        )
+    except Exception:  # noqa: BLE001 - export should fail softly
+        LOGGER.exception("Failed to initialize export service")
+        return None
+
+
 def _require_registry(app: FastAPI) -> PaperRegistry:
     registry = getattr(app.state, "paper_registry", None)
     if registry is None:
@@ -486,6 +566,13 @@ def _require_graph_service(app: FastAPI) -> GraphViewService:
     service = getattr(app.state, "graph_view_service", None)
     if service is None:
         raise HTTPException(status_code=503, detail="Graph view service unavailable")
+    return service
+
+
+def _require_export_service(app: FastAPI) -> GraphExportService:
+    service = getattr(app.state, "export_service", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="Export service unavailable")
     return service
 
 
