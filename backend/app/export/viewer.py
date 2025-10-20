@@ -91,16 +91,16 @@ def render_share_html(
       body {{
         margin: 0;
         font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background-color: #0b1120;
-        color: #f8fafc;
+        color: #0f172a;
         min-height: 100vh;
         display: flex;
         flex-direction: column;
+        background: #f8fafc;
       }}
       header {{
         padding: 1.5rem 2rem;
-        border-bottom: 1px solid rgba(148, 163, 184, 0.25);
-        background: linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.95));
+        border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+        background: #ffffff;
       }}
       header h1 {{
         margin: 0;
@@ -109,65 +109,78 @@ def render_share_html(
       }}
       header p {{
         margin: 0.5rem 0 0;
-        color: rgba(226, 232, 240, 0.75);
+        color: rgba(15, 23, 42, 0.65);
       }}
       main {{
         flex: 1;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 1.5rem;
         padding: 1.5rem;
+        display: flex;
+        align-items: stretch;
       }}
       #graph {{
-        flex: 1 1 600px;
-        min-height: 70vh;
-        background: rgba(15, 23, 42, 0.85);
+        position: relative;
+        flex: 1;
+        min-height: 640px;
+        background: #ffffff;
         border-radius: 1rem;
-        border: 1px solid rgba(148, 163, 184, 0.25);
-        box-shadow: 0 24px 48px rgba(2, 6, 23, 0.45);
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        box-shadow: 0 18px 36px rgba(15, 23, 42, 0.12);
+        overflow: hidden;
+        display: flex;
+        align-items: stretch;
       }}
-      aside {{
-        width: 320px;
-        max-width: 100%;
-        background: rgba(15, 23, 42, 0.85);
-        border-radius: 1rem;
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        padding: 1.25rem;
-        box-shadow: 0 20px 40px rgba(2, 6, 23, 0.4);
+      #graph-canvas {{
+        position: relative;
+        flex: 1;
+        min-height: inherit;
+      }}
+      #graph canvas {{
+        position: absolute;
+        inset: 0;
+      }}
+      .graph-overlay {{
+        position: absolute;
+        top: 1.5rem;
+        right: 1.5rem;
         display: flex;
         flex-direction: column;
+        display: flex;
         gap: 1rem;
+        width: min(360px, 32%);
+        pointer-events: none;
       }}
-      aside ul {{
+      .graph-overlay > * {{
+        pointer-events: auto;
+      }}
+      .graph-overlay .bundle-card {{
+        background: rgba(248, 250, 252, 0.95);
+        border-radius: 0.9rem;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        padding: 1.1rem;
+        box-shadow: 0 12px 24px rgba(15, 23, 42, 0.18);
+      }}
+      .graph-overlay h2 {{
+        margin: 0 0 0.75rem;
+        font-size: 1.05rem;
+      }}
+      .graph-overlay ul {{
         list-style: none;
         margin: 0;
         padding: 0;
       }}
-      aside li {{
+      .graph-overlay li {{
         padding: 0.4rem 0;
-        border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+        border-bottom: 1px solid rgba(148, 163, 184, 0.2);
         font-size: 0.95rem;
       }}
-      aside li:last-child {{
+      .graph-overlay li:last-child {{
         border-bottom: none;
       }}
-      .download {{
-        display: none;
-        justify-content: center;
-        align-items: center;
-        padding: 0.6rem 1rem;
-        border-radius: 9999px;
-        background: linear-gradient(135deg, #3b82f6, #6366f1);
-        text-decoration: none;
-        color: #fff;
-        font-weight: 600;
-        box-shadow: 0 18px 30px rgba(99, 102, 241, 0.35);
-      }}
       #details {{
-        background: rgba(30, 41, 59, 0.65);
+        background: rgba(148, 163, 184, 0.12);
         border-radius: 0.75rem;
         padding: 1rem;
-        border: 1px solid rgba(148, 163, 184, 0.2);
+        border: 1px solid rgba(148, 163, 184, 0.16);
         font-size: 0.9rem;
         line-height: 1.5;
       }}
@@ -176,19 +189,38 @@ def render_share_html(
         word-break: break-word;
         margin: 0;
       }}
-      @media (max-width: 768px) {{
-        aside {{
-          width: 100%;
+      @media (max-width: 1080px) {{
+        main {{
+          padding: 1rem;
         }}
         #graph {{
-          min-height: 60vh;
+          min-height: 560px;
+        }}
+        .graph-overlay {{
+          position: static;
+          width: 100%;
+          flex-direction: column;
+          margin-top: 1rem;
+        }}
+        .graph-overlay .bundle-card {{
+          box-shadow: none;
+        }}
+      }}
+      @media (max-width: 768px) {{
+        aside {{
+          max-width: 100%;
+        }}
+        #graph {{
+          min-height: 540px;
+        }}
+        .graph-controls {{
+          top: 0.75rem;
+          right: 0.75rem;
         }}
       }}
     </style>
     <script>
       const GRAPH_DATA = __GRAPH_DATA__;
-      const DOWNLOAD_URL = __DOWNLOAD_URL__;
-      const EXPIRES_AT = __EXPIRES_AT__;
     </script>
   </head>
   <body>
@@ -197,6 +229,7 @@ def render_share_html(
       <p>Interactive snapshot exported from the SciNets knowledge graph.</p>
     </header>
     <main>
+      <section id="graph"></section>
       <aside>
         <div>
           <h2>Bundle details</h2>
@@ -212,7 +245,6 @@ def render_share_html(
           <p>Select a node or edge to see contextual information.</p>
         </section>
       </aside>
-      <section id="graph"></section>
     </main>
     <script>
       (function () {{
@@ -933,6 +965,9 @@ def render_share_html(
         const baseWidth = Math.max(container.clientWidth || 960, 320);
         const baseHeight = Math.max(container.clientHeight || 640, 320);
         const layout = runForceLayout(nodesForLayout, edgesRaw, baseWidth, baseHeight);
+        const ZOOM_LIMITS = { min: 0.5, max: 3 };
+        const ZOOM_SENSITIVITY = 0.0025;
+        const PAN_MOVE_THRESHOLD = 4;
 
         const layoutMargin = 30;
         const minX = layout.bounds.minX - layoutMargin;
@@ -1049,22 +1084,39 @@ def render_share_html(
           draw();
         }}
 
+        let interactionScale = 1;
+        let interactionOffsetX = 0;
+        let interactionOffsetY = 0;
         let currentScale = 1;
-        let currentOffsetX = 0;
-        let currentOffsetY = 0;
+        let pointerActive = false;
+        let pointerMoved = false;
+        let pointerStartX = 0;
+        let pointerStartY = 0;
+        let pointerStartOffsetX = 0;
+        let pointerStartOffsetY = 0;
 
-        function draw() {{
+        canvas.style.cursor = "grab";
+
+        function getCanvasMetrics() {{
           const width = canvas.width / ratio;
           const height = canvas.height / ratio;
-          const scale = Math.min(width / viewWidth, height / viewHeight);
-          const offsetX = (width - viewWidth * scale) / 2;
-          const offsetY = (height - viewHeight * scale) / 2;
+          const fitScale = Math.min(width / viewWidth, height / viewHeight);
+          const baseCenterX = width / 2;
+          const baseCenterY = height / 2;
+          return {{ width, height, fitScale, baseCenterX, baseCenterY }};
+        }}
+
+        function draw() {{
+          const {{ width, height, fitScale, baseCenterX, baseCenterY }} = getCanvasMetrics();
+          const scale = fitScale * interactionScale;
+          const offsetX = interactionOffsetX;
+          const offsetY = interactionOffsetY;
           currentScale = scale;
-          currentOffsetX = offsetX;
-          currentOffsetY = offsetY;
           for (const node of nodes) {{
-            node.screenX = node.graphX * scale + offsetX;
-            node.screenY = node.graphY * scale + offsetY;
+            const centeredX = node.graphX - viewWidth / 2;
+            const centeredY = node.graphY - viewHeight / 2;
+            node.screenX = centeredX * scale + baseCenterX + offsetX;
+            node.screenY = centeredY * scale + baseCenterY + offsetY;
             node.screenRadius = Math.max(4, node.radius * scale);
           }}
           ctx.save();
@@ -1179,6 +1231,22 @@ def render_share_html(
           return closest;
         }}
 
+        function handleGraphSelection(clientX, clientY) {{
+          const node = pickNode(clientX, clientY);
+          if (node) {{
+            showNodeDetails(node);
+            return;
+          }}
+          const edge = pickEdge(clientX, clientY);
+          if (edge) {{
+            showEdgeDetails(edge);
+            return;
+          }}
+          selectedNode = null;
+          draw();
+          setDefaultDetails();
+        }}
+
         function showNodeDetails(node) {{
           selectedNode = node;
           draw();
@@ -1224,21 +1292,89 @@ def render_share_html(
           appendTruncationNotice();
         }}
 
-        canvas.addEventListener("click", (event) => {{
-          const node = pickNode(event.clientX, event.clientY);
-          if (node) {{
-            showNodeDetails(node);
+        function handleWheel(event) {{
+          event.preventDefault();
+          const {{ width, height, fitScale, baseCenterX, baseCenterY }} = getCanvasMetrics();
+          const rect = canvas.getBoundingClientRect();
+          const mouseX = ((event.clientX - rect.left) / rect.width) * width;
+          const mouseY = ((event.clientY - rect.top) / rect.height) * height;
+          const totalScaleBefore = fitScale * interactionScale;
+          if (totalScaleBefore <= 0) {{
             return;
           }}
-          const edge = pickEdge(event.clientX, event.clientY);
-          if (edge) {{
-            showEdgeDetails(edge);
-            return;
-          }}
-          selectedNode = null;
+          const delta = Math.max(-120, Math.min(120, event.deltaY));
+          const zoomMultiplier = Math.exp(-delta * ZOOM_SENSITIVITY);
+          interactionScale = Math.min(
+            ZOOM_LIMITS.max,
+            Math.max(ZOOM_LIMITS.min, interactionScale * zoomMultiplier),
+          );
+          const totalScaleAfter = fitScale * interactionScale;
+          const centeredX = (mouseX - baseCenterX - interactionOffsetX) / totalScaleBefore;
+          const centeredY = (mouseY - baseCenterY - interactionOffsetY) / totalScaleBefore;
+          interactionOffsetX = mouseX - baseCenterX - centeredX * totalScaleAfter;
+          interactionOffsetY = mouseY - baseCenterY - centeredY * totalScaleAfter;
           draw();
-          setDefaultDetails();
-        }});
+        }}
+
+        function handlePointerDown(event) {{
+          if (event.button !== undefined && event.button !== 0) {{
+            return;
+          }}
+          event.preventDefault();
+          pointerActive = true;
+          pointerMoved = false;
+          pointerStartX = event.clientX;
+          pointerStartY = event.clientY;
+          pointerStartOffsetX = interactionOffsetX;
+          pointerStartOffsetY = interactionOffsetY;
+          canvas.style.cursor = "grabbing";
+          if (canvas.setPointerCapture) {{
+            try {{
+              canvas.setPointerCapture(event.pointerId);
+            }} catch (error) {{}}
+          }}
+        }}
+
+        function handlePointerMove(event) {{
+          if (!pointerActive) {{
+            return;
+          }}
+          const deltaX = event.clientX - pointerStartX;
+          const deltaY = event.clientY - pointerStartY;
+          if (
+            !pointerMoved &&
+            (Math.abs(deltaX) >= PAN_MOVE_THRESHOLD || Math.abs(deltaY) >= PAN_MOVE_THRESHOLD)
+          ) {{
+            pointerMoved = true;
+          }}
+          if (pointerMoved) {{
+            interactionOffsetX = pointerStartOffsetX + deltaX;
+            interactionOffsetY = pointerStartOffsetY + deltaY;
+            draw();
+          }}
+        }}
+
+        function handlePointerEnd(event) {{
+          if (!pointerActive) {{
+            return;
+          }}
+          if (canvas.releasePointerCapture) {{
+            try {{
+              canvas.releasePointerCapture(event.pointerId);
+            }} catch (error) {{}}
+          }}
+          pointerActive = false;
+          canvas.style.cursor = "grab";
+          if (!pointerMoved) {{
+            handleGraphSelection(event.clientX, event.clientY);
+          }}
+        }}
+
+        canvas.addEventListener("wheel", handleWheel, {{ passive: false }});
+        canvas.addEventListener("pointerdown", handlePointerDown);
+        window.addEventListener("pointermove", handlePointerMove);
+        window.addEventListener("pointerup", handlePointerEnd);
+        window.addEventListener("pointercancel", handlePointerEnd);
 
         window.addEventListener("resize", resizeCanvas);
         resizeCanvas();

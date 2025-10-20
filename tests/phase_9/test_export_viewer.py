@@ -8,8 +8,8 @@ from backend.app.export.viewer import VISUALIZATION_NODE_LIMIT, render_share_htm
 def _extract_graph_payload(html: str) -> dict[str, object]:
     marker = "const GRAPH_DATA = "
     start = html.index(marker) + len(marker)
-    end = html.index("const DOWNLOAD_URL", start)
-    json_blob = html[start:end].rsplit(";", 1)[0].strip()
+    end = html.index(";", start)
+    json_blob = html[start:end].strip()
     return json.loads(json_blob)
 
 
@@ -49,6 +49,41 @@ def test_render_share_html_ignores_invalid_limit_values() -> None:
     )
     payload = _extract_graph_payload(html)
     assert payload["visualization_limit"] == VISUALIZATION_NODE_LIMIT
+
+
+def test_render_share_html_uses_full_width_graph_container() -> None:
+    html = render_share_html({"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
+
+    assert '<div id="graph-canvas"></div>' in html
+    assert "<aside" not in html
+
+
+def test_render_share_html_uses_light_background_theme() -> None:
+    html = render_share_html({"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
+
+    assert "background: #f8fafc;" in html
+    assert "#020617" not in html
+
+
+def test_render_share_html_includes_zoom_wheel_handler() -> None:
+    html = render_share_html({"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
+
+    assert 'canvas.addEventListener("wheel"' in html
+    assert "const ZOOM_LIMITS" in html
+
+
+def test_render_share_html_includes_pointer_pan_handlers() -> None:
+    html = render_share_html({"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
+
+    assert 'canvas.addEventListener("pointerdown"' in html
+    assert 'window.addEventListener("pointermove"' in html
+
+
+def test_render_share_html_omits_download_bundle_link() -> None:
+    html = render_share_html({"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
+
+    assert "Download bundle" not in html
+    assert "download-link" not in html
 
 
 def test_render_share_html_escapes_script_breakout_sequences() -> None:
