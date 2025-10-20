@@ -39,6 +39,7 @@ def render_share_html(
     """Render an interactive HTML view for a shared graph export."""
 
     normalised_graph = dict(graph_data)
+    _ = download_url  # Preserve signature for backward compatibility.
     limit_value = normalised_graph.get("visualization_limit")
     limit: int
     try:
@@ -62,14 +63,14 @@ def render_share_html(
     else:
         bundle_info["Link expires"] = "Never"
 
+    def _format_bundle_item(key: str, value: str) -> str:
+        data_attr = " data-meta=\"expires\"" if key.lower() == "link expires" else ""
+        return (
+            f"<li{data_attr}><strong>{html.escape(key)}:</strong> {html.escape(value)}</li>"
+        )
+
     bundle_lines = "\n            ".join(
-        f"<li><strong>{html.escape(key)}:</strong> {html.escape(value)}</li>"
-        for key, value in bundle_info.items()
-    )
-    download_js = (
-        _escape_script_value(json.dumps(download_url, ensure_ascii=False))
-        if download_url is not None
-        else "null"
+        _format_bundle_item(key, value) for key, value in bundle_info.items()
     )
     expires_js = (
         _escape_script_value(json.dumps(expires_at.isoformat(), ensure_ascii=False))
@@ -114,12 +115,10 @@ def render_share_html(
       main {{
         flex: 1;
         padding: 1.5rem;
-        display: flex;
-        align-items: stretch;
       }}
       #graph {{
         position: relative;
-        flex: 1;
+        width: 100%;
         min-height: 640px;
         background: #ffffff;
         border-radius: 1rem;
@@ -138,42 +137,34 @@ def render_share_html(
         position: absolute;
         inset: 0;
       }}
-      .graph-overlay {{
-        position: absolute;
-        top: 1.5rem;
-        right: 1.5rem;
-        display: flex;
-        flex-direction: column;
-        display: flex;
-        gap: 1rem;
-        width: min(360px, 32%);
-        pointer-events: none;
+      .graph-summary {{
+        padding: 0 1.5rem 2rem;
+        display: grid;
+        gap: 1.5rem;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       }}
-      .graph-overlay > * {{
-        pointer-events: auto;
-      }}
-      .graph-overlay .bundle-card {{
-        background: rgba(248, 250, 252, 0.95);
+      .graph-summary .bundle-card {{
+        background: #ffffff;
         border-radius: 0.9rem;
         border: 1px solid rgba(148, 163, 184, 0.25);
         padding: 1.1rem;
-        box-shadow: 0 12px 24px rgba(15, 23, 42, 0.18);
+        box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
       }}
-      .graph-overlay h2 {{
+      .graph-summary h2 {{
         margin: 0 0 0.75rem;
         font-size: 1.05rem;
       }}
-      .graph-overlay ul {{
+      .graph-summary ul {{
         list-style: none;
         margin: 0;
         padding: 0;
       }}
-      .graph-overlay li {{
+      .graph-summary li {{
         padding: 0.4rem 0;
         border-bottom: 1px solid rgba(148, 163, 184, 0.2);
         font-size: 0.95rem;
       }}
-      .graph-overlay li:last-child {{
+      .graph-summary li:last-child {{
         border-bottom: none;
       }}
       #details {{
@@ -196,26 +187,16 @@ def render_share_html(
         #graph {{
           min-height: 560px;
         }}
-        .graph-overlay {{
-          position: static;
-          width: 100%;
-          flex-direction: column;
-          margin-top: 1rem;
-        }}
-        .graph-overlay .bundle-card {{
-          box-shadow: none;
+        .graph-summary {{
+          padding: 0 1rem 1.5rem;
         }}
       }}
       @media (max-width: 768px) {{
-        aside {{
-          max-width: 100%;
-        }}
         #graph {{
           min-height: 540px;
         }}
-        .graph-controls {{
-          top: 0.75rem;
-          right: 0.75rem;
+        .graph-summary {{
+          grid-template-columns: 1fr;
         }}
       }}
     </style>
@@ -230,37 +211,28 @@ def render_share_html(
     </header>
     <main>
       <section id="graph"></section>
-      <aside>
-        <div>
-          <h2>Bundle details</h2>
-          <ul>
-            __BUNDLE_LINES__
-          </ul>
-        </div>
-        <a id="download-link" class="download" rel="noopener" href="#" style="display:none;">
-          Download bundle (.zip)
-        </a>
-        <section id="details">
-          <h3>Details</h3>
-          <p>Select a node or edge to see contextual information.</p>
-        </section>
-      </aside>
     </main>
+    <section class="graph-summary">
+      <div class="bundle-card">
+        <h2>Graph details</h2>
+        <ul id="bundle-info">
+          __BUNDLE_LINES__
+        </ul>
+      </div>
+      <section id="details">
+        <h3>Details</h3>
+        <p>Select a node or edge to see contextual information.</p>
+      </section>
+    </section>
     <script>
       (function () {{
         const VISUALIZATION_NODE_LIMIT = __NODE_LIMIT__;
         const graphData = GRAPH_DATA || {{}};
-        const downloadUrl = DOWNLOAD_URL;
-        const expiresAt = EXPIRES_AT;
-        const downloadLink = document.getElementById("download-link");
-        if (downloadLink && downloadUrl) {{
-          downloadLink.href = downloadUrl;
-          downloadLink.style.display = "inline-flex";
-        }}
+        const expiresAt = __EXPIRES_AT__;
         if (expiresAt) {{
           const expiryItem = document.querySelector("li[data-meta='expires']");
           if (!expiryItem) {{
-            const list = document.querySelector("aside ul");
+            const list = document.getElementById("bundle-info");
             if (list) {{
               const item = document.createElement("li");
               item.dataset.meta = "expires";
@@ -1387,7 +1359,6 @@ def render_share_html(
     html_template = html_template.replace("{{", "{").replace("}}", "}")
     html_content = (
         html_template.replace("__GRAPH_DATA__", payload)
-        .replace("__DOWNLOAD_URL__", download_js)
         .replace("__EXPIRES_AT__", expires_js)
         .replace("__BUNDLE_LINES__", bundle_lines)
         .replace("__NODE_LIMIT__", str(VISUALIZATION_NODE_LIMIT))
