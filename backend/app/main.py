@@ -362,7 +362,7 @@ def create_app(
                 "style-src 'unsafe-inline'; "
                 "img-src data:; "
                 "font-src data:; "
-                "connect-src 'none'; "
+                "connect-src 'self'; "
                 "frame-ancestors 'none'; "
                 "base-uri 'none'; "
                 "form-action 'none'"

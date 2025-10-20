@@ -548,7 +548,7 @@ def test_system_prompt_emphasizes_type_and_grounding_rules(config) -> None:
 
     prompt = extractor._render_system_prompt(max_triples=5)  # type: ignore[attr-defined]
 
-    assert "Subjects and objects must be different" in prompt
+    assert "CRITICAL: The subject and object must always be different" in prompt
     assert "Use only the provided chunk" in prompt
     assert "Discard the triple" in prompt
     assert "Gradient descent" in prompt
@@ -715,6 +715,62 @@ def test_openai_extractor_uses_cached_response(tmp_path, config) -> None:
     assert len(triples_second) == len(triples_first)
 
 
+def test_openai_extractor_retries_on_timeout(monkeypatch, config) -> None:
+    """Read timeouts should trigger retries before aborting extraction."""
+
+    fixture = _load_golden("sample_chunk")
+    element = _element_from_fixture(fixture["element"])
+    settings = config.extraction.openai
+
+    def _payload() -> dict:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(fixture["llm_response"]),
+                    }
+                }
+            ]
+        }
+
+    class _TimeoutThenSuccessClient:
+        """HTTP client that times out once before returning a successful response."""
+
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def post(self, path: str, *, headers: dict, json: dict) -> _FakeResponse:
+            self.call_count += 1
+            if self.call_count == 1:
+                raise TimeoutError("simulated read timeout")
+            return _FakeResponse(status_code=200, payload=_payload())
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "backend.app.extraction.triplet_extraction.time.sleep",
+        lambda seconds: None,
+    )
+
+    client = _TimeoutThenSuccessClient()
+    extractor = OpenAIExtractor(
+        settings=settings,
+        api_key="test-key",
+        client=client,
+        token_budget_per_triple=config.extraction.tokens_per_triple,
+        allowed_relations=config.relations.canonical_relation_names(),
+        entity_types=config.extraction.entity_types,
+        max_prompt_entities=config.extraction.max_prompt_entities,
+    )
+
+    triples = extractor.extract_triples(element, candidate_entities=None, max_triples=5)
+
+    assert client.call_count == 2
+    assert len(triples) == len(fixture["llm_response"]["triples"])
+
+
 def test_openai_system_prompt_discourages_generic_entities(config) -> None:
     """System prompt should instruct the model to avoid generic or vague nodes."""
 
@@ -750,4 +806,4 @@ def test_openai_system_prompt_discourages_generic_entities(config) -> None:
 
     extractor.extract_triples(element, candidate_entities=None, max_triples=3)
 
-    assert "Do not extract overly generic or vague terms" in captured_prompt["system"]
+    assert "Avoid generic placeholders or conversational phrases" in captured_prompt["system"]

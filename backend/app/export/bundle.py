@@ -107,8 +107,8 @@ class ExportBundleBuilder:
         return bundle
 
     def _serialise_graph(self, graph: GraphView, request: ShareExportRequest) -> Dict[str, object]:
-        nodes = [self._normalise_node(node) for node in sorted(graph.nodes, key=lambda n: n.id)]
-        edges = [self._normalise_edge(edge, request) for edge in sorted(graph.edges, key=lambda e: e.id)]
+        nodes = [self._normalise_node(node) for node in graph.nodes]
+        edges = [self._normalise_edge(edge, request) for edge in graph.edges]
         return {
             "nodes": nodes,
             "edges": edges,

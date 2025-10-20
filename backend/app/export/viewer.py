@@ -278,7 +278,6 @@ def render_share_html(
         const EDGE_LABEL_RECT_HEIGHT = 26;
         const EDGE_DARKEN_BASE = "#0f172a";
         const EDGE_LABEL_LIGHTEN_TARGET = "#f8fafc";
-        const VISUALIZATION_NODE_LIMIT = __NODE_LIMIT__;
         const LAYOUT_AREA_SCALE = 0.74;
         const LAYOUT_ATTRACTION_STRENGTH = 0.044;
         const LAYOUT_REPULSION_STRENGTH = 0.32;
@@ -287,8 +286,6 @@ def render_share_html(
         const LAYOUT_CENTER_GRAVITY = 0.03;
         const LAYOUT_TEMPERATURE_DIVISOR = 2.45;
         const LAYOUT_COOLING_FACTOR = 0.89;
-        const LAYOUT_DENSITY_TARGET = 0.24;
-        const LAYOUT_DENSITY_MAX_SCALE = 2.25;
 
         const TYPE_COLOR_MAP = {{
           method: "#2563eb",
@@ -649,81 +646,20 @@ def render_share_html(
           }}
         }};
 
-        const computeBounds = (nodes) => {{
-          let minX = Number.POSITIVE_INFINITY;
-          let maxX = Number.NEGATIVE_INFINITY;
-          let minY = Number.POSITIVE_INFINITY;
-          let maxY = Number.NEGATIVE_INFINITY;
-          for (const entry of nodes) {{
-            if (entry.x < minX) minX = entry.x;
-            if (entry.x > maxX) maxX = entry.x;
-            if (entry.y < minY) minY = entry.y;
-            if (entry.y > maxY) maxY = entry.y;
-          }}
-          if (!Number.isFinite(minX)) {{
-            minX = 0;
-          }}
-          if (!Number.isFinite(maxX)) {{
-            maxX = 0;
-          }}
-          if (!Number.isFinite(minY)) {{
-            minY = 0;
-          }}
-          if (!Number.isFinite(maxY)) {{
-            maxY = 0;
-          }}
-          return {{
-            minX,
-            maxX,
-            minY,
-            maxY,
-            width: Math.max(maxX - minX, 1),
-            height: Math.max(maxY - minY, 1),
-          }};
-        }};
-
-        const expandLayoutIfDense = (nodes) => {{
-          if (!nodes.length) {{
-            return computeBounds(nodes);
-          }}
-          const bounds = computeBounds(nodes);
-          const area = bounds.width * bounds.height;
-          if (!Number.isFinite(area) || area <= 0) {{
-            return bounds;
-          }}
-          const totalNodeArea = nodes.reduce((accumulator, entry) => {{
-            const radius = estimateCollisionRadius(entry.node, entry.degree);
-            return accumulator + Math.PI * radius * radius;
-          }}, 0);
-          if (!Number.isFinite(totalNodeArea) || totalNodeArea <= 0) {{
-            return bounds;
-          }}
-          const density = totalNodeArea / area;
-          if (density <= LAYOUT_DENSITY_TARGET) {{
-            return bounds;
-          }}
-          const scale = Math.min(
-            LAYOUT_DENSITY_MAX_SCALE,
-            Math.sqrt(density / LAYOUT_DENSITY_TARGET),
-          );
-          if (!Number.isFinite(scale) || scale <= 1) {{
-            return bounds;
-          }}
-          const centerX = (bounds.minX + bounds.maxX) / 2;
-          const centerY = (bounds.minY + bounds.maxY) / 2;
-          nodes.forEach((entry) => {{
-            entry.x = centerX + (entry.x - centerX) * scale;
-            entry.y = centerY + (entry.y - centerY) * scale;
-          }});
-          return computeBounds(nodes);
-        }};
-
         const runForceLayout = (nodes, edges, width, height) => {{
           if (!nodes.length) {{
             return {{
               nodes: [],
               edges: [],
-              bounds: {{ minX: 0, maxX: width, minY: 0, maxY: height }},
+              bounds: {{
+                minX: 0,
+                maxX: width,
+                minY: 0,
+                maxY: height,
+                width: Math.max(width, 1),
+                height: Math.max(height, 1),
+              }},
+              densityScale: 1,
             }};
           }}
 
@@ -924,11 +860,32 @@ def render_share_html(
               y: node.y,
               degree: neighbours ? neighbours.size : 0,
               componentId: node.componentId,
+              anchorX: node.anchorX,
+              anchorY: node.anchorY,
             }};
           }});
 
           resolveCollisions(positionedNodes);
-          const bounds = expandLayoutIfDense(positionedNodes);
+          let minX = Number.POSITIVE_INFINITY;
+          let maxX = Number.NEGATIVE_INFINITY;
+          let minY = Number.POSITIVE_INFINITY;
+          let maxY = Number.NEGATIVE_INFINITY;
+          for (const entry of positionedNodes) {{
+            if (entry.x < minX) minX = entry.x;
+            if (entry.x > maxX) maxX = entry.x;
+            if (entry.y < minY) minY = entry.y;
+            if (entry.y > maxY) maxY = entry.y;
+          }}
+          if (!Number.isFinite(minX)) minX = 0;
+          if (!Number.isFinite(maxX)) maxX = width;
+          if (!Number.isFinite(minY)) minY = 0;
+          if (!Number.isFinite(maxY)) maxY = height;
+          const bounds = {{
+            minX,
+            maxX,
+            minY,
+            maxY,
+          }};
 
           const positionedNodeIndex = new Map(positionedNodes.map((entry) => [entry.node.id, entry]));
           const positionedEdges = filteredEdges.map((edge) => {{
@@ -956,6 +913,7 @@ def render_share_html(
               minY: bounds.minY,
               maxY: bounds.maxY,
             }},
+            densityScale: 1,
           }};
         }};
 
@@ -981,14 +939,18 @@ def render_share_html(
         const maxX = layout.bounds.maxX + layoutMargin;
         const minY = layout.bounds.minY - layoutMargin;
         const maxY = layout.bounds.maxY + layoutMargin;
-        const graphWidth = Math.max(maxX - minX, 1);
-        const graphHeight = Math.max(maxY - minY, 1);
-        const graphCenterX = graphWidth / 2;
-        const graphCenterY = graphHeight / 2;
+        const viewWidth = Math.max(maxX - minX, 1);
+        const viewHeight = Math.max(maxY - minY, 1);
 
-        const nodes = layout.nodes.map((entry) => {{
-          const x = entry.x - minX;
-          const y = entry.y - minY;
+        const translatedNodes = layout.nodes.map((entry) => ({
+          ...entry,
+          x: entry.x - minX,
+          y: entry.y - minY,
+          anchorX: entry.anchorX - minX,
+          anchorY: entry.anchorY - minY,
+        }));
+
+        const nodes = translatedNodes.map((entry) => {{
           const labelLines = formatNodeLabel(entry.node.label || entry.node.id || "Unknown");
           const fill = getNodeFill(entry.node.type);
           const {{ color: labelColor, outline: labelOutline }} = getContrastingLabelColors(fill);
@@ -996,10 +958,8 @@ def render_share_html(
           return {{
             id: entry.node.id,
             data: entry.node,
-            x,
-            y,
-            layoutX: graphWidth ? x / graphWidth : 0.5,
-            layoutY: graphHeight ? y / graphHeight : 0.5,
+            graphX: entry.x,
+            graphY: entry.y,
             degree: entry.degree,
             componentId: entry.componentId,
             radius,
@@ -1028,6 +988,10 @@ def render_share_html(
               target,
               relation: edge.relation,
               confidence,
+              length: Math.hypot(
+                target.graphX - source.graphX,
+                target.graphY - source.graphY,
+              ),
               relationLabel:
                 (edge.data && (edge.data.relation_verbatim || edge.data.relation)) || edge.relation,
               stroke,
@@ -1085,21 +1049,36 @@ def render_share_html(
           draw();
         }}
 
+        let currentScale = 1;
+        let currentOffsetX = 0;
+        let currentOffsetY = 0;
+
         function draw() {{
           const width = canvas.width / ratio;
           const height = canvas.height / ratio;
+          const scale = Math.min(width / viewWidth, height / viewHeight);
+          const offsetX = (width - viewWidth * scale) / 2;
+          const offsetY = (height - viewHeight * scale) / 2;
+          currentScale = scale;
+          currentOffsetX = offsetX;
+          currentOffsetY = offsetY;
+          for (const node of nodes) {{
+            node.screenX = node.graphX * scale + offsetX;
+            node.screenY = node.graphY * scale + offsetY;
+            node.screenRadius = Math.max(4, node.radius * scale);
+          }}
           ctx.save();
           ctx.scale(ratio, ratio);
           ctx.clearRect(0, 0, width, height);
           ctx.lineCap = "round";
           for (const edge of edges) {{
-            const sourceX = edge.source.layoutX * width;
-            const sourceY = edge.source.layoutY * height;
-            const targetX = edge.target.layoutX * width;
-            const targetY = edge.target.layoutY * height;
+            const sourceX = edge.source.screenX;
+            const sourceY = edge.source.screenY;
+            const targetX = edge.target.screenX;
+            const targetY = edge.target.screenY;
             ctx.globalAlpha = edge.strokeOpacity;
             ctx.strokeStyle = edge.stroke;
-            ctx.lineWidth = edge.strokeWidth;
+            ctx.lineWidth = Math.max(0.75, edge.strokeWidth * scale);
             ctx.beginPath();
             ctx.moveTo(sourceX, sourceY);
             ctx.lineTo(targetX, targetY);
@@ -1107,13 +1086,13 @@ def render_share_html(
           }}
           ctx.globalAlpha = 1;
           for (const node of nodes) {{
-            const nodeX = node.layoutX * width;
-            const nodeY = node.layoutY * height;
+            const nodeX = node.screenX;
+            const nodeY = node.screenY;
             ctx.beginPath();
             ctx.fillStyle = node.fill;
             ctx.strokeStyle = NODE_STROKE_COLOR;
             ctx.lineWidth = selectedNode && selectedNode.id === node.id ? 3 : 1.8;
-            ctx.arc(nodeX, nodeY, node.radius, 0, Math.PI * 2);
+            ctx.arc(nodeX, nodeY, node.screenRadius, 0, Math.PI * 2);
             ctx.fill();
             ctx.stroke();
           }}
@@ -1122,14 +1101,14 @@ def render_share_html(
           ctx.textBaseline = "middle";
           for (const node of nodes) {{
             const label = node.data.label || node.id;
-            const nodeX = node.layoutX * width;
-            const nodeY = node.layoutY * height;
+            const nodeX = node.screenX;
+            const nodeY = node.screenY;
             const labelWidth = Math.max(48, ctx.measureText(label).width + 12);
             ctx.save();
             ctx.fillStyle = "rgba(2, 6, 23, 0.75)";
-            ctx.fillRect(nodeX - labelWidth / 2, nodeY - node.radius - 24, labelWidth, 18);
+            ctx.fillRect(nodeX - labelWidth / 2, nodeY - node.screenRadius - 24, labelWidth, 18);
             ctx.fillStyle = "#f8fafc";
-            ctx.fillText(label, nodeX, nodeY - node.radius - 15);
+            ctx.fillText(label, nodeX, nodeY - node.screenRadius - 15);
             ctx.restore();
           }}
           ctx.restore();
@@ -1137,17 +1116,26 @@ def render_share_html(
 
         function pickNode(clientX, clientY) {{
           const rect = canvas.getBoundingClientRect();
-          const x = (clientX - rect.left) / rect.width;
-          const y = (clientY - rect.top) / rect.height;
+          if (!rect.width || !rect.height) {{
+            return null;
+          }}
+          const width = canvas.width / ratio;
+          const height = canvas.height / ratio;
+          const x = ((clientX - rect.left) / rect.width) * width;
+          const y = ((clientY - rect.top) / rect.height) * height;
           let nearest = null;
-          let minDist = 0.05;
+          let minDistance = Number.POSITIVE_INFINITY;
           for (const node of nodes) {{
-            const dx = node.layoutX - x;
-            const dy = node.layoutY - y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < minDist) {{
-              minDist = dist;
+            const dx = node.screenX - x;
+            const dy = node.screenY - y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            if (distance <= node.screenRadius) {{
+              return node;
+            }}
+            const threshold = node.screenRadius + 20;
+            if (distance < threshold && distance < minDistance) {{
               nearest = node;
+              minDistance = distance;
             }}
           }}
           return nearest;
@@ -1168,17 +1156,20 @@ def render_share_html(
 
         function pickEdge(clientX, clientY) {{
           const rect = canvas.getBoundingClientRect();
+          if (!rect.width || !rect.height) {{
+            return null;
+          }}
           const width = canvas.width / ratio;
           const height = canvas.height / ratio;
           const x = ((clientX - rect.left) / rect.width) * width;
           const y = ((clientY - rect.top) / rect.height) * height;
           let closest = null;
-          let minDist = 12;
+          let minDist = Math.max(12, currentScale * 18);
           for (const edge of edges) {{
-            const x1 = edge.source.layoutX * width;
-            const y1 = edge.source.layoutY * height;
-            const x2 = edge.target.layoutX * width;
-            const y2 = edge.target.layoutY * height;
+            const x1 = edge.source.screenX;
+            const y1 = edge.source.screenY;
+            const x2 = edge.target.screenX;
+            const y2 = edge.target.screenY;
             const dist = pointToSegmentDistance(x, y, x1, y1, x2, y2);
             if (dist < minDist) {{
               minDist = dist;

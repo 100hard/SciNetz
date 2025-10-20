@@ -179,13 +179,17 @@ class OpenAIExtractor(LLMExtractor):
         "Subjects and objects must be explicit entity mentions drawn directly from the provided text chunk. "
         "Allowed relations: {allowed_relations}. Set relation_verbatim to exactly one of these canonical relations; "
         "skip any triple whose predicate cannot be normalized to this inventory.\n"
+        "Your goal is to extract specific, named scientific concepts. Prioritize them in this order:\n"
+        "- Highest Priority: Concepts explicitly introduced or defined in the chunk (for example, \"we propose a new method called X\" or \"Y is defined as ...\"). Always capture these novel contributions.\n"
+        "- High Priority: Well-known, named entities from the scientific field that appear in the chunk.\n"
+        "Do not skip newly introduced concepts as long as the text gives them a concrete name.\n"
         "Rules:\n"
-        "- Subjects and objects must be different. Reject any self-referential statement.\n"
+        "- CRITICAL: The subject and object must always be different. Reject any self-referential statement.\n"
         "- Use only the provided chunk; do not rely on external knowledge or assumptions.\n"
         "- Classify every subject and object using the allowed entity types: {allowed_entity_types}. "
         "If you cannot confidently assign one of these labels (for example, if the entity is ambiguous), Discard the triple instead of outputting Other or Unknown.\n"
-        "- Do not extract overly generic or vague terms such as the model, our system, the data, or results. "
-        "Output only specific, named scientific concepts.\n"
+        "- Avoid generic placeholders or conversational phrases such as our model, our strategy, this approach, the results, the score, the data, baseline accuracy, or similar vague references.\n"
+        "- Output only specific, named scientific concepts that can be reused outside the immediate sentence.\n"
         "- Return full supportive sentences verbatim and include a confidence between 0.0 and 1.0.\n"
         "Examples of entity typing: Gradient descent algorithm -> Method; MNIST dataset -> Dataset; F1 score -> Metric; "
         "Image classification task -> Task; CRISPR protein -> Material.\n"
@@ -573,18 +577,60 @@ class OpenAIExtractor(LLMExtractor):
         attempt = 0
         delay = self._settings.backoff_initial_seconds
         while True:
-            response = self._dispatch_request(payload)
+            start = time.perf_counter()
+            try:
+                response = self._dispatch_request(payload)
+            except Exception as exc:
+                elapsed = time.perf_counter() - start
+                if not self._should_retry_exception(exc, attempt):
+                    LOGGER.error(
+                        "OpenAI extraction request failed after %.2fs: %s",
+                        elapsed,
+                        exc,
+                    )
+                    raise RuntimeError(f"OpenAI extraction request failed: {exc}") from exc
+                attempt += 1
+                LOGGER.warning(
+                    "OpenAI extraction request raised %s after %.2fs; retrying (attempt %s)",
+                    exc.__class__.__name__,
+                    elapsed,
+                    attempt,
+                )
+                sleep_seconds = min(delay, self._settings.backoff_max_seconds)
+                time.sleep(sleep_seconds)
+                delay = min(delay * 2, self._settings.backoff_max_seconds)
+                continue
+            elapsed = time.perf_counter() - start
             if response.status_code < 400:
                 try:
-                    return response.json()
+                    response_payload = response.json()
                 except json.JSONDecodeError as exc:
-                    LOGGER.error("OpenAI response was not valid JSON: %s", exc)
+                    LOGGER.error(
+                        "OpenAI response was not valid JSON after %.2fs: %s",
+                        elapsed,
+                        exc,
+                    )
                     raise RuntimeError("OpenAI response was not valid JSON") from exc
+                if attempt > 0:
+                    LOGGER.info(
+                        "OpenAI extraction succeeded after %s retries (elapsed %.2fs, status %s)",
+                        attempt,
+                        elapsed,
+                        response.status_code,
+                    )
+                elif LOGGER.isEnabledFor(logging.DEBUG):
+                    LOGGER.debug(
+                        "OpenAI extraction completed in %.2fs (status %s)",
+                        elapsed,
+                        response.status_code,
+                    )
+                return response_payload
             if not self._should_retry(response.status_code, attempt):
                 message = self._extract_error_message(response)
                 LOGGER.error(
-                    "OpenAI extraction failed with status %s: %s",
+                    "OpenAI extraction failed with status %s after %.2fs: %s",
                     response.status_code,
+                    elapsed,
                     message,
                 )
                 raise RuntimeError(
@@ -592,8 +638,9 @@ class OpenAIExtractor(LLMExtractor):
                 )
             attempt += 1
             LOGGER.warning(
-                "OpenAI extraction received status %s; retrying (attempt %s)",
+                "OpenAI extraction received status %s after %.2fs; retrying (attempt %s)",
                 response.status_code,
+                elapsed,
                 attempt,
             )
             sleep_seconds = min(delay, self._settings.backoff_max_seconds)
@@ -606,6 +653,30 @@ class OpenAIExtractor(LLMExtractor):
         if status_code not in self._retry_statuses:
             return False
         return attempt < self._settings.max_retries
+
+    def _should_retry_exception(self, exc: Exception, attempt: int) -> bool:
+        """Return whether an exception warrants a retry."""
+
+        if not self._is_timeout_exception(exc):
+            return False
+        return attempt < self._settings.max_retries
+
+    def _is_timeout_exception(self, exc: Exception) -> bool:
+        """Return whether the exception or its causes represent a timeout."""
+
+        visited: set[int] = set()
+        current: Optional[BaseException] = exc
+        timeout_base = getattr(_httpx, "TimeoutException", None) if _httpx is not None else None
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            if isinstance(current, TimeoutError):
+                return True
+            if timeout_base is not None and isinstance(current, timeout_base):
+                return True
+            if "timeout" in current.__class__.__name__.lower():
+                return True
+            current = getattr(current, "__cause__", None)
+        return False
 
     def _dispatch_request(self, payload: Dict[str, Any]) -> _SimpleHTTPResponse:
         """Dispatch the HTTP request via the configured client or hook."""
