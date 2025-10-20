@@ -8,6 +8,9 @@ from datetime import datetime
 from typing import Mapping, MutableMapping
 
 
+VISUALIZATION_NODE_LIMIT = 200
+
+
 def render_share_html(
     graph_data: Mapping[str, object],
     *,
@@ -201,7 +204,14 @@ def render_share_html(
 
         const nodesRaw = Array.isArray(graphData.nodes) ? graphData.nodes : [];
         const edgesRaw = Array.isArray(graphData.edges) ? graphData.edges : [];
-        if (nodesRaw.length === 0) {{
+        const totalNodeCount = nodesRaw.length;
+        const totalEdgeCount = edgesRaw.length;
+        const configuredLimit = Number.isFinite(Number(graphData.visualization_limit))
+          ? Math.max(1, Math.floor(Number(graphData.visualization_limit)))
+          : VISUALIZATION_NODE_LIMIT;
+        const nodeLimit = totalNodeCount > 0 ? Math.min(configuredLimit, totalNodeCount) : 0;
+        const nodesForLayout = nodesRaw.slice(0, nodeLimit);
+        if (nodesForLayout.length === 0) {{
           container.innerHTML = "<p style='padding:1rem;'>No nodes available in this export.</p>";
           return;
         }}
@@ -227,6 +237,7 @@ def render_share_html(
         const EDGE_LABEL_RECT_HEIGHT = 26;
         const EDGE_DARKEN_BASE = "#0f172a";
         const EDGE_LABEL_LIGHTEN_TARGET = "#f8fafc";
+        const VISUALIZATION_NODE_LIMIT = __NODE_LIMIT__;
         const LAYOUT_AREA_SCALE = 0.74;
         const LAYOUT_ATTRACTION_STRENGTH = 0.044;
         const LAYOUT_REPULSION_STRENGTH = 0.32;
@@ -922,7 +933,7 @@ def render_share_html(
         const ratio = window.devicePixelRatio || 1;
         const baseWidth = Math.max(container.clientWidth || 960, 320);
         const baseHeight = Math.max(container.clientHeight || 640, 320);
-        const layout = runForceLayout(nodesRaw, edgesRaw, baseWidth, baseHeight);
+        const layout = runForceLayout(nodesForLayout, edgesRaw, baseWidth, baseHeight);
 
         const layoutMargin = 30;
         const minX = layout.bounds.minX - layoutMargin;
@@ -987,9 +998,40 @@ def render_share_html(
           }})
           .filter(Boolean);
 
+        const displayedNodeCount = nodes.length;
+        const displayedEdgeCount = edges.length;
+        const truncatedNodes = totalNodeCount > displayedNodeCount;
+        const truncatedEdges = totalEdgeCount > displayedEdgeCount;
+
         const details = document.getElementById("details");
         const formatJSON = (value) => JSON.stringify(value, null, 2);
         let selectedNode = null;
+
+        const appendTruncationNotice = () => {
+          if (!details || (!truncatedNodes && !truncatedEdges)) {
+            return;
+          }
+          const notice = document.createElement("p");
+          notice.style.marginTop = "0.75rem";
+          notice.style.fontSize = "0.85rem";
+          notice.style.color = "rgba(148, 163, 184, 0.8)";
+          const nodeSummary = `${displayedNodeCount} of ${totalNodeCount}`;
+          const edgeSummary = `${displayedEdgeCount} of ${totalEdgeCount}`;
+          notice.textContent =
+            `Showing first ${nodeSummary} nodes and ${edgeSummary} edges in the interactive view.`;
+          details.appendChild(notice);
+        };
+
+        const setDefaultDetails = () => {
+          if (!details) {
+            return;
+          }
+          details.innerHTML =
+            "<h3>Details</h3><p>Select a node or edge to see contextual information.</p>";
+          appendTruncationNotice();
+        };
+
+        setDefaultDetails();
 
         function resizeCanvas() {{
           const rect = container.getBoundingClientRect();
@@ -1118,6 +1160,7 @@ def render_share_html(
             "Aliases: " + aliases + "\\n" +
             "Sections:\\n" + sections +
             "</pre>";
+          appendTruncationNotice();
         }}
 
         function showEdgeDetails(edge) {{
@@ -1146,6 +1189,7 @@ def render_share_html(
             (edge.target.data.label || edge.target.data.id) + "\\n" +
             "Evidence:\\n" + evidence +
             "</pre>";
+          appendTruncationNotice();
         }}
 
         canvas.addEventListener("click", (event) => {{
@@ -1161,7 +1205,7 @@ def render_share_html(
           }}
           selectedNode = null;
           draw();
-          details.innerHTML = "<h3>Details</h3><p>Select a node or edge to see contextual information.</p>";
+          setDefaultDetails();
         }});
 
         window.addEventListener("resize", resizeCanvas);
@@ -1178,5 +1222,6 @@ def render_share_html(
         .replace("__DOWNLOAD_URL__", download_js)
         .replace("__EXPIRES_AT__", expires_js)
         .replace("__BUNDLE_LINES__", bundle_lines)
+        .replace("__NODE_LIMIT__", str(VISUALIZATION_NODE_LIMIT))
     )
     return html_content

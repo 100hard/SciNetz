@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable, Dict, Mapping, Protocol
 
 from backend.app.export.models import ExportBundle, ShareExportFilters, ShareExportRequest
-from backend.app.export.viewer import render_share_html
+from backend.app.export.viewer import VISUALIZATION_NODE_LIMIT, render_share_html
 from backend.app.ui.service import GraphEdge, GraphNode, GraphView, GraphViewService
 
 LOGGER = logging.getLogger(__name__)
@@ -115,6 +115,7 @@ class ExportBundleBuilder:
             "node_count": len(nodes),
             "edge_count": len(edges),
             "pipeline_version": self._pipeline_version,
+            "visualization_limit": VISUALIZATION_NODE_LIMIT,
         }
 
     @staticmethod
