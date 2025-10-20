@@ -19,11 +19,22 @@ def render_share_html(
 ) -> str:
     """Render an interactive HTML view for a shared graph export."""
 
-    payload = json.dumps(graph_data, separators=(",", ":"))
+    normalised_graph = dict(graph_data)
+    limit_value = normalised_graph.get("visualization_limit")
+    limit: int
+    try:
+        limit_candidate = int(limit_value) if limit_value is not None else VISUALIZATION_NODE_LIMIT
+    except (TypeError, ValueError):
+        limit = VISUALIZATION_NODE_LIMIT
+    else:
+        limit = limit_candidate if limit_candidate > 0 else VISUALIZATION_NODE_LIMIT
+    normalised_graph["visualization_limit"] = limit
+
+    payload = json.dumps(normalised_graph, separators=(",", ":"))
     bundle_info: MutableMapping[str, str] = {
-        "Pipeline version": str(graph_data.get("pipeline_version", "unknown")),
-        "Nodes": str(graph_data.get("node_count", 0)),
-        "Edges": str(graph_data.get("edge_count", 0)),
+        "Pipeline version": str(normalised_graph.get("pipeline_version", "unknown")),
+        "Nodes": str(normalised_graph.get("node_count", 0)),
+        "Edges": str(normalised_graph.get("edge_count", 0)),
     }
     if expires_at is not None:
         bundle_info["Link expires"] = expires_at.isoformat()
@@ -176,6 +187,7 @@ def render_share_html(
     </main>
     <script>
       (function () {{
+        const VISUALIZATION_NODE_LIMIT = __NODE_LIMIT__;
         const graphData = GRAPH_DATA || {{}};
         const downloadUrl = DOWNLOAD_URL;
         const expiresAt = EXPIRES_AT;
