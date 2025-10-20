@@ -49,3 +49,34 @@ def test_render_share_html_ignores_invalid_limit_values() -> None:
     )
     payload = _extract_graph_payload(html)
     assert payload["visualization_limit"] == VISUALIZATION_NODE_LIMIT
+
+
+def test_render_share_html_escapes_script_breakout_sequences() -> None:
+    html = render_share_html(
+        {
+            "nodes": [
+                {
+                    "id": "node-1",
+                    "label": "Node with </script> sequence",
+                    "type": "method",
+                    "times_seen": 1,
+                    "section_distribution": {},
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge-1",
+                    "source": "node-1",
+                    "target": "node-1",
+                    "relation": "related-to",
+                    "confidence": 0.9,
+                    "evidence": {"full_sentence": "Example with </script> and \u2028 lines"},
+                }
+            ],
+            "node_count": 1,
+            "edge_count": 1,
+        }
+    )
+
+    assert "</script>" not in html.split("const GRAPH_DATA = ", 1)[1].split(";", 1)[0]
+    assert "\\u2028" in html

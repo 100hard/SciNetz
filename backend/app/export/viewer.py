@@ -4,11 +4,30 @@ from __future__ import annotations
 
 import html
 import json
+from typing import Final
 from datetime import datetime
 from typing import Mapping, MutableMapping
 
 
-VISUALIZATION_NODE_LIMIT = 200
+VISUALIZATION_NODE_LIMIT: Final[int] = 200
+
+
+def _escape_script_value(value: str) -> str:
+    """Escape a JSON string so it is safe for inline ``<script>`` embedding.
+
+    Args:
+        value: Raw JSON string produced by ``json.dumps``.
+
+    Returns:
+        The escaped string that will not prematurely close the surrounding script
+        tag and preserves line separator characters.
+    """
+
+    return (
+        value.replace("</", "<\\/")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
 
 def render_share_html(
@@ -30,7 +49,9 @@ def render_share_html(
         limit = limit_candidate if limit_candidate > 0 else VISUALIZATION_NODE_LIMIT
     normalised_graph["visualization_limit"] = limit
 
-    payload = json.dumps(normalised_graph, separators=(",", ":"))
+    payload = _escape_script_value(
+        json.dumps(normalised_graph, separators=(",", ":"), ensure_ascii=False)
+    )
     bundle_info: MutableMapping[str, str] = {
         "Pipeline version": str(normalised_graph.get("pipeline_version", "unknown")),
         "Nodes": str(normalised_graph.get("node_count", 0)),
@@ -45,8 +66,16 @@ def render_share_html(
         f"<li><strong>{html.escape(key)}:</strong> {html.escape(value)}</li>"
         for key, value in bundle_info.items()
     )
-    download_js = json.dumps(download_url) if download_url is not None else "null"
-    expires_js = json.dumps(expires_at.isoformat()) if expires_at else "null"
+    download_js = (
+        _escape_script_value(json.dumps(download_url, ensure_ascii=False))
+        if download_url is not None
+        else "null"
+    )
+    expires_js = (
+        _escape_script_value(json.dumps(expires_at.isoformat(), ensure_ascii=False))
+        if expires_at
+        else "null"
+    )
 
     html_template = """<!DOCTYPE html>
 <html lang="en">
