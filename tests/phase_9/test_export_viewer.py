@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from backend.app.export.viewer import VISUALIZATION_NODE_LIMIT, render_share_html
 
@@ -54,7 +55,8 @@ def test_render_share_html_ignores_invalid_limit_values() -> None:
 def test_render_share_html_uses_full_width_graph_container() -> None:
     html = render_share_html({"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
 
-    assert '<div id="graph-canvas"></div>' in html
+    assert "#graph {\n        position: relative;\n        width: 100%;" in html
+    assert '<section class="graph-summary">' in html
     assert "<aside" not in html
 
 
@@ -79,11 +81,33 @@ def test_render_share_html_includes_pointer_pan_handlers() -> None:
     assert 'window.addEventListener("pointermove"' in html
 
 
+def test_render_share_html_draws_labels_on_nodes() -> None:
+    html = render_share_html({"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
+
+    assert "node.labelLines && node.labelLines.length" in html
+    assert "ctx.strokeText(line, nodeX, textY);" in html
+    assert "ctx.fillText(line, nodeX, textY);" in html
+
+
 def test_render_share_html_omits_download_bundle_link() -> None:
     html = render_share_html({"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
 
     assert "Download bundle" not in html
     assert "download-link" not in html
+
+
+def test_render_share_html_marks_expiry_metadata() -> None:
+    html = render_share_html(
+        {
+            "nodes": [],
+            "edges": [],
+            "node_count": 0,
+            "edge_count": 0,
+        },
+        expires_at=datetime.fromisoformat("2024-10-21T12:00:00"),
+    )
+
+    assert 'data-meta="expires"' in html
 
 
 def test_render_share_html_escapes_script_breakout_sequences() -> None:
