@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable, Dict, Mapping, Protocol
 
 from backend.app.export.models import ExportBundle, ShareExportFilters, ShareExportRequest
-from backend.app.export.viewer import render_share_html
+from backend.app.export.viewer import VISUALIZATION_NODE_LIMIT, render_share_html
 from backend.app.ui.service import GraphEdge, GraphNode, GraphView, GraphViewService
 
 LOGGER = logging.getLogger(__name__)
@@ -107,14 +107,15 @@ class ExportBundleBuilder:
         return bundle
 
     def _serialise_graph(self, graph: GraphView, request: ShareExportRequest) -> Dict[str, object]:
-        nodes = [self._normalise_node(node) for node in sorted(graph.nodes, key=lambda n: n.id)]
-        edges = [self._normalise_edge(edge, request) for edge in sorted(graph.edges, key=lambda e: e.id)]
+        nodes = [self._normalise_node(node) for node in graph.nodes]
+        edges = [self._normalise_edge(edge, request) for edge in graph.edges]
         return {
             "nodes": nodes,
             "edges": edges,
             "node_count": len(nodes),
             "edge_count": len(edges),
             "pipeline_version": self._pipeline_version,
+            "visualization_limit": VISUALIZATION_NODE_LIMIT,
         }
 
     @staticmethod
