@@ -278,6 +278,7 @@ def render_share_html(
         const EDGE_LABEL_RECT_HEIGHT = 26;
         const EDGE_DARKEN_BASE = "#0f172a";
         const EDGE_LABEL_LIGHTEN_TARGET = "#f8fafc";
+        const VISUALIZATION_NODE_LIMIT = __NODE_LIMIT__;
         const LAYOUT_AREA_SCALE = 0.74;
         const LAYOUT_ATTRACTION_STRENGTH = 0.044;
         const LAYOUT_REPULSION_STRENGTH = 0.32;
