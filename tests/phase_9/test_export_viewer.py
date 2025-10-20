@@ -81,6 +81,14 @@ def test_render_share_html_includes_pointer_pan_handlers() -> None:
     assert 'window.addEventListener("pointermove"' in html
 
 
+def test_render_share_html_draws_labels_on_nodes() -> None:
+    html = render_share_html({"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
+
+    assert "node.labelLines && node.labelLines.length" in html
+    assert "ctx.strokeText(line, nodeX, textY);" in html
+    assert "ctx.fillText(line, nodeX, textY);" in html
+
+
 def test_render_share_html_omits_download_bundle_link() -> None:
     html = render_share_html({"nodes": [], "edges": [], "node_count": 0, "edge_count": 0})
 

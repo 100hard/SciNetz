@@ -1120,20 +1120,31 @@ def render_share_html(
             ctx.fill();
             ctx.stroke();
           }}
-          ctx.font = "11px Inter, system-ui, sans-serif";
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
+          ctx.lineJoin = "round";
           for (const node of nodes) {{
-            const label = node.data.label || node.id;
             const nodeX = node.screenX;
             const nodeY = node.screenY;
-            const labelWidth = Math.max(48, ctx.measureText(label).width + 12);
-            ctx.save();
-            ctx.fillStyle = "rgba(2, 6, 23, 0.75)";
-            ctx.fillRect(nodeX - labelWidth / 2, nodeY - node.screenRadius - 24, labelWidth, 18);
-            ctx.fillStyle = "#f8fafc";
-            ctx.fillText(label, nodeX, nodeY - node.screenRadius - 15);
-            ctx.restore();
+            const labelLines =
+              node.labelLines && node.labelLines.length
+                ? node.labelLines
+                : [node.data.label || node.id || "Unknown"];
+            const fontSize = clamp(node.screenRadius * 0.36, 10, 26);
+            const lineHeight = fontSize * 1.18;
+            const totalHeight = lineHeight * labelLines.length;
+            let textY = nodeY - totalHeight / 2 + lineHeight / 2;
+            ctx.font = `${{NODE_LABEL_FONT_WEIGHT}} ${{fontSize}}px Inter, system-ui, sans-serif`;
+            ctx.fillStyle = node.labelColor;
+            ctx.strokeStyle = node.labelOutline;
+            ctx.lineWidth = Math.max(1, fontSize / 3.2);
+            for (const line of labelLines) {{
+              if (node.labelOutline) {{
+                ctx.strokeText(line, nodeX, textY);
+              }}
+              ctx.fillText(line, nodeX, textY);
+              textY += lineHeight;
+            }}
           }}
           ctx.restore();
         }}
