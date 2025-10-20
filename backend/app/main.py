@@ -1,22 +1,35 @@
 """FastAPI application factory for SciNets backend."""
 from __future__ import annotations
 
+import base64
+import binascii
+import contextlib
+import io
+import json
 import logging
 import os
 import re
+import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 from uuid import uuid4
 
-import base64
-import binascii
-
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from backend.app.canonicalization import CanonicalizationPipeline
 from backend.app.config import AppConfig, load_config
+from backend.app.export.bundle import ExportBundleBuilder, GraphViewExportProvider
+from backend.app.export.metadata import JSONShareMetadataRepository
+from backend.app.export.models import ShareExportFilters, ShareExportRequest, ShareExportResponse
+from backend.app.export.service import ExportSizeLimitError, ShareExportService
+from backend.app.export.storage import S3BundleStorage
+from backend.app.export.token import ExpiredTokenError, InvalidTokenError, ShareTokenManager
+from backend.app.export.viewer import render_share_html
 from backend.app.extraction import (
     EntityInventoryBuilder,
     LLMResponseCache,
@@ -44,6 +57,11 @@ try:  # pragma: no cover - optional dependency for runtime only
     from neo4j import GraphDatabase
 except Exception:  # pragma: no cover - driver optional for tests
     GraphDatabase = None  # type: ignore[misc,assignment]
+
+try:  # pragma: no cover - optional dependency for runtime only
+    from minio import Minio
+except Exception:  # pragma: no cover - Minio optional for tests
+    Minio = None  # type: ignore[misc,assignment]
 
 
 class ExtractionRequest(BaseModel):
@@ -118,6 +136,31 @@ class GraphResponse(BaseModel):
     edge_count: int
 
 
+class ShareExportAPIRequest(BaseModel):
+    """Request payload for generating a shareable export link via the API."""
+
+    filters: ShareExportFilters
+    include_snippets: bool = True
+    truncate_snippets: bool = False
+    requested_by: str = Field(..., min_length=1)
+
+
+class ShareLinkResolution(BaseModel):
+    """Response payload for resolving a shareable export link."""
+
+    download_url: str
+    expires_at: Optional[datetime]
+    pipeline_version: str
+    bundle_size_mb: float
+    warning: bool = False
+
+
+class ShareLinkRevokeRequest(BaseModel):
+    """Request payload when revoking a share link."""
+
+    revoked_by: str = Field("system", min_length=1)
+
+
 class UISettingsResponse(BaseModel):
     """UI configuration defaults served to the frontend."""
 
@@ -174,6 +217,18 @@ def create_app(
     app.state.ui_config = resolved_config.ui
     graph_view_service = _build_graph_view_service(neo4j_driver)
     app.state.graph_view_service = graph_view_service
+    (
+        share_export_service,
+        share_metadata_repo,
+        share_token_manager,
+        share_storage_client,
+        share_storage_reader,
+    ) = _build_share_export_service(resolved_config, graph_view_service, root_dir)
+    app.state.share_export_service = share_export_service
+    app.state.share_metadata_repository = share_metadata_repo
+    app.state.share_token_manager = share_token_manager
+    app.state.share_storage_client = share_storage_client
+    app.state.share_storage_reader = share_storage_reader
 
     @app.get("/health", tags=["system"], summary="Service health probe")
     def health() -> dict[str, str]:
@@ -199,6 +254,156 @@ def create_app(
             "llm_provider": getattr(qa_llm, "provider", None),
         }
         return UISettingsResponse(graph_defaults=payload, qa=qa_settings)
+
+    @app.post(
+        "/api/export/share",
+        tags=["export"],
+        summary="Create shareable export link",
+        response_model=ShareExportResponse,
+    )
+    def create_share_link(payload: ShareExportAPIRequest) -> ShareExportResponse:
+        """Generate a shareable export link for the provided filters."""
+
+        service: Optional[ShareExportService] = getattr(app.state, "share_export_service", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="Share export service unavailable")
+        request = ShareExportRequest(
+            filters=payload.filters,
+            include_snippets=payload.include_snippets,
+            truncate_snippets=payload.truncate_snippets,
+            requested_by=payload.requested_by,
+            pipeline_version=resolved_config.pipeline.version,
+        )
+        try:
+            response = service.create_share(request)
+        except ExportSizeLimitError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.exception("Failed to create share export link")
+            raise HTTPException(status_code=500, detail="Unable to create share link") from exc
+        return response
+
+    @app.get(
+        "/api/export/share/{token}",
+        tags=["export"],
+        summary="Resolve shareable export link",
+        response_model=ShareLinkResolution,
+        responses={200: {"content": {"text/html": {"description": "Rendered shared graph view"}}}},
+    )
+    def resolve_share_link(
+        token: str,
+        request: Request,
+        format: Optional[str] = Query(default=None),
+    ):
+        """Return a share link resolution payload or rendered HTML view."""
+
+        token_manager: Optional[ShareTokenManager] = getattr(app.state, "share_token_manager", None)
+        metadata_repo = getattr(app.state, "share_metadata_repository", None)
+        storage_client = getattr(app.state, "share_storage_client", None)
+        storage_reader = getattr(app.state, "share_storage_reader", storage_client)
+        if not (token_manager and metadata_repo and storage_client):
+            raise HTTPException(status_code=503, detail="Share export service unavailable")
+        try:
+            decoded = token_manager.decode(token)
+        except ExpiredTokenError as exc:
+            raise HTTPException(status_code=410, detail="Share link expired") from exc
+        except InvalidTokenError as exc:
+            raise HTTPException(status_code=403, detail="Invalid share token") from exc
+
+        record = metadata_repo.fetch(decoded.metadata_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Share link not found")
+        revoked_at_raw = record.get("revoked_at")
+        if revoked_at_raw:
+            raise HTTPException(status_code=410, detail="Share link revoked")
+        record_expires_at: Optional[datetime] = None
+        expires_at_raw = record.get("expires_at")
+        if isinstance(expires_at_raw, datetime):
+            record_expires_at = expires_at_raw
+        elif isinstance(expires_at_raw, str) and expires_at_raw:
+            try:
+                record_expires_at = datetime.fromisoformat(expires_at_raw)
+            except ValueError:
+                LOGGER.warning("Invalid expires_at on share metadata %s", decoded.metadata_id)
+                record_expires_at = None
+        effective_expires_at = record_expires_at or decoded.expires_at
+        now_utc = datetime.now(timezone.utc)
+        if effective_expires_at is not None and now_utc >= effective_expires_at:
+            raise HTTPException(status_code=410, detail="Share link expired")
+        bucket = resolved_config.export.storage.bucket
+        object_key = str(record.get("object_key"))
+        if not object_key:
+            raise HTTPException(status_code=500, detail="Share metadata missing object key")
+        try:
+            download_url = storage_client.presigned_get_object(
+                bucket,
+                object_key,
+                expires=timedelta(minutes=resolved_config.export.signed_url_ttl_minutes),
+            )
+        except Exception as exc:  # pragma: no cover - storage failures logged
+            LOGGER.exception("Failed to issue presigned download URL")
+            raise HTTPException(status_code=500, detail="Unable to generate download URL") from exc
+
+        prefers_html = _prefers_html_response(request, format=format)
+        if prefers_html:
+            try:
+                graph_payload = _load_graph_payload(storage_reader, bucket, object_key)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                LOGGER.exception("Failed to render shared graph view")
+                raise HTTPException(status_code=500, detail="Unable to render share view") from exc
+            html_content = render_share_html(
+                graph_payload,
+                download_url=download_url,
+                expires_at=effective_expires_at,
+            )
+            csp_header = (
+                "default-src 'none'; "
+                "script-src 'unsafe-inline'; "
+                "style-src 'unsafe-inline'; "
+                "img-src data:; "
+                "font-src data:; "
+                "connect-src 'none'; "
+                "frame-ancestors 'none'; "
+                "base-uri 'none'; "
+                "form-action 'none'"
+            )
+            return HTMLResponse(
+                content=html_content,
+                headers={
+                    "Content-Security-Policy": csp_header,
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+
+        size_bytes = float(record.get("size_bytes", 0) or 0)
+        pipeline_version = str(record.get("pipeline_version") or resolved_config.pipeline.version)
+        return ShareLinkResolution(
+            download_url=download_url,
+            expires_at=effective_expires_at,
+            pipeline_version=pipeline_version,
+            bundle_size_mb=size_bytes / 1_000_000 if size_bytes else 0.0,
+            warning=bool(record.get("warning", False)),
+        )
+
+    @app.post(
+        "/api/export/share/{metadata_id}/revoke",
+        tags=["export"],
+        summary="Revoke a shareable export link",
+    )
+    def revoke_share_link(metadata_id: str, payload: ShareLinkRevokeRequest) -> dict[str, object]:
+        """Revoke an existing share link, preventing further downloads."""
+
+        service: Optional[ShareExportService] = getattr(app.state, "share_export_service", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="Share export service unavailable")
+        try:
+            updated = service.revoke_share(metadata_id, revoked_by=payload.revoked_by)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Share metadata not found") from exc
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.exception("Failed to revoke share link")
+            raise HTTPException(status_code=500, detail="Unable to revoke share link") from exc
+        return {"metadata_id": metadata_id, "revoked": True, "previously_revoked": not updated}
 
     @app.post("/api/extract/{paper_id}", tags=["extraction"], summary="Run extraction pipeline")
     def extract(paper_id: str, request: ExtractionRequest) -> dict[str, object]:
@@ -384,6 +589,123 @@ def create_app(
                 LOGGER.exception("Failed to close Neo4j driver")
 
     return app
+
+
+def _build_share_export_service(
+    config: AppConfig,
+    graph_service: GraphViewService,
+    root_dir: Path,
+) -> Tuple[
+    Optional[ShareExportService],
+    Optional[JSONShareMetadataRepository],
+    Optional[ShareTokenManager],
+    Optional[object],
+    Optional[object],
+]:
+    """Construct the share export service if storage credentials are present."""
+
+    if Minio is None:
+        LOGGER.warning("MinIO dependency unavailable; disabling share export")
+        return (None, None, None, None, None)
+
+    endpoint_raw = os.getenv("EXPORT_STORAGE_ENDPOINT")
+    access_key = os.getenv("EXPORT_STORAGE_ACCESS_KEY")
+    secret_key = os.getenv("EXPORT_STORAGE_SECRET_KEY")
+    token_secret = os.getenv("EXPORT_TOKEN_SECRET")
+    if not all([endpoint_raw, access_key, secret_key, token_secret]):
+        LOGGER.warning("Missing share export credentials; set EXPORT_STORAGE_* env vars to enable")
+        return (None, None, None, None, None)
+    secure_default = os.getenv("EXPORT_STORAGE_SECURE", "false").strip().lower() == "true"
+
+    try:
+        internal_endpoint, internal_secure = _normalise_endpoint(endpoint_raw, secure_default)
+    except ValueError:
+        LOGGER.warning("Invalid export storage endpoint '%s'; disabling share export", endpoint_raw)
+        return (None, None, None, None, None)
+
+    try:
+        client = Minio(
+            internal_endpoint,
+            access_key=access_key,
+            secret_key=secret_key,
+            secure=internal_secure,
+            region=config.export.storage.region,
+        )
+        bucket = config.export.storage.bucket
+        if not client.bucket_exists(bucket):
+            client.make_bucket(bucket)
+    except Exception:  # pragma: no cover - external dependency handling
+        LOGGER.exception("Failed to initialise share export storage; disabling feature")
+        return (None, None, None, None, None)
+
+    public_endpoint_raw = (
+        os.getenv("EXPORT_STORAGE_PUBLIC_ENDPOINT")
+        or config.export.storage.public_endpoint
+        or endpoint_raw
+    )
+    try:
+        public_endpoint, public_secure = _normalise_endpoint(public_endpoint_raw, internal_secure)
+    except ValueError:
+        LOGGER.warning(
+            "Invalid public export storage endpoint '%s'; defaulting to internal endpoint",
+            public_endpoint_raw,
+        )
+        public_endpoint, public_secure = internal_endpoint, internal_secure
+
+    try:
+        public_client = Minio(
+            public_endpoint,
+            access_key=access_key,
+            secret_key=secret_key,
+            secure=public_secure,
+            region=config.export.storage.region,
+        )
+        public_client._region_map[config.export.storage.bucket] = config.export.storage.region  # type: ignore[attr-defined]
+    except Exception:
+        LOGGER.exception("Failed to initialise public presign client; disabling share export")
+        return (None, None, None, None, None)
+
+    metadata_path = (root_dir / "data" / "export" / "share_metadata.json").resolve()
+    bundle_dir = (root_dir / "data" / "export" / "bundles").resolve()
+    metadata_repo = JSONShareMetadataRepository(metadata_path)
+    token_manager = ShareTokenManager(secret_key=token_secret)
+    bundle_builder = ExportBundleBuilder(
+        graph_provider=GraphViewExportProvider(graph_service),
+        output_dir=bundle_dir,
+        pipeline_version=config.pipeline.version,
+        snippet_truncate_length=config.export.snippet_truncate_length,
+    )
+    storage = S3BundleStorage(
+        client=client,
+        bucket=config.export.storage.bucket,
+        prefix=config.export.storage.prefix,
+    )
+    service = ShareExportService(
+        bundle_builder=bundle_builder,
+        storage=storage,
+        metadata_repository=metadata_repo,
+        token_manager=token_manager,
+        config=config.export,
+        clock=lambda: datetime.now(timezone.utc),
+    )
+    return service, metadata_repo, token_manager, public_client, client
+
+
+def _normalise_endpoint(raw_endpoint: str, secure_default: bool) -> Tuple[str, bool]:
+    """Parse an endpoint string into host:port and secure flag."""
+
+    if not raw_endpoint:
+        raise ValueError("Endpoint cannot be empty")
+    candidate = raw_endpoint.strip()
+    if "://" not in candidate:
+        scheme = "https" if secure_default else "http"
+        candidate = f"{scheme}://{candidate}"
+    parsed = urlparse(candidate)
+    host = parsed.netloc or parsed.path
+    if not host:
+        raise ValueError(f"Invalid endpoint '{raw_endpoint}'")
+    secure = parsed.scheme == "https"
+    return host, secure
 
 
 def _build_default_orchestrator(
@@ -573,6 +895,46 @@ def _create_llm_extractor(config: AppConfig) -> Optional[OpenAIExtractor]:
     except Exception:  # noqa: BLE001 - dependency failures should disable extractor
         LOGGER.exception("Failed to initialize OpenAI extractor")
         return None
+
+
+def _prefers_html_response(request: Request, *, format: Optional[str]) -> bool:
+    """Determine if the caller prefers an HTML response."""
+
+    if format:
+        lowered = format.lower()
+        if lowered == "html":
+            return True
+        if lowered == "json":
+            return False
+    accept = request.headers.get("accept", "")
+    accept_lower = accept.lower()
+    if "text/html" in accept_lower:
+        return True
+    if "application/json" in accept_lower and "text/html" not in accept_lower:
+        return False
+    return False
+
+
+def _load_graph_payload(storage_client: object, bucket: str, object_key: str) -> Dict[str, object]:
+    """Fetch and decode the stored graph payload from object storage."""
+
+    if not hasattr(storage_client, "get_object"):
+        raise RuntimeError("Storage client does not support get_object")
+    response = storage_client.get_object(bucket, object_key)
+    try:
+        raw_bytes = response.read()
+    finally:
+        with contextlib.suppress(Exception):
+            response.close()
+        with contextlib.suppress(Exception):
+            response.release_conn()
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw_bytes), "r") as archive:
+            graph_bytes = archive.read("graph.json")
+    except KeyError as exc:
+        raise RuntimeError("graph.json missing from export bundle") from exc
+    decoded: Dict[str, object] = json.loads(graph_bytes.decode("utf-8"))
+    return decoded
 
 
 def _create_neo4j_driver(config: AppConfig) -> Optional[object]:

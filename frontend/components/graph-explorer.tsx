@@ -1,10 +1,23 @@
-"use client";
+﻿"use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, Eraser, Filter, Loader2, Maximize2, Minimize2, RefreshCw } from "lucide-react";
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  AlertCircle,
+  Ban,
+  Copy,
+  Eraser,
+  Filter,
+  Link2,
+  Loader2,
+  Maximize2,
+  Minimize2,
+  RefreshCw,
+  Share2,
+  ShieldAlert,
+} from "lucide-react";
 
 import GraphVisualization, { GRAPH_VISUALIZATION_NODE_LIMIT } from "./graph-visualization";
-import apiClient, { extractErrorMessage } from "../lib/http";
+import apiClient, { buildApiUrl, extractErrorMessage } from "../lib/http";
 
 type GraphDefaults = {
   relations: string[];
@@ -61,9 +74,33 @@ type PartitionedGraph = {
   edges: GraphEdge[];
 };
 
+type ShareExportResponseDto = {
+  token: string;
+  expires_at: string | null;
+  bundle_size_mb: number;
+  warning: boolean;
+  pipeline_version: string;
+  metadata_id: string;
+};
+
+type ShareLinkSummary = {
+  metadataId: string;
+  token: string;
+  shareUrl: string;
+  expiresAt: string | null;
+  bundleSizeMb: number;
+  warning: boolean;
+  pipelineVersion: string;
+  revoked: boolean;
+  revoking: boolean;
+  revokedAt?: string;
+};
+
+const SHARE_REQUESTED_BY = "graph-ui";
+
 const formatTimestamp = (value?: string | null) => {
   if (!value) {
-    return "—";
+    return "Never";
   }
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
@@ -75,18 +112,20 @@ const formatTimestamp = (value?: string | null) => {
 const formatSectionDistribution = (distribution: Record<string, number>) => {
   const entries = Object.entries(distribution);
   if (entries.length === 0) {
-    return "—";
+    return "-";
   }
   return entries
     .map(([key, value]) => `${key}: ${value}`)
     .sort()
-    .join(" · ");
+    .join(", ");
 };
+
+const formatBundleSize = (value: number) => `${value.toFixed(2)} MB`;
 
 const stringify = (value: Record<string, unknown>) => {
   const entries = Object.entries(value);
   if (!entries.length) {
-    return "—";
+    return "-";
   }
   try {
     return JSON.stringify(value, null, 2);
@@ -118,6 +157,14 @@ const GraphExplorer = () => {
   const skipNextAutoFetchRef = useRef(false);
   const visualizationContainerRef = useRef<HTMLDivElement | null>(null);
   const relationMenuRef = useRef<HTMLDivElement | null>(null);
+  const [shareLinks, setShareLinks] = useState<ShareLinkSummary[]>([]);
+  const [isCreatingShareLink, setIsCreatingShareLink] = useState(false);
+  const [shareLinkError, setShareLinkError] = useState<string | null>(null);
+  const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
+  const minConfidenceId = useId();
+  const includeCoMentionsId = useId();
+  const limitId = useId();
+  const paperFilterId = useId();
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -158,6 +205,19 @@ const GraphExplorer = () => {
       autoFetchEnabled ? "true" : "false",
     );
   }, [autoFetchEnabled]);
+
+  useEffect(() => {
+    if (!copiedLinkId) {
+      return;
+    }
+    if (typeof window === "undefined") {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setCopiedLinkId(null);
+    }, 2500);
+    return () => window.clearTimeout(timeoutId);
+  }, [copiedLinkId]);
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -274,6 +334,8 @@ const GraphExplorer = () => {
     };
   }, [graph]);
 
+  const hasGraphData = useMemo(() => Boolean(graph && graph.node_count > 0), [graph]);
+
   const partitionedGraphs = useMemo<PartitionedGraph[]>(() => {
     if (!graph) {
       return [];
@@ -375,6 +437,112 @@ const GraphExplorer = () => {
       setFn([...current, value]);
     }
   };
+
+  const handleCreateShareLink = useCallback(async () => {
+    if (isCreatingShareLink) {
+      return;
+    }
+    if (!graph || graph.node_count === 0) {
+      setShareLinkError("Generate a graph view before creating a share link.");
+      return;
+    }
+    setIsCreatingShareLink(true);
+    setShareLinkError(null);
+    const paperIds = paperFilter
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+    const payload = {
+      filters: {
+        min_confidence: minConfidence,
+        relations: selectedRelations,
+        sections: selectedSections,
+        papers: paperIds,
+        include_co_mentions: includeCoMentions,
+      },
+      include_snippets: true,
+      truncate_snippets: false,
+      requested_by: SHARE_REQUESTED_BY,
+    };
+    try {
+      const { data } = await apiClient.post<ShareExportResponseDto>("/api/export/share", payload);
+      const shareUrl = buildApiUrl(`/api/export/share/${data.token}`);
+      setShareLinks((previous) => [
+        {
+          metadataId: data.metadata_id,
+          token: data.token,
+          shareUrl,
+          expiresAt: data.expires_at,
+          bundleSizeMb: data.bundle_size_mb,
+          warning: data.warning,
+          pipelineVersion: data.pipeline_version,
+          revoked: false,
+          revoking: false,
+        },
+        ...previous,
+      ]);
+    } catch (err) {
+      const message = extractErrorMessage(err, "Unable to create share link.");
+      setShareLinkError(message);
+    } finally {
+      setIsCreatingShareLink(false);
+    }
+  }, [graph, includeCoMentions, isCreatingShareLink, minConfidence, paperFilter, selectedRelations, selectedSections]);
+
+  const handleCopyShareLink = useCallback(async (link: ShareLinkSummary) => {
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(link.shareUrl);
+      } else if (typeof document !== "undefined") {
+        const textArea = document.createElement("textarea");
+        textArea.value = link.shareUrl;
+        textArea.setAttribute("readonly", "readonly");
+        textArea.style.position = "absolute";
+        textArea.style.left = "-9999px";
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textArea);
+      }
+      setCopiedLinkId(link.metadataId);
+    } catch (err) {
+      const message = extractErrorMessage(err, "Unable to copy link to clipboard.");
+      setShareLinkError(message);
+    }
+  }, []);
+
+  const handleRevokeShareLink = useCallback(
+    async (metadataId: string) => {
+      setShareLinkError(null);
+      setShareLinks((previous) =>
+        previous.map((link) =>
+          link.metadataId === metadataId ? { ...link, revoking: true } : link,
+        ),
+      );
+      try {
+        await apiClient.post(`/api/export/share/${metadataId}/revoke`, {
+          revoked_by: SHARE_REQUESTED_BY,
+        });
+        const revokedAt = new Date().toISOString();
+        setShareLinks((previous) =>
+          previous.map((link) =>
+            link.metadataId === metadataId
+              ? { ...link, revoking: false, revoked: true, revokedAt }
+              : link,
+          ),
+        );
+      } catch (err) {
+        const message = extractErrorMessage(err, "Unable to revoke share link.");
+        setShareLinkError(message);
+        setShareLinks((previous) =>
+          previous.map((link) =>
+            link.metadataId === metadataId ? { ...link, revoking: false } : link,
+          ),
+        );
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!isRelationMenuOpen) {
@@ -518,13 +686,17 @@ const GraphExplorer = () => {
                   <div className="max-h-64 overflow-y-auto p-2">
                     {relationOptions.map((relation) => {
                       const checked = selectedRelations.includes(relation);
+                      const relationId = `relation-${relation}`;
                       return (
                         <label
                           key={relation}
+                          htmlFor={relationId}
                           className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm capitalize text-foreground transition hover:bg-muted/40"
                         >
                           <input
                             type="checkbox"
+                            id={relationId}
+                            name="relations"
                             checked={checked}
                             onChange={() =>
                               toggleSelection(relation, selectedRelations, setSelectedRelations)
@@ -569,43 +741,54 @@ const GraphExplorer = () => {
           </div>
 
           <div className="space-y-2">
-            <label className="flex flex-col gap-2 text-sm">
+            <label className="flex flex-col gap-2 text-sm" htmlFor={minConfidenceId}>
               <span className="font-medium text-foreground">Minimum confidence</span>
               <input
                 type="number"
                 min={0}
                 max={1}
                 step={0.01}
+                id={minConfidenceId}
+                name="min-confidence"
                 value={minConfidence}
                 onChange={(event) => setMinConfidence(Number(event.target.value))}
                 className="w-32 rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none transition focus:border-transparent focus:ring-2 focus:ring-primary/40"
               />
             </label>
-            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <label
+              className="flex items-center gap-2 text-sm text-muted-foreground"
+              htmlFor={includeCoMentionsId}
+            >
               <input
                 type="checkbox"
+                id={includeCoMentionsId}
+                name="include-co-mentions"
                 checked={includeCoMentions}
                 onChange={(event) => setIncludeCoMentions(event.target.checked)}
                 className="h-4 w-4 rounded border border-input text-primary focus:ring-primary"
               />
-              Include co-mention edges
+              <span>Include co-mention edges</span>
             </label>
-            <label className="flex flex-col gap-2 text-sm">
+            <label className="flex flex-col gap-2 text-sm" htmlFor={limitId}>
               <span className="font-medium text-foreground">Result limit</span>
               <input
                 type="number"
                 min={50}
                 max={2000}
                 step={50}
+                id={limitId}
+                name="graph-limit"
                 value={limit}
                 onChange={(event) => setLimit(Number(event.target.value))}
                 className="w-32 rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none transition focus:border-transparent focus:ring-2 focus:ring-primary/40"
               />
             </label>
-            <label className="flex flex-col gap-2 text-sm">
+            <label className="flex flex-col gap-2 text-sm" htmlFor={paperFilterId}>
               <span className="font-medium text-foreground">Paper filter</span>
               <input
                 type="text"
+                id={paperFilterId}
+                name="paper-filter"
                 value={paperFilter}
                 onChange={(event) => setPaperFilter(event.target.value)}
                 placeholder="Comma-separated IDs"
@@ -628,7 +811,7 @@ const GraphExplorer = () => {
 
       {isLoading && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Fetching graph view…
+          <Loader2 className="h-4 w-4 animate-spin" /> Fetching graph viewâ€¦
         </div>
       )}
 
@@ -645,6 +828,88 @@ const GraphExplorer = () => {
         </section>
       )}
 
+      {(graph || shareLinks.length > 0 || shareLinkError) && (
+        <section className="space-y-4 rounded-lg border bg-card p-6 shadow-sm">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-lg font-semibold text-foreground">Shareable links</h3>
+              <p className="text-sm text-muted-foreground">
+                Create downloadable bundles for collaborators. Links expire automatically and can be revoked at any time.
+              </p>
+            </div>
+          </div>
+          {shareLinkError && (
+            <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <AlertCircle className="mt-0.5 h-4 w-4" />
+              <div>
+                <p className="font-medium">Share link issue</p>
+                <p className="text-xs text-destructive/80">{shareLinkError}</p>
+              </div>
+            </div>
+          )}
+          {shareLinks.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No share links yet. Use the &ldquo;Create share link&rdquo; button in the graph preview to generate one.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {shareLinks.map((link) => (
+                <div
+                  key={link.metadataId}
+                  className="rounded-md border border-border/70 bg-background px-4 py-3 shadow-sm"
+                >
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Link2 className="h-4 w-4 text-muted-foreground" />
+                        <code className="break-all text-xs text-foreground">{link.shareUrl}</code>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                        <span>Expires: {formatTimestamp(link.expiresAt)}</span>
+                        <span>Size: {formatBundleSize(link.bundleSizeMb)}</span>
+                        <span>Pipeline: {link.pipelineVersion}</span>
+                        {link.revoked ? (
+                          <span className="rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-700">
+                            Revoked{link.revokedAt ? ` (${formatTimestamp(link.revokedAt)})` : ""}
+                          </span>
+                        ) : null}
+                      </div>
+                      {link.warning && !link.revoked ? (
+                        <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
+                          <ShieldAlert className="mt-0.5 h-4 w-4" />
+                          <p>
+                            Bundle size exceeded the warning threshold. Consider truncating snippets or narrowing filters for smaller exports.
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleCopyShareLink(link)}
+                        className="inline-flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-xs font-medium text-foreground transition hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <Copy className="h-4 w-4" />
+                        {copiedLinkId === link.metadataId ? "Copied!" : "Copy link"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRevokeShareLink(link.metadataId)}
+                        className="inline-flex items-center gap-2 rounded-md border border-destructive/60 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/20 focus:outline-none focus:ring-2 focus:ring-destructive/40 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={link.revoking || link.revoked}
+                      >
+                        {link.revoking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Ban className="h-4 w-4" />}
+                        {link.revoked ? "Revoked" : "Revoke"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {graph && (
         <Fragment>
           <section ref={visualizationContainerRef} className={sectionClassName}>
@@ -657,6 +922,15 @@ const GraphExplorer = () => {
                   </p>
                 </div>
                 <div className={controlsClassName}>
+                  <button
+                    type="button"
+                    onClick={handleCreateShareLink}
+                    disabled={isCreatingShareLink || !hasGraphData || isLoading}
+                    className="inline-flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium text-foreground transition hover:bg-muted focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isCreatingShareLink ? <Loader2 className="h-4 w-4 animate-spin" /> : <Share2 className="h-4 w-4" />}
+                    {isCreatingShareLink ? "Creatingâ€¦" : "Create share link"}
+                  </button>
                   {graph.nodes.length > GRAPH_VISUALIZATION_NODE_LIMIT && (
                     <p className="text-xs text-muted-foreground">
                       Showing first {GRAPH_VISUALIZATION_NODE_LIMIT} nodes out of {graph.nodes.length}.
@@ -713,8 +987,8 @@ const GraphExplorer = () => {
                           <p className="font-medium">{node.label}</p>
                           <p className="text-xs text-muted-foreground">{node.id}</p>
                         </td>
-                        <td className="px-4 py-3 text-sm text-muted-foreground">{node.type ?? "—"}</td>
-                        <td className="px-4 py-3 text-xs text-muted-foreground">{node.aliases.join(", ") || "—"}</td>
+                        <td className="px-4 py-3 text-sm text-muted-foreground">{node.type ?? "â€”"}</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{node.aliases.join(", ") || "â€”"}</td>
                         <td className="px-4 py-3 text-sm text-muted-foreground">{node.times_seen}</td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">{formatSectionDistribution(node.section_distribution)}</td>
                       </tr>
@@ -774,3 +1048,9 @@ const GraphExplorer = () => {
 };
 
 export default GraphExplorer;
+
+
+
+
+
+

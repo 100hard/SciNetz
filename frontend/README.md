@@ -23,6 +23,7 @@ Shared Axios configuration lives in [`lib/http.ts`](./lib/http.ts). The helper e
 * Fetches graph snapshots through `GET /api/ui/graph`, respecting the default filters returned by `GET /api/ui/settings`.
 * Presents nodes and edges as sortable tables so the UI no longer depends on Cytoscape assets.
 * Highlights edge evidence, conflicting flags, and timestamps to align with the backend contracts.
+* Generates shareable export links via `POST /api/export/share`, surfaces warning states, and lets users revoke links directly from the dashboard.
 
 ## QA panel
 
@@ -32,4 +33,4 @@ Shared Axios configuration lives in [`lib/http.ts`](./lib/http.ts). The helper e
 
 ## Development tips
 
-Run `npm run dev` in `frontend/` with `NEXT_PUBLIC_API_URL` pointing at a local FastAPI instance. When adding new API calls, import the shared `apiClient` to inherit consistent error handling and base URL logic.
+Run `npm run dev` in `frontend/` with `NEXT_PUBLIC_API_URL` pointing at a local FastAPI instance. When adding new API calls, import the shared `apiClient` to inherit consistent error handling and base URL logic. Share-link actions require the backend to expose the Phase 9 endpoints with object storage credentials (`EXPORT_STORAGE_ENDPOINT`, `EXPORT_STORAGE_ACCESS_KEY`, `EXPORT_STORAGE_SECRET_KEY`, `EXPORT_TOKEN_SECRET`) configured.

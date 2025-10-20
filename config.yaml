@@ -1,40 +1,38 @@
 pipeline:
-  version: "1.0.0"
-
+  version: 1.0.0
 parsing:
   section_fuzzy_threshold: 0.85
   metadata_max_pages: 2
   metadata_known_venues:
-    - Nature
-    - Science
-    - The Lancet
-    - Cell
-    - Proceedings of the National Academy of Sciences
-    - IEEE Transactions on Pattern Analysis and Machine Intelligence
-    - NeurIPS
-    - ACL
-    - ICML
-    - ICLR
+  - Nature
+  - Science
+  - The Lancet
+  - Cell
+  - Proceedings of the National Academy of Sciences
+  - IEEE Transactions on Pattern Analysis and Machine Intelligence
+  - NeurIPS
+  - ACL
+  - ICML
+  - ICLR
   section_aliases:
     Abstract:
-      - Abstract
+    - Abstract
     Introduction:
-      - Introduction
-      - Intro
-      - Background
+    - Introduction
+    - Intro
+    - Background
     Methods:
-      - Methods
-      - Methodology
-      - Approach
+    - Methods
+    - Methodology
+    - Approach
     Results:
-      - Results
-      - Findings
+    - Results
+    - Findings
     Discussion:
-      - Discussion
-      - Conclusion
+    - Discussion
+    - Conclusion
     Conclusion:
-      - Conclusion
-
+    - Conclusion
 extraction:
   max_triples_per_chunk_base: 15
   tokens_per_triple: 60
@@ -42,12 +40,12 @@ extraction:
   chunk_size_tokens: 512
   chunk_overlap_tokens: 50
   use_entity_inventory: false
-  llm_provider: "openai"
+  llm_provider: openai
   fuzzy_match_threshold: 0.9
-  openai_model: "gpt-4o-mini"
-  openai_base_url: "https://api.openai.com/v1"
+  openai_model: gpt-4o-mini
+  openai_base_url: https://api.openai.com/v1
   openai_timeout_seconds: 60
-  openai_prompt_version: "phase3-v4"
+  openai_prompt_version: phase3-v4
   openai_max_retries: 2
   openai_temperature: 0.0
   openai_max_output_tokens: 3200
@@ -55,35 +53,34 @@ extraction:
   openai_backoff_initial_seconds: 0.5
   openai_backoff_max_seconds: 4.0
   openai_retry_statuses:
-    - 429
-    - 500
-    - 502
-    - 503
-    - 504
-  cache_dir: "data/cache"
-  response_cache_filename: "openai_responses.json"
-  token_cache_filename: "openai_token_budget.json"
+  - 429
+  - 500
+  - 502
+  - 503
+  - 504
+  cache_dir: data/cache
+  response_cache_filename: openai_responses.json
+  token_cache_filename: openai_token_budget.json
   entity_types:
-    - Method
-    - Dataset
-    - Metric
-    - Task
-    - Material
-    - Other
-
+  - Method
+  - Dataset
+  - Metric
+  - Task
+  - Material
+  - Other
 canonicalization:
   base_threshold: 0.88
   polysemy_threshold: 0.92
   polysemy_section_diversity: 3
   polysemy_blocklist:
-    - model
-    - method
-    - system
-    - framework
-    - dataset
-    - algorithm
-    - network
-    - approach
+  - model
+  - method
+  - system
+  - framework
+  - dataset
+  - algorithm
+  - network
+  - approach
   lexical_similarity_threshold: 0.9
   lexical_similarity_bonus: 0.04
   type_match_bonus: 0.03
@@ -94,321 +91,319 @@ canonicalization:
   long_alias_penalty: 0.05
   sentence_alias_penalty: 0.08
   cross_type_penalty: 0.06
-
 relations:
   normalization_patterns:
-    - canonical: uses
-      swap: false
-      phrases:
-        - uses
-        - utilizes
-        - employs
-        - leverages
-    - canonical: uses
-      swap: true
-      phrases:
-        - is used by
-        - was used by
-        - is leveraged by
-    - canonical: trained-on
-      swap: false
-      phrases:
-        - trained on
-        - is trained on
-        - was trained on
-        - applied to
-        - is applied to
-    - canonical: evaluated-on
-      swap: false
-      phrases:
-        - evaluated on
-        - tested on
-        - assessed on
-        - measured on
-        - validated on
-    - canonical: compared-to
-      swap: false
-      phrases:
-        - compared to
-        - compared with
-        - contrasted with
-    - canonical: benchmarked-against
-      swap: false
-      phrases:
-        - benchmarked against
-        - benchmarked versus
-        - benchmarked against the
-    - canonical: outperforms
-      swap: false
-      phrases:
-        - outperforms
-        - performs better than
-        - surpasses
-        - is superior to
-    - canonical: achieves-state-of-the-art-on
-      swap: false
-      phrases:
-        - achieves state of the art on
-        - achieves state-of-the-art on
-        - achieves sota on
-    - canonical: improves
-      swap: false
-      phrases:
-        - improves
-        - increases
-        - enhances
-        - boosts
-        - raises
-    - canonical: reduces
-      swap: false
-      phrases:
-        - reduces
-        - decreases
-        - lowers
-        - mitigates
-        - diminishes
-    - canonical: builds-upon
-      swap: false
-      phrases:
-        - builds upon
-        - builds on
-        - built upon
-    - canonical: extends-architecture-of
-      swap: false
-      phrases:
-        - extends the architecture of
-        - extends architecture of
-        - extension of
-    - canonical: introduces-concept-of
-      swap: false
-      phrases:
-        - introduces the concept of
-        - introduces concept of
-        - introduces the notion of
-    - canonical: proposes
-      swap: false
-      phrases:
-        - proposes
-        - we propose
-        - proposed
-    - canonical: demonstrates
-      swap: false
-      phrases:
-        - demonstrates
-        - demonstrate that
-        - demonstrated that
-    - canonical: depends-on
-      swap: false
-      phrases:
-        - depends on
-        - relies on
-        - reliant on
-    - canonical: validated-by
-      swap: false
-      phrases:
-        - validates
-        - validation via
-        - validates the
-    - canonical: validated-by
-      swap: true
-      phrases:
-        - validated by
-        - confirmed by
-        - corroborated by
-    - canonical: implemented-in
-      swap: false
-      phrases:
-        - implemented in
-        - implemented with
-        - implemented using
-    - canonical: requires
-      swap: false
-      phrases:
-        - requires
-        - requirement for
-        - needs
-        - necessitates
-    - canonical: requires-for
-      swap: false
-      phrases:
-        - required for
-        - required to
-        - required in
-    - canonical: enables
-      swap: false
-      phrases:
-        - enables
-        - allows
-        - facilitates
-        - makes it possible
-    - canonical: enables
-      swap: true
-      phrases:
-        - enabled by
-        - made possible by
-    - canonical: mediates
-      swap: false
-      phrases:
-        - mediates
-        - mediates the effect of
-        - mediated the
-        - mediate
-    - canonical: causes
-      swap: false
-      phrases:
-        - causes
-        - leads to
-        - induces
-        - drives
-    - canonical: results-in
-      swap: false
-      phrases:
-        - results in
-        - gives rise to
-        - produces
-        - emits
-    - canonical: correlates-with
-      swap: false
-      phrases:
-        - correlates with
-        - correlates to
-        - associated with
-        - relates to
-        - corresponds with
-    - canonical: defined-as
-      swap: false
-      phrases:
-        - defined as
-        - is defined as
-        - refers to
-    - canonical: part-of
-      swap: false
-      phrases:
-        - part of
-    - canonical: component-of
-      swap: false
-      phrases:
-        - component of
-        - module of
-        - subcomponent of
-    - canonical: belongs-to
-      swap: false
-      phrases:
-        - belongs to
-        - member of
-        - falls under
-    - canonical: is-a
-      swap: false
-      phrases:
-        - is a
-        - is an
-        - represents a
-    - canonical: instance-of
-      swap: false
-      phrases:
-        - instance of
-        - specific instance of
-        - concrete instance of
-    - canonical: composed-of
-      swap: false
-      phrases:
-        - composed of
-        - consists of
-        - comprised of
-    - canonical: synthesized-from
-      swap: false
-      phrases:
-        - synthesized from
-        - synthesised from
-        - synthesized using
-    - canonical: crystallizes-as
-      swap: false
-      phrases:
-        - crystallizes as
-        - crystallises as
-        - crystallizes into
-    - canonical: derived-from
-      swap: false
-      phrases:
-        - derived from
-        - obtained from
-        - derived through
-    - canonical: present-in
-      swap: false
-      phrases:
-        - present in
-        - expressed in
-        - localized in
-    - canonical: interacts-with
-      swap: false
-      phrases:
-        - interacts with
-        - interacting with
-        - interacts via
-        - interact with
-    - canonical: inhibits
-      swap: false
-      phrases:
-        - inhibits
-        - suppresses
-        - represses
-    - canonical: activates
-      swap: false
-      phrases:
-        - activates
-        - triggers
-        - activates the
-    - canonical: binds-to
-      swap: false
-      phrases:
-        - binds to
-        - binds with
-        - binds onto
-    - canonical: catalyzes
-      swap: false
-      phrases:
-        - catalyzes
-        - catalyses
-    - canonical: detects
-      swap: false
-      phrases:
-        - detects
-        - detected
-        - detects the
-    - canonical: detects
-      swap: true
-      phrases:
-        - detected by
-        - detected via
-    - canonical: observes
-      swap: false
-      phrases:
-        - observes
-        - observed
-        - observes the
-    - canonical: observes
-      swap: true
-      phrases:
-        - observed by
-        - observed via
-    - canonical: measures
-      swap: false
-      phrases:
-        - measures
-        - measured
-        - measures the
-    - canonical: measures
-      swap: true
-      phrases:
-        - measured by
-        - measured using
-    - canonical: infers-from
-      swap: false
-      phrases:
-        - infers from
-        - inferred from
-        - infers the presence from
-
+  - canonical: uses
+    swap: false
+    phrases:
+    - uses
+    - utilizes
+    - employs
+    - leverages
+  - canonical: uses
+    swap: true
+    phrases:
+    - is used by
+    - was used by
+    - is leveraged by
+  - canonical: trained-on
+    swap: false
+    phrases:
+    - trained on
+    - is trained on
+    - was trained on
+    - applied to
+    - is applied to
+  - canonical: evaluated-on
+    swap: false
+    phrases:
+    - evaluated on
+    - tested on
+    - assessed on
+    - measured on
+    - validated on
+  - canonical: compared-to
+    swap: false
+    phrases:
+    - compared to
+    - compared with
+    - contrasted with
+  - canonical: benchmarked-against
+    swap: false
+    phrases:
+    - benchmarked against
+    - benchmarked versus
+    - benchmarked against the
+  - canonical: outperforms
+    swap: false
+    phrases:
+    - outperforms
+    - performs better than
+    - surpasses
+    - is superior to
+  - canonical: achieves-state-of-the-art-on
+    swap: false
+    phrases:
+    - achieves state of the art on
+    - achieves state-of-the-art on
+    - achieves sota on
+  - canonical: improves
+    swap: false
+    phrases:
+    - improves
+    - increases
+    - enhances
+    - boosts
+    - raises
+  - canonical: reduces
+    swap: false
+    phrases:
+    - reduces
+    - decreases
+    - lowers
+    - mitigates
+    - diminishes
+  - canonical: builds-upon
+    swap: false
+    phrases:
+    - builds upon
+    - builds on
+    - built upon
+  - canonical: extends-architecture-of
+    swap: false
+    phrases:
+    - extends the architecture of
+    - extends architecture of
+    - extension of
+  - canonical: introduces-concept-of
+    swap: false
+    phrases:
+    - introduces the concept of
+    - introduces concept of
+    - introduces the notion of
+  - canonical: proposes
+    swap: false
+    phrases:
+    - proposes
+    - we propose
+    - proposed
+  - canonical: demonstrates
+    swap: false
+    phrases:
+    - demonstrates
+    - demonstrate that
+    - demonstrated that
+  - canonical: depends-on
+    swap: false
+    phrases:
+    - depends on
+    - relies on
+    - reliant on
+  - canonical: validated-by
+    swap: false
+    phrases:
+    - validates
+    - validation via
+    - validates the
+  - canonical: validated-by
+    swap: true
+    phrases:
+    - validated by
+    - confirmed by
+    - corroborated by
+  - canonical: implemented-in
+    swap: false
+    phrases:
+    - implemented in
+    - implemented with
+    - implemented using
+  - canonical: requires
+    swap: false
+    phrases:
+    - requires
+    - requirement for
+    - needs
+    - necessitates
+  - canonical: requires-for
+    swap: false
+    phrases:
+    - required for
+    - required to
+    - required in
+  - canonical: enables
+    swap: false
+    phrases:
+    - enables
+    - allows
+    - facilitates
+    - makes it possible
+  - canonical: enables
+    swap: true
+    phrases:
+    - enabled by
+    - made possible by
+  - canonical: mediates
+    swap: false
+    phrases:
+    - mediates
+    - mediates the effect of
+    - mediated the
+    - mediate
+  - canonical: causes
+    swap: false
+    phrases:
+    - causes
+    - leads to
+    - induces
+    - drives
+  - canonical: results-in
+    swap: false
+    phrases:
+    - results in
+    - gives rise to
+    - produces
+    - emits
+  - canonical: correlates-with
+    swap: false
+    phrases:
+    - correlates with
+    - correlates to
+    - associated with
+    - relates to
+    - corresponds with
+  - canonical: defined-as
+    swap: false
+    phrases:
+    - defined as
+    - is defined as
+    - refers to
+  - canonical: part-of
+    swap: false
+    phrases:
+    - part of
+  - canonical: component-of
+    swap: false
+    phrases:
+    - component of
+    - module of
+    - subcomponent of
+  - canonical: belongs-to
+    swap: false
+    phrases:
+    - belongs to
+    - member of
+    - falls under
+  - canonical: is-a
+    swap: false
+    phrases:
+    - is a
+    - is an
+    - represents a
+  - canonical: instance-of
+    swap: false
+    phrases:
+    - instance of
+    - specific instance of
+    - concrete instance of
+  - canonical: composed-of
+    swap: false
+    phrases:
+    - composed of
+    - consists of
+    - comprised of
+  - canonical: synthesized-from
+    swap: false
+    phrases:
+    - synthesized from
+    - synthesised from
+    - synthesized using
+  - canonical: crystallizes-as
+    swap: false
+    phrases:
+    - crystallizes as
+    - crystallises as
+    - crystallizes into
+  - canonical: derived-from
+    swap: false
+    phrases:
+    - derived from
+    - obtained from
+    - derived through
+  - canonical: present-in
+    swap: false
+    phrases:
+    - present in
+    - expressed in
+    - localized in
+  - canonical: interacts-with
+    swap: false
+    phrases:
+    - interacts with
+    - interacting with
+    - interacts via
+    - interact with
+  - canonical: inhibits
+    swap: false
+    phrases:
+    - inhibits
+    - suppresses
+    - represses
+  - canonical: activates
+    swap: false
+    phrases:
+    - activates
+    - triggers
+    - activates the
+  - canonical: binds-to
+    swap: false
+    phrases:
+    - binds to
+    - binds with
+    - binds onto
+  - canonical: catalyzes
+    swap: false
+    phrases:
+    - catalyzes
+    - catalyses
+  - canonical: detects
+    swap: false
+    phrases:
+    - detects
+    - detected
+    - detects the
+  - canonical: detects
+    swap: true
+    phrases:
+    - detected by
+    - detected via
+  - canonical: observes
+    swap: false
+    phrases:
+    - observes
+    - observed
+    - observes the
+  - canonical: observes
+    swap: true
+    phrases:
+    - observed by
+    - observed via
+  - canonical: measures
+    swap: false
+    phrases:
+    - measures
+    - measured
+    - measures the
+  - canonical: measures
+    swap: true
+    phrases:
+    - measured by
+    - measured using
+  - canonical: infers-from
+    swap: false
+    phrases:
+    - infers from
+    - inferred from
+    - infers the presence from
 graph:
   relation_semantics:
     uses: directional
@@ -459,18 +454,16 @@ graph:
     observes: directional
     measures: directional
     infers-from: directional
-  uri: "bolt://neo4j:7687"
-  username: "neo4j"
-  password: "neo4jpassword"
+  uri: bolt://neo4j:7687
+  username: neo4j
+  password: neo4jpassword
   entity_batch_size: 200
   edge_batch_size: 500
-
 co_mention:
   enabled: true
   min_occurrences: 2
   confidence: 0.3
   max_distance_chars: 200
-
 qa:
   entity_match_threshold: 0.83
   expand_neighbors: true
@@ -479,11 +472,11 @@ qa:
   max_results: 50
   llm:
     enabled: true
-    provider: "openai"
-    openai_model: "gpt-4o-mini"
-    openai_base_url: "https://api.openai.com/v1"
+    provider: openai
+    openai_model: gpt-4o-mini
+    openai_base_url: https://api.openai.com/v1
     openai_timeout_seconds: 60
-    openai_prompt_version: "qa-v1"
+    openai_prompt_version: qa-v1
     openai_max_retries: 2
     openai_temperature: 0.1
     openai_max_output_tokens: 600
@@ -491,78 +484,83 @@ qa:
     openai_backoff_initial_seconds: 0.5
     openai_backoff_max_seconds: 4.0
     openai_retry_statuses:
-      - 429
-      - 500
-      - 502
-      - 503
-      - 504
-
+    - 429
+    - 500
+    - 502
+    - 503
+    - 504
 export:
-  max_size_mb: 5
-  warn_threshold_mb: 3
+  max_bundle_mb: 5
+  warn_bundle_mb: 3
   snippet_truncate_length: 200
-
+  link_ttl_hours: null
+  signed_url_ttl_minutes: 10
+  storage:
+    bucket: scinets-test-exports
+    region: us-east-1
+    prefix: exports
+    public_endpoint: http://localhost:9000
 ui:
-  upload_dir: "data/uploads"
-  paper_registry_path: "data/ui/papers.json"
+  upload_dir: data/uploads
+  paper_registry_path: data/ui/papers.json
   allowed_origins:
-    - "http://localhost:3000"
-    - "http://127.0.0.1:3000"
-    - "http://0.0.0.0:3000"
+  - http://localhost:3000
+  - http://127.0.0.1:3000
+  - http://0.0.0.0:3000
   graph_defaults:
     relations:
-      - defined-as
-      - uses
-      - trained-on
-      - evaluated-on
-      - outperforms
-      - beats
-      - improves
-      - reduces
-      - causes
-      - alleviates
-      - part-of
-      - is-a
-      - related-to
-      - compared-to
-      - similar-to
-      - correlates-with
-      - benchmarked-against
-      - achieves-state-of-the-art-on
-      - builds-upon
-      - extends-architecture-of
-      - introduces-concept-of
-      - proposes
-      - demonstrates
-      - depends-on
-      - validated-by
-      - implemented-in
-      - requires
-      - requires-for
-      - enables
-      - mediates
-      - results-in
-      - instance-of
-      - component-of
-      - belongs-to
-      - composed-of
-      - synthesized-from
-      - crystallizes-as
-      - derived-from
-      - present-in
-      - interacts-with
-      - inhibits
-      - activates
-      - binds-to
-      - catalyzes
-      - detects
-      - observes
-      - measures
-      - infers-from
+    - defined-as
+    - uses
+    - trained-on
+    - evaluated-on
+    - outperforms
+    - beats
+    - improves
+    - reduces
+    - causes
+    - alleviates
+    - part-of
+    - is-a
+    - related-to
+    - compared-to
+    - similar-to
+    - correlates-with
+    - benchmarked-against
+    - achieves-state-of-the-art-on
+    - builds-upon
+    - extends-architecture-of
+    - introduces-concept-of
+    - proposes
+    - demonstrates
+    - depends-on
+    - validated-by
+    - implemented-in
+    - requires
+    - requires-for
+    - enables
+    - mediates
+    - results-in
+    - instance-of
+    - component-of
+    - belongs-to
+    - composed-of
+    - synthesized-from
+    - crystallizes-as
+    - derived-from
+    - present-in
+    - interacts-with
+    - inhibits
+    - activates
+    - binds-to
+    - catalyzes
+    - detects
+    - observes
+    - measures
+    - infers-from
     min_confidence: 0.5
     sections:
-      - Results
-      - Methods
+    - Results
+    - Methods
     show_co_mentions: false
     layout: fcose
   lexical_similarity_threshold: 0.9

@@ -14,7 +14,7 @@
 | 6 | Orchestrator w/ Co-mention Fallback | ✅ Completed (idempotent pipeline w/ co-mention fallback) |
 | 7 | Graph-first QA | ✅ Completed (entity resolution, multi-hop QA, fallback evidence) |
 | 8 | UI (Graph + Evidence + Smart Defaults) | ✅ Completed (paper dashboard, graph explorer, QA chat) |
-| 9 | Interactive HTML Export | Pending (export API and offline bundle not built) |
+| 9 | Shareable Export Links | Pending (link generation + storage pipeline not built) |
 | 10 | Observability & KPIs | Pending (metrics logging and dashboards outstanding) |
 | 11 | Reprocessing & Versioning | Pending (deprecation strategy and toggles not implemented) |
 | 12 | Acceptance Testing & Evaluation | Pending (evaluation harness and KPI review not started) |
@@ -73,8 +73,8 @@ Create a central config with these critical parameters:
 - `qa.neighbor_confidence_threshold`: 0.7
 - `qa.max_hops`: 2
 - `qa.max_results`: 50
-- `export.max_size_mb`: 5
-- `export.warn_threshold_mb`: 3
+- `export.max_bundle_mb`: 5
+- `export.warn_bundle_mb`: 3
 - `export.snippet_truncate_length`: 200
 
 ### Tests
@@ -723,102 +723,87 @@ Triggered by clicking an edge.
 
 ---
 
-## Phase 9 — Interactive HTML Export (1–2 days)
+## Phase 9 - Shareable Export Links (1-2 days)
 
 ### Goal
-One-click self-contained HTML that works offline; prevent size explosion.
+Generate deterministic export bundles (HTML plus graph artifacts) and deliver them via time-limited shareable links while preserving evidence provenance and size guardrails.
 
-### Endpoint
+### Endpoints
 
-`GET /api/export/html?min_conf=0.5&relations=uses,trained-on&sections=Results,Methods&include_snippets=true&truncate_snippets=false&papers=doc1,doc2`
+- `POST /api/export/share` — accepts filters (`min_conf`, `relations`, `sections`, `papers`, `include_snippets`, `truncate_snippets`) and enqueues bundle generation.
+- `GET /api/export/share/{token}` — validates token/TTL, logs access, and returns a signed download URL (or streams the bundle).
+
+### Config dependencies (`config.yaml`)
+- `export.max_bundle_mb` (replaces `export.max_bundle_mb`)
+- `export.warn_bundle_mb`
+- `export.link_ttl_hours`
+- `export.storage.bucket`
+- `export.storage.region`
+- `export.storage.prefix`
+- `export.signed_url_ttl_minutes`
+
+No hardcoded thresholds; every limit or TTL must come from config.
 
 ### Process
 
-**Step 1: Query Neo4j**
-- Apply all filters (confidence, relations, sections, papers)
-- Return {nodes[], edges[]} with evidence attached
+**Step 1: Build deterministic bundle**
+- Query Neo4j with provided filters (confidence, relations, sections, papers).
+- Return `{nodes[], edges[]}` with evidence and `pipeline_version` on every edge.
+- Reuse Phase 8 evidence components to create `export/scinets_view.html` with inline graph data.
+- Generate companion artifacts: `graph.json`, `graph.graphml`, `README_export.md`, `manifest.json` (hashes, filters, pipeline version, bundle size, creation timestamp).
 
-**Step 2: Size check**
+**Step 2: Enforce guardrails**
 ```
-estimated_size_mb = (len(json.dumps(nodes)) + len(json.dumps(edges))) / 1_000_000
+estimated_size_mb = bundle_size_bytes / 1_000_000
 
-if estimated_size_mb > warn_threshold_mb (3 MB):
-  return warning: "Export is large. Options: 
-    - Truncate snippets (first 200 chars)
-    - Exclude snippets (just IDs)
-    - Filter to fewer papers"
+if estimated_size_mb > config.export.warn_bundle_mb:
+  surface warning so UI can prompt user options (truncate snippets, reduce scope)
 
-if estimated_size_mb > max_size_mb (5 MB):
-  return error: "Export too large. Please apply stricter filters or paginate by paper."
+if estimated_size_mb > config.export.max_bundle_mb:
+  abort job with actionable error message
 ```
+- Apply snippet truncation/exclusion based on config before size check (`export.snippet_truncate_length`).
+- Never strip evidence metadata; only adjust snippet text.
 
-**Step 3: Snippet handling**
+**Step 3: Persist bundle**
+- Order files deterministically and create `export_{timestamp}.zip` with SHA256 recorded in manifest.
+- Upload to object storage (`s3://{bucket}/{prefix}/{paper_scope}/{timestamp}/export.zip`) using pipeline-versioned paths.
+- Write metadata row (Postgres or Neo4j sidecar): `token_id`, `bundle_uri`, `sha256`, `pipeline_version`, filters, `expires_at`, `size_mb`, `created_by`, `warning_acknowledged`.
 
-If `truncate_snippets=true`:
-- Keep only first 200 chars of evidence.snippet
-- Add "... [truncated]" indicator
-- Store full snippets in a separate `full_snippets.json` (optional download)
+**Step 4: Mint share token**
+- Generate opaque token (UUIDv4 + HMAC) expiring at `now + config.export.link_ttl_hours`.
+- Response from `POST /api/export/share` includes token, expiry, bundle size, warning flag, and `pipeline_version`.
+- Emit audit event capturing requester, filters, bundle hash.
 
-If `include_snippets=false`:
-- Store only evidence IDs
-- Provide separate endpoint to fetch snippet on demand (requires backend)
-- Not truly offline, but keeps file size small
+**Step 5: Serve downloads**
+- `GET /api/export/share/{token}` validates token, expiry, revocation status, and manifest hash (fail-soft with descriptive errors + logs).
+- Return pre-signed URL (TTL = `config.export.signed_url_ttl_minutes`) or stream file directly with `Content-Disposition` set.
+- Provide admin revocation endpoint (`DELETE /api/export/share/{token}`) to invalidate tokens and delete bundle when necessary.
 
-**Step 4: Render HTML template**
-
-Template: `export/scinets_view.html`
-
-**Embedded components:**
-- Cytoscape.js library (from CDN or embedded)
-- Graph data as inline JSON in `<script>` tag
-- Interactive controls:
-  - Search box (filter nodes/edges by text)
-  - Relation checkboxes (multi-select)
-  - Min confidence slider
-  - Section toggles
-  - Reset layout button
-  - Zoom controls
-- Evidence side panel (same as Phase 8)
-- Legend: relation colors, confidence scale
-
-**Styling:**
-- Same visual design as web UI (consistency)
-- Color by relation_norm
-- Node size by degree
-- Edge thickness by confidence
-
-**Buttons:**
-- Download PNG/SVG (via Cytoscape.js export)
-- Download graph.json (raw data)
-- Download graph.graphml (NetworkX-compatible)
-- Toggle legend
-
-**Step 5: Additional exports**
-
-Generate these files alongside HTML:
-- `graph.json`: raw nodes/edges in portable JSON format
-- `graph.graphml`: NetworkX-compatible XML
-- `README_export.md`: explains schema, generation date, filters applied, pipeline version
-- If bundle requested: zip all files → `export_{timestamp}.zip`
+**Step 6: Lifecycle management**
+- Scheduled job scans for expired or revoked bundles, deletes from object storage, and archives minimal audit trail.
+- Observability hooks emit metrics: links created, downloads, expirations, storage consumption, guardrail violations.
 
 ### Tests
 
-**Functional tests:**
-- HTML opens in browser without backend (truly offline)
-- All interactive controls work (filters, search, layout reset)
-- Edge clicks open evidence panel with correct snippet
-- Edge/node counts match applied filters
+**Unit tests**
+- Token generator/validator (expiry boundaries, HMAC tamper detection, revocation flags).
+- Manifest schema validation and SHA256 verification logic.
+- Size guardrail decisions (warn vs block) given config thresholds.
 
-**Format tests:**
-- `networkx.read_graphml(graph.graphml)` loads without errors
-- JSON schema validation on `graph.json`
+**Integration tests**
+- Use MinIO test container as S3 stand-in: end-to-end share flow (`POST` -> bundle build -> storage upload -> `GET` download) asserting artifact hashes and presence of evidence/pipeline fields.
+- TTL + revocation: create link, advance clock (freezegun), ensure expired tokens return 410 with audit entry; revoked tokens return 403.
+- Idempotence: repeated requests with same filters yield identical manifest hashes when underlying graph unchanged.
 
-**Size tests:**
-- 30-paper corpus with snippets: export <3 MB (warn if not)
-- 50-paper corpus with truncated snippets: export <5 MB
+**Golden tests**
+- Bundle contents (HTML, JSON, manifest) match fixtures under `tests/fixtures/golden/phase9_share/` for deterministic inputs.
+
+**Security tests**
+- Forged/altered tokens rejected with 403 while logging attempt metadata.
+- Signed URL TTL never exceeds config; revocation invalidates subsequent downloads.
 
 ---
-
 ## Phase 10 — Observability & KPIs (1 day)
 
 ### Goal
@@ -861,7 +846,7 @@ Know when to ship; measure quality continuously.
 5. **QA latency:** p50 ≤ 3 seconds on 20-50 paper corpus
 6. **Insight density:** Default graph view reveals ≥3 multi-paper chains (paths spanning ≥2 papers)
 7. **Pipeline success rate:** ≥95% of chunks successfully extracted (either LLM or co-mention)
-8. **Export usability:** HTML export loads in <5 seconds for 30-paper corpus
+8. **Export usability:** First share-link download returns bundle in <5 seconds for 30-paper corpus
 
 ### Quality Rubric (for manual edge audit)
 
@@ -965,7 +950,7 @@ Systematically verify MVP meets all KPIs before launch.
 2. Nodes/edges have click-through evidence (no broken links)
 3. QA answers contain citations OR "insufficient evidence" message
 4. Filters work correctly (applying filters changes visible nodes/edges)
-5. HTML export is interactive and works offline
+5. Share link download succeeds and exported HTML renders the graph with evidence
 
 **Quality requirements:**
 1. Duplicate entities <10% on 20-50 paper mixed corpus
@@ -1157,10 +1142,10 @@ Before declaring MVP complete:
 - Evidence provenance is natural (edges already have citations)
 - Vector search is fuzzy; graph queries are auditable
 
-**5. Why interactive HTML export instead of PDF reports?**
-- Researchers want to explore, not just read
-- Offline HTML is portable (email, USB, archive)
-- Self-contained (no server dependency)
+**5. Why shareable export links instead of PDF reports?**
+- Deterministic bundles keep evidence + pipeline metadata intact for audit
+- Time-limited links are easier to share/revoke than large email attachments
+- Downloaded zip still runs offline once retrieved, preserving portability
 
 **6. Why Neo4j instead of lighter graph DB (e.g., NetworkX in-memory)?**
 - Query performance at scale (100k+ entities)
@@ -1222,7 +1207,7 @@ Beyond MVP KPIs, measure long-term success:
 **Engagement:**
 - QA queries per user session
 - Graph interactions (node clicks, filter changes)
-- HTML exports downloaded per week
+- Shareable export links created per week (and download-to-view ratio)
 
 **Quality (ongoing):**
 - User-reported bad edges (should decrease over time)

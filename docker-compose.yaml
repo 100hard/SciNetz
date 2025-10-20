@@ -6,12 +6,20 @@ services:
     environment:
       - UVICORN_PORT=8000
       - OPENAI_API_KEY=${OPENAI_API_KEY:?OPENAI_API_KEY not set}
+      - EXPORT_STORAGE_ENDPOINT=${EXPORT_STORAGE_ENDPOINT:-minio:9000}
+      - EXPORT_STORAGE_ACCESS_KEY=${EXPORT_STORAGE_ACCESS_KEY:-minioadmin}
+      - EXPORT_STORAGE_SECRET_KEY=${EXPORT_STORAGE_SECRET_KEY:-minioadmin123}
+      - EXPORT_STORAGE_SECURE=${EXPORT_STORAGE_SECURE:-false}
+      - EXPORT_STORAGE_PUBLIC_ENDPOINT=${EXPORT_STORAGE_PUBLIC_ENDPOINT:-http://localhost:9000}
+      - EXPORT_TOKEN_SECRET=${EXPORT_TOKEN_SECRET:-dev-export-token-secret}
     ports:
       - "8000:8000"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
     depends_on:
       neo4j:
+        condition: service_healthy
+      minio:
         condition: service_healthy
 
   frontend:
@@ -46,6 +54,25 @@ services:
       retries: 5
       start_period: 40s
 
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${EXPORT_STORAGE_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${EXPORT_STORAGE_SECRET_KEY:-minioadmin123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
 volumes:
   neo4j_data:
   frontend_node_modules:
+  minio_data:

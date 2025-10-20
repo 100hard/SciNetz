@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from typing_extensions import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 LOGGER = logging.getLogger(__name__)
 
@@ -275,12 +275,31 @@ class QAConfig(_FrozenModel):
     llm: QALLMConfig
 
 
+class ExportStorageConfig(_FrozenModel):
+    """Object storage configuration for export bundles."""
+
+    bucket: str = Field(..., min_length=1)
+    region: str = Field(..., min_length=1)
+    prefix: str = Field(..., min_length=1)
+    public_endpoint: str | None = Field(default=None, min_length=1)
+
+
 class ExportConfig(_FrozenModel):
     """Export settings for downloadable artifacts."""
 
-    max_size_mb: int = Field(..., ge=1)
-    warn_threshold_mb: int = Field(..., ge=1)
+    max_bundle_mb: int = Field(..., ge=1)
+    warn_bundle_mb: int = Field(..., ge=1)
     snippet_truncate_length: int = Field(..., ge=1)
+    link_ttl_hours: Optional[int] = Field(default=None, ge=1)
+    signed_url_ttl_minutes: int = Field(..., ge=1)
+    storage: ExportStorageConfig
+
+    @model_validator(mode="after")
+    def _validate_thresholds(self) -> "ExportConfig":
+        if self.warn_bundle_mb > self.max_bundle_mb:
+            msg = "export.warn_bundle_mb cannot exceed export.max_bundle_mb"
+            raise ValueError(msg)
+        return self
 
 
 class UIGraphDefaultsConfig(_FrozenModel):

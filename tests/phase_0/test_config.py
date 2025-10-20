@@ -36,7 +36,14 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.canonicalization.min_shared_token_count == 1
     assert config.canonicalization.alias_token_limit == 5
     assert config.qa.entity_match_threshold == 0.83
-    assert config.export.max_size_mb == 5
+    assert config.export.max_bundle_mb == 5
+    assert config.export.warn_bundle_mb == 3
+    assert config.export.link_ttl_hours is None
+    assert config.export.signed_url_ttl_minutes == 10
+    assert config.export.storage.bucket == "scinets-test-exports"
+    assert config.export.storage.region == "us-east-1"
+    assert config.export.storage.prefix == "exports"
+    assert config.export.storage.public_endpoint == "http://localhost:9000"
     assert config.extraction.use_entity_inventory is False
     assert "model" in config.canonicalization.polysemy_blocklist
     relation_names = config.relations.canonical_relation_names()

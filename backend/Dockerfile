@@ -8,6 +8,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements ./requirements
 COPY scripts ./scripts
 
@@ -15,7 +19,7 @@ RUN python scripts/check_package_index.py
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
-    && pip install -r requirements/dev.txt \
+    && pip install --no-cache-dir -r requirements/dev.txt \
     && python -m spacy download en_core_web_sm
 
 COPY pyproject.toml ./
