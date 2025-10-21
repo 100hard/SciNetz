@@ -263,10 +263,8 @@ def render_share_html(
 
         const NODE_STROKE_COLOR = "#0f172a";
         const NODE_LABEL_TEXT_COLOR = "#f8fafc";
-        const NODE_LABEL_DARK_OUTLINE = "rgba(15, 23, 42, 0.92)";
-        const NODE_LABEL_DARK_HALO = "rgba(15, 23, 42, 0.36)";
-        const NODE_LABEL_LIGHT_OUTLINE = "rgba(255, 255, 255, 0.88)";
-        const NODE_LABEL_LIGHT_HALO = "rgba(15, 23, 42, 0.22)";
+        const NODE_LABEL_DARK_OUTLINE = "rgba(15, 23, 42, 0.65)";
+        const NODE_LABEL_LIGHT_OUTLINE = "rgba(255, 255, 255, 0.78)";
         const NODE_LABEL_FONT_SIZE = 13;
         const NODE_LABEL_FONT_WEIGHT = 700;
         const NODE_LABEL_LINE_HEIGHT = 16;
@@ -456,26 +454,13 @@ def render_share_html(
         const getContrastingLabelColors = (fill) => {{
           const rgb = toRgbColor(fill);
           if (!rgb) {{
-            return {{
-              color: NODE_LABEL_TEXT_COLOR,
-              outline: NODE_LABEL_DARK_OUTLINE,
-              halo: NODE_LABEL_DARK_HALO,
-            }};
+            return {{ color: NODE_LABEL_TEXT_COLOR, outline: NODE_LABEL_DARK_OUTLINE }};
           }}
           const luminance = getRelativeLuminance(rgb);
-          const contrastWithWhite = 1.05 / (luminance + 0.05);
-          if (contrastWithWhite < 2.8) {{
-            return {{
-              color: NODE_LABEL_TEXT_COLOR,
-              outline: NODE_LABEL_DARK_OUTLINE,
-              halo: NODE_LABEL_DARK_HALO,
-            }};
+          if (luminance > 0.65) {{
+            return {{ color: NODE_LABEL_TEXT_COLOR, outline: NODE_LABEL_DARK_OUTLINE }};
           }}
-          return {{
-            color: NODE_LABEL_TEXT_COLOR,
-            outline: NODE_LABEL_LIGHT_OUTLINE,
-            halo: NODE_LABEL_LIGHT_HALO,
-          }};
+          return {{ color: NODE_LABEL_TEXT_COLOR, outline: NODE_LABEL_LIGHT_OUTLINE }};
         }};
 
         const createSeededGenerator = (seed) => {{
@@ -965,7 +950,6 @@ def render_share_html(
         }}
 
         const ratio = window.devicePixelRatio || 1;
-        const alignToDevicePixel = (value) => Math.round(value * ratio) / ratio;
         const baseWidth = Math.max(container.clientWidth || 960, 320);
         const baseHeight = Math.max(container.clientHeight || 640, 320);
         const layout = runForceLayout(nodesForLayout, edgesRaw, baseWidth, baseHeight);
@@ -992,7 +976,7 @@ def render_share_html(
         const nodes = translatedNodes.map((entry) => {{
           const labelLines = formatNodeLabel(entry.node.label || entry.node.id || "Unknown");
           const fill = getNodeFill(entry.node.type);
-          const {{ color: labelColor, outline: labelOutline, halo: labelHalo }} = getContrastingLabelColors(fill);
+          const {{ color: labelColor, outline: labelOutline }} = getContrastingLabelColors(fill);
           const radius = calculateNodeRadius(entry.node, entry.degree, labelLines);
           return {{
             id: entry.node.id,
@@ -1006,7 +990,6 @@ def render_share_html(
             fill,
             labelColor,
             labelOutline,
-            labelHalo,
           }};
         }});
 
@@ -1212,31 +1195,19 @@ def render_share_html(
             const labelLines = Array.isArray(node.labelLines) && node.labelLines.length ? node.labelLines : [
               node.data.label || node.id || "",
             ];
-            const labelColor = node.labelColor || NODE_LABEL_TEXT_COLOR;
-            const labelOutline = node.labelOutline || NODE_LABEL_DARK_OUTLINE;
-            const labelHalo = node.labelHalo || NODE_LABEL_DARK_HALO;
-            const outlineWidth = Math.max(0.65, 1.25 * labelScale);
-            const haloWidth = outlineWidth * 2.1;
-            const textX = alignToDevicePixel(nodeX);
+            ctx.fillStyle = node.labelColor || NODE_LABEL_TEXT_COLOR;
+            ctx.strokeStyle = node.labelOutline || NODE_LABEL_DARK_OUTLINE;
+            const outlineWidth = Math.max(0.6, 1.2 * labelScale);
+            ctx.lineWidth = outlineWidth;
             for (let index = 0; index < labelLines.length; index += 1) {{
               const line = labelLines[index];
               if (!line) {{
                 continue;
               }}
               const offset = (index - (labelLines.length - 1) / 2) * nodeLineHeight;
-              const textY = alignToDevicePixel(nodeY + offset);
-              ctx.lineJoin = "round";
-              ctx.miterLimit = 2.5;
-              if (labelHalo) {{
-                ctx.strokeStyle = labelHalo;
-                ctx.lineWidth = haloWidth;
-                ctx.strokeText(line, textX, textY);
-              }}
-              ctx.strokeStyle = labelOutline;
-              ctx.lineWidth = outlineWidth;
-              ctx.strokeText(line, textX, textY);
-              ctx.fillStyle = labelColor;
-              ctx.fillText(line, textX, textY);
+              const textY = nodeY + offset;
+              ctx.strokeText(line, nodeX, textY);
+              ctx.fillText(line, nodeX, textY);
             }}
           }}
           ctx.restore();
