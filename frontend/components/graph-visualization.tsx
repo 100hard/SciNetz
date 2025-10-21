@@ -522,7 +522,7 @@ const runForceLayout = (
     };
   });
 
-  resolveCollisions(positionedNodes);
+  resolveCollisions(positionedNodes, filteredEdges);
 
   let minX = Number.POSITIVE_INFINITY;
   let minY = Number.POSITIVE_INFINITY;
@@ -682,10 +682,37 @@ const getComponentColors = (componentId: number, dominantDocId: string | null): 
   };
 };
 
-const resolveCollisions = (nodes: PositionedNode[]): void => {
+const createUndirectedKey = (first: string, second: string): string =>
+  first < second ? `${first}::${second}` : `${second}::${first}`;
+
+const resolveCollisions = (nodes: PositionedNode[], edges: GraphEdge[]): void => {
   const padding = 16;
   const epsilon = 0.0001;
   const iterations = 8;
+
+  const collisionRadiusByNodeId = new Map<string, number>();
+  nodes.forEach((entry) => {
+    collisionRadiusByNodeId.set(entry.node.id, estimateCollisionRadius(entry.node, entry.degree));
+  });
+
+  const labelWidthByPair = new Map<string, number>();
+  edges.forEach((edge) => {
+    if (!edge.source || !edge.target) {
+      return;
+    }
+    const labelText = edge.relation?.trim() || edge.relation_verbatim?.trim() || "related";
+    const approxLabelWidth =
+      labelText.length > 0
+        ? labelText.length * EDGE_LABEL_FONT_SIZE * 0.62 + EDGE_LABEL_HORIZONTAL_PADDING * 2
+        : EDGE_LABEL_MIN_WIDTH;
+    const labelWidth = Math.min(EDGE_LABEL_MAX_WIDTH, Math.max(EDGE_LABEL_MIN_WIDTH, approxLabelWidth));
+    const key = createUndirectedKey(edge.source, edge.target);
+    const previous = labelWidthByPair.get(key) ?? 0;
+    if (labelWidth > previous) {
+      labelWidthByPair.set(key, labelWidth);
+    }
+  });
+
   for (let iteration = 0; iteration < iterations; iteration += 1) {
     let moved = false;
     for (let i = 0; i < nodes.length; i += 1) {
@@ -695,10 +722,15 @@ const resolveCollisions = (nodes: PositionedNode[]): void => {
         let dx = nodeA.x - nodeB.x;
         let dy = nodeA.y - nodeB.y;
         let distance = Math.sqrt(dx * dx + dy * dy);
-        const minDistance =
-          estimateCollisionRadius(nodeA.node, nodeA.degree) +
-          estimateCollisionRadius(nodeB.node, nodeB.degree) +
-          padding;
+        const radiusA = collisionRadiusByNodeId.get(nodeA.node.id) ?? 0;
+        const radiusB = collisionRadiusByNodeId.get(nodeB.node.id) ?? 0;
+        let minDistance = radiusA + radiusB + padding;
+        const pairKey = createUndirectedKey(nodeA.node.id, nodeB.node.id);
+        const labelWidth = labelWidthByPair.get(pairKey);
+        if (labelWidth !== undefined) {
+          const labelRequirement = labelWidth + 2 * Math.max(radiusA, radiusB) + EDGE_LABEL_CLEARANCE_PADDING;
+          minDistance = Math.max(minDistance, labelRequirement);
+        }
         if (distance >= minDistance) {
           continue;
         }
@@ -740,6 +772,7 @@ const EDGE_LABEL_MIN_WIDTH = 72;
 const EDGE_LABEL_MAX_WIDTH = 220;
 const EDGE_LABEL_HORIZONTAL_PADDING = 14;
 const EDGE_LABEL_RECT_HEIGHT = 26;
+const EDGE_LABEL_CLEARANCE_PADDING = 12;
 const EDGE_DARKEN_BASE = "#0f172a";
 const EDGE_LABEL_LIGHTEN_TARGET = "#f8fafc";
 
