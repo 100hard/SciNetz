@@ -740,6 +740,11 @@ const EDGE_LABEL_MIN_WIDTH = 72;
 const EDGE_LABEL_MAX_WIDTH = 220;
 const EDGE_LABEL_HORIZONTAL_PADDING = 14;
 const EDGE_LABEL_RECT_HEIGHT = 26;
+const EDGE_LABEL_GAP_MARGIN = 18;
+const EDGE_LABEL_BASE_OFFSET = 6;
+const EDGE_LABEL_SHORTAGE_MULTIPLIER = 0.55;
+const EDGE_LABEL_MAX_OFFSET = 140;
+const EDGE_LABEL_HORIZONTAL_STABILITY_THRESHOLD = 0.12;
 const EDGE_DARKEN_BASE = "#0f172a";
 const EDGE_LABEL_LIGHTEN_TARGET = "#f8fafc";
 
@@ -758,6 +763,17 @@ const blendColors = (baseColor: string, mixColor: string, amount: number): strin
     b: base.b * (1 - ratio) + mix.b * ratio,
   };
   return rgbToCss(blended);
+};
+
+const getDeterministicEdgeLabelSide = (edgeId: string): number => {
+  if (!edgeId) {
+    return 1;
+  }
+  let hash = 0;
+  for (let index = 0; index < edgeId.length; index += 1) {
+    hash = (hash * 31 + edgeId.charCodeAt(index)) >>> 0;
+  }
+  return (hash & 1) === 0 ? 1 : -1;
 };
 
 const getEdgeStrokeColor = (baseColor: string, confidence: number): string => {
@@ -1439,6 +1455,37 @@ const GraphVisualization = ({
                 EDGE_LABEL_MAX_WIDTH,
                 Math.max(EDGE_LABEL_MIN_WIDTH, approxLabelWidth),
               );
+              const dx = edge.target.x - edge.source.x;
+              const dy = edge.target.y - edge.source.y;
+              const distance = Math.sqrt(dx * dx + dy * dy);
+              const safeDistance = distance > 0 ? distance : 0.0001;
+              let normalX = -dy / safeDistance;
+              let normalY = dx / safeDistance;
+              const normalLength = Math.sqrt(normalX * normalX + normalY * normalY);
+              if (normalLength > 0) {
+                normalX /= normalLength;
+                normalY /= normalLength;
+              }
+              let orientationMultiplier: number;
+              if (normalY < -EDGE_LABEL_HORIZONTAL_STABILITY_THRESHOLD) {
+                orientationMultiplier = 1;
+              } else if (normalY > EDGE_LABEL_HORIZONTAL_STABILITY_THRESHOLD) {
+                orientationMultiplier = -1;
+              } else {
+                orientationMultiplier = getDeterministicEdgeLabelSide(edge.id);
+              }
+              const alongSpacing = safeDistance - edge.source.radius - edge.target.radius;
+              const shortage = labelWidth + EDGE_LABEL_GAP_MARGIN - alongSpacing;
+              const shortageContribution = Math.max(0, shortage) * EDGE_LABEL_SHORTAGE_MULTIPLIER;
+              const offsetMagnitude = clamp(
+                EDGE_LABEL_BASE_OFFSET + shortageContribution,
+                EDGE_LABEL_BASE_OFFSET,
+                EDGE_LABEL_MAX_OFFSET,
+              );
+              const offsetX = normalX * offsetMagnitude * orientationMultiplier;
+              const offsetY = normalY * offsetMagnitude * orientationMultiplier;
+              const labelX = midX + offsetX;
+              const labelY = midY + offsetY;
               const markerId = markerIdByKey.get(edge.markerKey);
               return (
                 <g key={edge.id}>
@@ -1454,7 +1501,7 @@ const GraphVisualization = ({
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
-                  <g transform={`translate(${midX}, ${midY}) rotate(${angle})`}>
+                  <g transform={`translate(${labelX}, ${labelY}) rotate(${angle})`}>
                     <rect
                       x={-labelWidth / 2}
                       y={-EDGE_LABEL_RECT_HEIGHT / 2}
