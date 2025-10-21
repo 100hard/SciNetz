@@ -262,9 +262,7 @@ def render_share_html(
         }}
 
         const NODE_STROKE_COLOR = "#0f172a";
-        const NODE_LABEL_TEXT_COLOR = "#f8fafc";
-        const NODE_LABEL_DARK_OUTLINE = "rgba(15, 23, 42, 0.65)";
-        const NODE_LABEL_LIGHT_OUTLINE = "rgba(255, 255, 255, 0.78)";
+        const NODE_LABEL_TEXT_COLOR = "#0f172a";
         const NODE_LABEL_FONT_SIZE = 13;
         const NODE_LABEL_FONT_WEIGHT = 700;
         const NODE_LABEL_LINE_HEIGHT = 16;
@@ -454,13 +452,13 @@ def render_share_html(
         const getContrastingLabelColors = (fill) => {{
           const rgb = toRgbColor(fill);
           if (!rgb) {{
-            return {{ color: NODE_LABEL_TEXT_COLOR, outline: NODE_LABEL_DARK_OUTLINE }};
+            return {{ color: NODE_LABEL_TEXT_COLOR, outline: "rgba(255, 255, 255, 0.78)" }};
           }}
           const luminance = getRelativeLuminance(rgb);
           if (luminance > 0.65) {{
-            return {{ color: NODE_LABEL_TEXT_COLOR, outline: NODE_LABEL_DARK_OUTLINE }};
+            return {{ color: NODE_LABEL_TEXT_COLOR, outline: "rgba(15, 23, 42, 0.3)" }};
           }}
-          return {{ color: NODE_LABEL_TEXT_COLOR, outline: NODE_LABEL_LIGHT_OUTLINE }};
+          return {{ color: NODE_LABEL_TEXT_COLOR, outline: "rgba(255, 255, 255, 0.78)" }};
         }};
 
         const createSeededGenerator = (seed) => {{
@@ -1196,7 +1194,7 @@ def render_share_html(
               node.data.label || node.id || "",
             ];
             ctx.fillStyle = node.labelColor || NODE_LABEL_TEXT_COLOR;
-            ctx.strokeStyle = node.labelOutline || NODE_LABEL_DARK_OUTLINE;
+            ctx.strokeStyle = node.labelOutline || "rgba(255, 255, 255, 0.75)";
             const outlineWidth = Math.max(0.6, 1.2 * labelScale);
             ctx.lineWidth = outlineWidth;
             for (let index = 0; index < labelLines.length; index += 1) {{
