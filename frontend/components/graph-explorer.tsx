@@ -634,16 +634,17 @@ const GraphExplorer = () => {
           </div>
         </div>
 
-        <div className="mt-6 grid gap-6 md:grid-cols-2 xl:grid-cols-3">
-          <div className="space-y-2" ref={relationMenuRef}>
-            <p className="text-sm font-medium text-foreground">Relations</p>
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setIsRelationMenuOpen((prev) => !prev)}
-                className="flex w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
-                disabled={relationOptions.length === 0}
-              >
+        <div className="mt-6 space-y-6 md:grid md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] md:items-start md:gap-6 md:space-y-0 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+          <div className="space-y-6" ref={relationMenuRef}>
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-foreground">Relations</p>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsRelationMenuOpen((prev) => !prev)}
+                  className="flex w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium text-foreground shadow-sm transition hover:bg-muted/40 focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={relationOptions.length === 0}
+                >
                 <span>
                   {selectedRelations.length === 0
                     ? "All relations"
@@ -719,42 +720,59 @@ const GraphExplorer = () => {
                 ? "All relation types will be requested."
                 : `${selectedRelations.length} of ${relationOptions.length} selected.`}
             </p>
-          </div>
+            </div>
 
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-foreground">Sections</p>
-            <div className="flex flex-wrap gap-2">
-              {sectionOptions.map((section) => {
-                const checked = selectedSections.includes(section);
-                return (
-                  <button
-                    key={section}
-                    type="button"
-                    onClick={() => toggleSelection(section, selectedSections, setSelectedSections)}
-                    className={`rounded-full border px-3 py-1 text-xs font-medium transition ${checked ? "border-primary bg-primary/10 text-primary" : "border-border bg-background text-muted-foreground hover:bg-muted/40"}`}
-                  >
-                    {section}
-                  </button>
-                );
-              })}
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-foreground">Sections</p>
+              <div className="flex flex-wrap gap-2">
+                {sectionOptions.map((section) => {
+                  const checked = selectedSections.includes(section);
+                  return (
+                    <button
+                      key={section}
+                      type="button"
+                      onClick={() => toggleSelection(section, selectedSections, setSelectedSections)}
+                      className={`rounded-full border px-3 py-1 text-xs font-medium transition ${checked ? "border-primary bg-primary/10 text-primary" : "border-border bg-background text-muted-foreground hover:bg-muted/40"}`}
+                    >
+                      {section}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="flex flex-col gap-2 text-sm" htmlFor={minConfidenceId}>
+                <span className="font-medium text-foreground">Minimum confidence</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  id={minConfidenceId}
+                  name="min-confidence"
+                  value={minConfidence}
+                  onChange={(event) => setMinConfidence(Number(event.target.value))}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none transition focus:border-transparent focus:ring-2 focus:ring-primary/40"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-sm" htmlFor={limitId}>
+                <span className="font-medium text-foreground">Result limit</span>
+                <input
+                  type="number"
+                  min={50}
+                  max={2000}
+                  step={50}
+                  id={limitId}
+                  name="graph-limit"
+                  value={limit}
+                  onChange={(event) => setLimit(Number(event.target.value))}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none transition focus:border-transparent focus:ring-2 focus:ring-primary/40"
+                />
+              </label>
             </div>
           </div>
-
-          <div className="space-y-2">
-            <label className="flex flex-col gap-2 text-sm" htmlFor={minConfidenceId}>
-              <span className="font-medium text-foreground">Minimum confidence</span>
-              <input
-                type="number"
-                min={0}
-                max={1}
-                step={0.01}
-                id={minConfidenceId}
-                name="min-confidence"
-                value={minConfidence}
-                onChange={(event) => setMinConfidence(Number(event.target.value))}
-                className="w-32 rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none transition focus:border-transparent focus:ring-2 focus:ring-primary/40"
-              />
-            </label>
+          <div className="space-y-4">
             <label
               className="flex items-center gap-2 text-sm text-muted-foreground"
               htmlFor={includeCoMentionsId}
@@ -768,20 +786,6 @@ const GraphExplorer = () => {
                 className="h-4 w-4 rounded border border-input text-primary focus:ring-primary"
               />
               <span>Include co-mention edges</span>
-            </label>
-            <label className="flex flex-col gap-2 text-sm" htmlFor={limitId}>
-              <span className="font-medium text-foreground">Result limit</span>
-              <input
-                type="number"
-                min={50}
-                max={2000}
-                step={50}
-                id={limitId}
-                name="graph-limit"
-                value={limit}
-                onChange={(event) => setLimit(Number(event.target.value))}
-                className="w-32 rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none transition focus:border-transparent focus:ring-2 focus:ring-primary/40"
-              />
             </label>
             <label className="flex flex-col gap-2 text-sm" htmlFor={paperFilterId}>
               <span className="font-medium text-foreground">Paper filter</span>
