@@ -740,6 +740,11 @@ const EDGE_LABEL_MIN_WIDTH = 72;
 const EDGE_LABEL_MAX_WIDTH = 220;
 const EDGE_LABEL_HORIZONTAL_PADDING = 14;
 const EDGE_LABEL_RECT_HEIGHT = 26;
+const EDGE_LABEL_GAP_MARGIN = 18;
+const EDGE_LABEL_BASE_OFFSET = 6;
+const EDGE_LABEL_SHORTAGE_MULTIPLIER = 0.55;
+const EDGE_LABEL_MAX_OFFSET = 140;
+const EDGE_LABEL_HORIZONTAL_STABILITY_THRESHOLD = 0.12;
 const EDGE_DARKEN_BASE = "#0f172a";
 const EDGE_LABEL_LIGHTEN_TARGET = "#f8fafc";
 
@@ -758,6 +763,17 @@ const blendColors = (baseColor: string, mixColor: string, amount: number): strin
     b: base.b * (1 - ratio) + mix.b * ratio,
   };
   return rgbToCss(blended);
+};
+
+const getDeterministicEdgeLabelSide = (edgeId: string): number => {
+  if (!edgeId) {
+    return 1;
+  }
+  let hash = 0;
+  for (let index = 0; index < edgeId.length; index += 1) {
+    hash = (hash * 31 + edgeId.charCodeAt(index)) >>> 0;
+  }
+  return (hash & 1) === 0 ? 1 : -1;
 };
 
 const getEdgeStrokeColor = (baseColor: string, confidence: number): string => {
@@ -786,6 +802,30 @@ const getEdgeLabelColor = (strokeColor: string): string => {
   return blendColors(strokeColor, EDGE_LABEL_LIGHTEN_TARGET, 0.32) ?? strokeColor;
 };
 
+const DIMENSION_UPDATE_EPSILON = 0.5;
+const LAYOUT_DIMENSION_RECOMPUTE_THRESHOLD = 120;
+
+type LayoutCache = {
+  nodeSignature: string;
+  edgeSignature: string;
+  width: number;
+  height: number;
+  positions: Map<string, CachedPosition>;
+};
+
+const createNodeSignature = (nodes: GraphNode[]): string =>
+  nodes
+    .map((node) => node.id)
+    .filter(Boolean)
+    .sort()
+    .join("|");
+
+const createEdgeSignature = (edges: GraphEdge[]): string =>
+  edges
+    .map((edge) => `${edge.source}->${edge.target}:${edge.id}`)
+    .sort()
+    .join("|");
+
 const GraphVisualization = ({
   nodes,
   edges,
@@ -795,6 +835,7 @@ const GraphVisualization = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const previousPositionsRef = useRef<Map<string, CachedPosition>>(new Map());
+  const layoutCacheRef = useRef<LayoutCache | null>(null);
   const [dimensions, setDimensions] = useState<Dimensions>({ width: 0, height: DEFAULT_HEIGHT });
   const [transform, setTransform] = useState<GraphTransform>({ scale: 1, x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -812,22 +853,50 @@ const GraphVisualization = ({
     if (!element) {
       return;
     }
+
+    const applyDimensions = (width: number, height: number) => {
+      const nextWidth = Math.max(width, 0);
+      const nextHeight = Math.max(height, DEFAULT_HEIGHT);
+      setDimensions((current) => {
+        const widthChanged = Math.abs(current.width - nextWidth) > DIMENSION_UPDATE_EPSILON;
+        const heightChanged = Math.abs(current.height - nextHeight) > DIMENSION_UPDATE_EPSILON;
+        if (!widthChanged && !heightChanged) {
+          return current;
+        }
+        return { width: nextWidth, height: nextHeight };
+      });
+    };
+
+    applyDimensions(element.clientWidth, element.clientHeight);
+
+    let frame: number | null = null;
     const observer = new ResizeObserver((entries) => {
       if (!entries.length) {
         return;
       }
       const entry = entries[0];
-      setDimensions({
-        width: entry.contentRect.width,
-        height: Math.max(entry.contentRect.height, DEFAULT_HEIGHT),
-      });
+      const { width, height } = entry.contentRect;
+      if (frame !== null && typeof window !== "undefined") {
+        window.cancelAnimationFrame(frame);
+        frame = null;
+      }
+      const schedule = () => {
+        applyDimensions(width, height);
+        frame = null;
+      };
+      if (typeof window !== "undefined") {
+        frame = window.requestAnimationFrame(schedule);
+      } else {
+        schedule();
+      }
     });
+
     observer.observe(element);
-    setDimensions({
-      width: element.clientWidth,
-      height: Math.max(element.clientHeight, DEFAULT_HEIGHT),
-    });
+
     return () => {
+      if (typeof window !== "undefined" && frame !== null) {
+        window.cancelAnimationFrame(frame);
+      }
       observer.disconnect();
     };
   }, []);
@@ -836,7 +905,10 @@ const GraphVisualization = ({
     const limitedNodes = nodes.slice(0, GRAPH_VISUALIZATION_NODE_LIMIT);
     const width = Math.max(dimensions.width, 320);
     const height = Math.max(dimensions.height, DEFAULT_HEIGHT);
+
     if (!limitedNodes.length) {
+      layoutCacheRef.current = null;
+      previousPositionsRef.current = new Map();
       return {
         positionedNodes: [] as StyledNode[],
         positionedEdges: [] as StyledEdge[],
@@ -847,23 +919,144 @@ const GraphVisualization = ({
       };
     }
 
+    const allowedIds = new Set(limitedNodes.map((node) => node.id));
+    const relevantEdges = edges.filter((edge) => allowedIds.has(edge.source) && allowedIds.has(edge.target));
+    const nodeSignature = createNodeSignature(limitedNodes);
+    const edgeSignature = createEdgeSignature(relevantEdges);
+
+    const cache = layoutCacheRef.current;
+    const widthDelta = cache ? Math.abs(cache.width - width) : Number.POSITIVE_INFINITY;
+    const heightDelta = cache ? Math.abs(cache.height - height) : Number.POSITIVE_INFINITY;
+
+    let positions: Map<string, CachedPosition>;
+    let usingCache = false;
+
+    if (
+      cache &&
+      cache.nodeSignature === nodeSignature &&
+      cache.edgeSignature === edgeSignature &&
+      widthDelta < LAYOUT_DIMENSION_RECOMPUTE_THRESHOLD &&
+      heightDelta < LAYOUT_DIMENSION_RECOMPUTE_THRESHOLD
+    ) {
+      const missingNode = limitedNodes.some((node) => !cache.positions.has(node.id));
+      if (!missingNode) {
+        positions = cache.positions;
+        usingCache = true;
+      }
+    }
+
+    if (!usingCache) {
       const layout = runForceLayout(limitedNodes, edges, width, height, previousPositionsRef.current);
-      previousPositionsRef.current = layout.positions;
+      positions = layout.positions;
+      layoutCacheRef.current = {
+        nodeSignature,
+        edgeSignature,
+        width,
+        height,
+        positions,
+      };
+    } else {
+      const cachedWidth = cache?.width ?? width;
+      const cachedHeight = cache?.height ?? height;
+      layoutCacheRef.current = {
+        nodeSignature,
+        edgeSignature,
+        width: cachedWidth,
+        height: cachedHeight,
+        positions,
+      };
+    }
+
+    previousPositionsRef.current = positions;
+
+    const adjacencyCounts = new Map<string, number>();
+    relevantEdges.forEach((edge) => {
+      adjacencyCounts.set(edge.source, (adjacencyCounts.get(edge.source) ?? 0) + 1);
+      adjacencyCounts.set(edge.target, (adjacencyCounts.get(edge.target) ?? 0) + 1);
+    });
+
+    const positionedNodesRaw: PositionedNode[] = [];
+    let missingPosition = false;
+    for (const node of limitedNodes) {
+      const cached = positions.get(node.id);
+      if (!cached) {
+        missingPosition = true;
+        break;
+      }
+      positionedNodesRaw.push({
+        node,
+        x: cached.x,
+        y: cached.y,
+        degree: adjacencyCounts.get(node.id) ?? 0,
+        componentId: cached.componentId,
+        anchorX: cached.anchorX,
+        anchorY: cached.anchorY,
+      });
+    }
+
+    if (missingPosition) {
+      const layout = runForceLayout(limitedNodes, edges, width, height, new Map());
+      positions = layout.positions;
+      layoutCacheRef.current = {
+        nodeSignature,
+        edgeSignature,
+        width,
+        height,
+        positions,
+      };
+      previousPositionsRef.current = positions;
+      positionedNodesRaw.length = 0;
+      for (const node of limitedNodes) {
+        const cached = positions.get(node.id);
+        if (!cached) {
+          continue;
+        }
+        positionedNodesRaw.push({
+          node,
+          x: cached.x,
+          y: cached.y,
+          degree: adjacencyCounts.get(node.id) ?? 0,
+          componentId: cached.componentId,
+          anchorX: cached.anchorX,
+          anchorY: cached.anchorY,
+        });
+      }
+    }
+
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    positionedNodesRaw.forEach((entry) => {
+      minX = Math.min(minX, entry.x);
+      maxX = Math.max(maxX, entry.x);
+      minY = Math.min(minY, entry.y);
+      maxY = Math.max(maxY, entry.y);
+    });
+
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+      minX = 0;
+      maxX = width;
+      minY = 0;
+      maxY = height;
+    }
+
     const margin = 30;
-    const minX = layout.bounds.minX - margin;
-    const maxX = layout.bounds.maxX + margin;
-    const minY = layout.bounds.minY - margin;
-    const maxY = layout.bounds.maxY + margin;
+    const minXWithMargin = minX - margin;
+    const maxXWithMargin = maxX + margin;
+    const minYWithMargin = minY - margin;
+    const maxYWithMargin = maxY + margin;
 
-    const viewWidth = maxX - minX;
-    const viewHeight = maxY - minY;
+    const viewWidth = Math.max(maxXWithMargin - minXWithMargin, 1);
+    const viewHeight = Math.max(maxYWithMargin - minYWithMargin, 1);
 
-    const translatedNodes = layout.nodes.map((node) => ({
-      ...node,
-      x: node.x - minX,
-      y: node.y - minY,
-      anchorX: node.anchorX - minX,
-      anchorY: node.anchorY - minY,
+    const translatedNodes = positionedNodesRaw.map((entry) => ({
+      ...entry,
+      x: entry.x - minXWithMargin,
+      y: entry.y - minYWithMargin,
+      anchorX: entry.anchorX - minXWithMargin,
+      anchorY: entry.anchorY - minYWithMargin,
     }));
 
     const styledNodes: StyledNode[] = translatedNodes.map((entry) => {
@@ -883,9 +1076,9 @@ const GraphVisualization = ({
     });
 
     const styledNodeIndex = new Map(styledNodes.map((entry) => [entry.node.id, entry]));
-    const styledEdges: StyledEdge[] = layout.edges.map((edge) => {
-      const source = styledNodeIndex.get(edge.source.node.id);
-      const target = styledNodeIndex.get(edge.target.node.id);
+    const styledEdges: StyledEdge[] = relevantEdges.map((edge) => {
+      const source = styledNodeIndex.get(edge.source);
+      const target = styledNodeIndex.get(edge.target);
       if (!source || !target) {
         throw new Error("Graph layout attempted to render an edge without positioned nodes");
       }
@@ -897,9 +1090,11 @@ const GraphVisualization = ({
       const labelColor = getEdgeLabelColor(stroke);
       const markerKey = `${stroke}-${markerOpacity.toFixed(2)}`;
       return {
-        ...edge,
+        id: edge.id,
         source,
         target,
+        relation: edge.relation,
+        confidence: edge.confidence,
         stroke,
         markerKey,
         markerColor: stroke,
@@ -923,17 +1118,17 @@ const GraphVisualization = ({
       });
 
       componentBackgrounds = Array.from(componentMap.entries()).map(([componentId, componentNodes]) => {
-        let minX = Number.POSITIVE_INFINITY;
-        let maxX = Number.NEGATIVE_INFINITY;
-        let minY = Number.POSITIVE_INFINITY;
-        let maxY = Number.NEGATIVE_INFINITY;
+        let minComponentX = Number.POSITIVE_INFINITY;
+        let maxComponentX = Number.NEGATIVE_INFINITY;
+        let minComponentY = Number.POSITIVE_INFINITY;
+        let maxComponentY = Number.NEGATIVE_INFINITY;
         const typeCounts = new Map<string, number>();
         const docCounts = new Map<string, number>();
         componentNodes.forEach((node) => {
-          minX = Math.min(minX, node.x - node.radius);
-          maxX = Math.max(maxX, node.x + node.radius);
-          minY = Math.min(minY, node.y - node.radius);
-          maxY = Math.max(maxY, node.y + node.radius);
+          minComponentX = Math.min(minComponentX, node.x - node.radius);
+          maxComponentX = Math.max(maxComponentX, node.x + node.radius);
+          minComponentY = Math.min(minComponentY, node.y - node.radius);
+          maxComponentY = Math.max(maxComponentY, node.y + node.radius);
           const type = node.node.type?.toLowerCase();
           if (type) {
             typeCounts.set(type, (typeCounts.get(type) ?? 0) + 1);
@@ -946,12 +1141,12 @@ const GraphVisualization = ({
             }
           });
         });
-        const cx = (minX + maxX) / 2;
-        const cy = (minY + maxY) / 2;
+        const cx = (minComponentX + maxComponentX) / 2;
+        const cy = (minComponentY + maxComponentY) / 2;
         const paddingX = Math.max(28, Math.sqrt(componentNodes.length) * 14);
         const paddingY = Math.max(24, Math.sqrt(componentNodes.length) * 12);
-        const rx = Math.max((maxX - minX) / 2 + paddingX, 42);
-        const ry = Math.max((maxY - minY) / 2 + paddingY, 42);
+        const rx = Math.max((maxComponentX - minComponentX) / 2 + paddingX, 42);
+        const ry = Math.max((maxComponentY - minComponentY) / 2 + paddingY, 42);
         let dominantType: string | null = null;
         let dominantCount = 0;
         typeCounts.forEach((count, type) => {
@@ -1260,6 +1455,37 @@ const GraphVisualization = ({
                 EDGE_LABEL_MAX_WIDTH,
                 Math.max(EDGE_LABEL_MIN_WIDTH, approxLabelWidth),
               );
+              const dx = edge.target.x - edge.source.x;
+              const dy = edge.target.y - edge.source.y;
+              const distance = Math.sqrt(dx * dx + dy * dy);
+              const safeDistance = distance > 0 ? distance : 0.0001;
+              let normalX = -dy / safeDistance;
+              let normalY = dx / safeDistance;
+              const normalLength = Math.sqrt(normalX * normalX + normalY * normalY);
+              if (normalLength > 0) {
+                normalX /= normalLength;
+                normalY /= normalLength;
+              }
+              let orientationMultiplier: number;
+              if (normalY < -EDGE_LABEL_HORIZONTAL_STABILITY_THRESHOLD) {
+                orientationMultiplier = 1;
+              } else if (normalY > EDGE_LABEL_HORIZONTAL_STABILITY_THRESHOLD) {
+                orientationMultiplier = -1;
+              } else {
+                orientationMultiplier = getDeterministicEdgeLabelSide(edge.id);
+              }
+              const alongSpacing = safeDistance - edge.source.radius - edge.target.radius;
+              const shortage = labelWidth + EDGE_LABEL_GAP_MARGIN - alongSpacing;
+              const shortageContribution = Math.max(0, shortage) * EDGE_LABEL_SHORTAGE_MULTIPLIER;
+              const offsetMagnitude = clamp(
+                EDGE_LABEL_BASE_OFFSET + shortageContribution,
+                EDGE_LABEL_BASE_OFFSET,
+                EDGE_LABEL_MAX_OFFSET,
+              );
+              const offsetX = normalX * offsetMagnitude * orientationMultiplier;
+              const offsetY = normalY * offsetMagnitude * orientationMultiplier;
+              const labelX = midX + offsetX;
+              const labelY = midY + offsetY;
               const markerId = markerIdByKey.get(edge.markerKey);
               return (
                 <g key={edge.id}>
@@ -1275,7 +1501,7 @@ const GraphVisualization = ({
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
-                  <g transform={`translate(${midX}, ${midY}) rotate(${angle})`}>
+                  <g transform={`translate(${labelX}, ${labelY}) rotate(${angle})`}>
                     <rect
                       x={-labelWidth / 2}
                       y={-EDGE_LABEL_RECT_HEIGHT / 2}
