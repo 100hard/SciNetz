@@ -262,8 +262,7 @@ def render_share_html(
         }}
 
         const NODE_STROKE_COLOR = "#0f172a";
-        const NODE_LABEL_LIGHT_COLOR = "#f8fafc";
-        const NODE_LABEL_DARK_COLOR = "#0f172a";
+        const NODE_LABEL_TEXT_COLOR = "#0f172a";
         const NODE_LABEL_FONT_SIZE = 13;
         const NODE_LABEL_FONT_WEIGHT = 700;
         const NODE_LABEL_LINE_HEIGHT = 16;
@@ -453,13 +452,13 @@ def render_share_html(
         const getContrastingLabelColors = (fill) => {{
           const rgb = toRgbColor(fill);
           if (!rgb) {{
-            return {{ color: NODE_LABEL_LIGHT_COLOR, outline: "rgba(15, 23, 42, 0.45)" }};
+            return {{ color: NODE_LABEL_TEXT_COLOR, outline: "rgba(255, 255, 255, 0.78)" }};
           }}
           const luminance = getRelativeLuminance(rgb);
-          if (luminance > 0.55) {{
-            return {{ color: NODE_LABEL_DARK_COLOR, outline: "rgba(255, 255, 255, 0.7)" }};
+          if (luminance > 0.65) {{
+            return {{ color: NODE_LABEL_TEXT_COLOR, outline: "rgba(15, 23, 42, 0.3)" }};
           }}
-          return {{ color: NODE_LABEL_LIGHT_COLOR, outline: "rgba(15, 23, 42, 0.5)" }};
+          return {{ color: NODE_LABEL_TEXT_COLOR, outline: "rgba(255, 255, 255, 0.78)" }};
         }};
 
         const createSeededGenerator = (seed) => {{
@@ -1125,7 +1124,7 @@ def render_share_html(
             ctx.stroke();
           }}
           ctx.globalAlpha = 1;
-          const labelScale = Math.max(scale, 0.25);
+          const labelScale = Math.max(scale, 0.08);
           for (const edge of edges) {{
             const label = edge.relationLabel || "";
             if (!label) {{
@@ -1139,7 +1138,7 @@ def render_share_html(
             const midY = (sourceY + targetY) / 2;
             const angle = Math.atan2(targetY - sourceY, targetX - sourceX);
             const flipped = angle > Math.PI / 2 || angle < -Math.PI / 2;
-            const fontSize = Math.max(EDGE_LABEL_FONT_SIZE * labelScale, 6);
+            const fontSize = Math.max(EDGE_LABEL_FONT_SIZE * labelScale, 5);
             const padding = EDGE_LABEL_HORIZONTAL_PADDING * labelScale;
             const minWidth = EDGE_LABEL_MIN_WIDTH * labelScale;
             const maxWidth = EDGE_LABEL_MAX_WIDTH * labelScale;
@@ -1183,7 +1182,7 @@ def render_share_html(
             ctx.fill();
             ctx.stroke();
           }}
-          const nodeFontSize = Math.max(NODE_LABEL_FONT_SIZE * labelScale, 7);
+          const nodeFontSize = Math.max(NODE_LABEL_FONT_SIZE * labelScale, 4.5);
           const nodeLineHeight = NODE_LABEL_LINE_HEIGHT * labelScale;
           ctx.font = `${{NODE_LABEL_FONT_WEIGHT}} ${{nodeFontSize}}px "Inter", system-ui, sans-serif`;
           ctx.textAlign = "center";
@@ -1194,8 +1193,8 @@ def render_share_html(
             const labelLines = Array.isArray(node.labelLines) && node.labelLines.length ? node.labelLines : [
               node.data.label || node.id || "",
             ];
-            ctx.fillStyle = node.labelColor || "#f8fafc";
-            ctx.strokeStyle = node.labelOutline || "rgba(15, 23, 42, 0.45)";
+            ctx.fillStyle = node.labelColor || NODE_LABEL_TEXT_COLOR;
+            ctx.strokeStyle = node.labelOutline || "rgba(255, 255, 255, 0.75)";
             const outlineWidth = Math.max(0.6, 1.2 * labelScale);
             ctx.lineWidth = outlineWidth;
             for (let index = 0; index < labelLines.length; index += 1) {{
