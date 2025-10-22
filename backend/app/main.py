@@ -20,7 +20,11 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from backend.app.auth.models import Base as AuthBase
+from backend.app.auth.router import router as auth_router
+from backend.app.auth.utils import EmailDispatcher, JWTManager
 from backend.app.canonicalization import CanonicalizationPipeline
 from backend.app.config import AppConfig, load_config
 from backend.app.export.bundle import ExportBundleBuilder, GraphViewExportProvider
@@ -187,6 +191,27 @@ def create_app(
 
     resolved_config = config or load_config()
     app = FastAPI(title="SciNets API", version=resolved_config.pipeline.version)
+
+    auth_engine: AsyncEngine = create_async_engine(
+        resolved_config.auth.database_url, future=True
+    )
+    auth_session_factory = async_sessionmaker(auth_engine, expire_on_commit=False)
+    app.state.auth_engine = auth_engine
+    app.state.auth_session_factory = auth_session_factory
+    app.state.auth_config = resolved_config.auth
+    app.state.jwt_manager = JWTManager(resolved_config.auth.jwt)
+    app.state.email_dispatcher = EmailDispatcher(
+        resolved_config.auth.smtp, resolved_config.auth.verification
+    )
+
+    @app.on_event("startup")
+    async def _init_auth_schema() -> None:
+        async with auth_engine.begin() as connection:
+            await connection.run_sync(AuthBase.metadata.create_all)
+
+    @app.on_event("shutdown")
+    async def _dispose_auth_engine() -> None:
+        await auth_engine.dispose()
 
     allowed_origins = resolved_config.ui.allowed_origins
     if allowed_origins:
@@ -587,6 +612,8 @@ def create_app(
                 driver.close()
             except Exception:  # noqa: BLE001 - defensive close
                 LOGGER.exception("Failed to close Neo4j driver")
+
+    app.include_router(auth_router)
 
     return app
 
