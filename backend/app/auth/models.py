@@ -10,11 +10,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from backend.app.auth.enums import UserRole
 
-class Base(DeclarativeBase):
+class AuthBase(DeclarativeBase):
     """Base declarative class for authentication models."""
 
 
-class User(Base):
+class User(AuthBase):
     """Persisted application user."""
 
     __tablename__ = "users"
@@ -46,7 +46,7 @@ class User(Base):
     )
 
 
-class EmailVerification(Base):
+class EmailVerification(AuthBase):
     """One-time verification token to confirm user email ownership."""
 
     __tablename__ = "email_verifications"
@@ -63,7 +63,7 @@ class EmailVerification(Base):
     user: Mapped[User] = relationship(back_populates="email_verifications")
 
 
-class RefreshToken(Base):
+class RefreshToken(AuthBase):
     """Stored refresh token allowing session continuation."""
 
     __tablename__ = "refresh_tokens"
@@ -81,4 +81,4 @@ class RefreshToken(Base):
     user: Mapped[User] = relationship(back_populates="refresh_tokens")
 
 
-__all__ = ["Base", "User", "EmailVerification", "RefreshToken", "UserRole"]
+__all__ = ["AuthBase", "User", "EmailVerification", "RefreshToken", "UserRole"]

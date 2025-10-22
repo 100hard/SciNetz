@@ -22,9 +22,10 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from backend.app.auth.enums import UserRole
+from backend.app.auth.models import AuthBase
 from backend.app.auth.router import get_current_user, router as auth_router
 from backend.app.auth.schemas import AuthUser
-from backend.app.auth.enums import UserRole
 from backend.app.auth.utils import EmailDispatcher, JWTManager
 from backend.app.canonicalization import CanonicalizationPipeline
 from backend.app.config import AppConfig, load_config
