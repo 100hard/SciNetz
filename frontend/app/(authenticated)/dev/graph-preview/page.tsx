@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 
-import GraphVisualization from "../../../components/graph-visualization";
-import type { GraphEdge, GraphNode } from "../../../components/graph-explorer";
+import GraphVisualization from "../../../../components/graph-visualization";
+import type { GraphEdge, GraphNode } from "../../../../components/graph-explorer";
 
 const sampleNodes: GraphNode[] = [
   {

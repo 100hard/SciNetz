@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { MessageSquare } from "lucide-react";
 
-const QaPanel = dynamic(() => import("../../components/qa-panel"), { ssr: false });
+const QaPanel = dynamic(() => import("../../../components/qa-panel"), { ssr: false });
 
 const QaPage = () => {
   return (

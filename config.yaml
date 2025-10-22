@@ -1,5 +1,22 @@
 pipeline:
   version: 1.0.0
+auth:
+  database_url: sqlite+aiosqlite:///./data/auth.db
+  jwt:
+    secret_key: please-change-me-super-secret-key-please-change
+    algorithm: HS256
+    access_token_expires_minutes: 15
+    refresh_token_expires_minutes: 10080
+  verification:
+    token_ttl_minutes: 1440
+    link_base_url: https://localhost:3000/verify
+  smtp:
+    host: localhost
+    port: 1025
+    username: ""
+    password: ""
+    use_tls: false
+    from_email: no-reply@scinets.local
 parsing:
   section_fuzzy_threshold: 0.85
   metadata_max_pages: 2
