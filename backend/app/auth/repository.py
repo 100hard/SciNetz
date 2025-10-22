@@ -9,6 +9,7 @@ from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.auth.enums import UserRole
 from backend.app.auth.models import EmailVerification, RefreshToken, User
 
 
@@ -43,12 +44,14 @@ class AuthRepository:
         digest.update(token.encode("utf-8"))
         return digest.hexdigest()
 
-    async def create_user(self, email: str, password: str) -> User:
+    async def create_user(
+        self, email: str, password: str, *, role: UserRole = UserRole.USER
+    ) -> User:
         """Persist a new user with the provided credentials."""
 
         normalized_email = email.strip().lower()
         hashed = self.hash_password(password)
-        user = User(email=normalized_email, hashed_password=hashed)
+        user = User(email=normalized_email, hashed_password=hashed, role=role)
         self._session.add(user)
         await self._session.flush()
         return user

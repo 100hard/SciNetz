@@ -16,14 +16,15 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from backend.app.auth.models import Base as AuthBase
-from backend.app.auth.router import router as auth_router
+from backend.app.auth.router import get_current_user, router as auth_router
+from backend.app.auth.schemas import AuthUser
+from backend.app.auth.enums import UserRole
 from backend.app.auth.utils import EmailDispatcher, JWTManager
 from backend.app.canonicalization import CanonicalizationPipeline
 from backend.app.config import AppConfig, load_config
@@ -93,6 +94,9 @@ class PaperSummary(BaseModel):
     nodes_written: int = 0
     edges_written: int = 0
     co_mention_edges: int = 0
+    owner_id: Optional[str] = None
+    shared_with: List[str] = Field(default_factory=list)
+    is_public: bool = False
 
 
 class UploadPaperRequest(BaseModel):
@@ -101,6 +105,19 @@ class UploadPaperRequest(BaseModel):
     filename: str = Field(..., min_length=1, description="Original filename supplied by the user")
     content_base64: str = Field(..., min_length=1, description="Base64-encoded PDF content")
     paper_id: Optional[str] = Field(default=None, description="Optional caller-provided identifier")
+
+
+class PaperAccessUpdate(BaseModel):
+    """Update shared access for a paper."""
+
+    shared_with: List[str] = Field(
+        default_factory=list,
+        description="User identifiers allowed to access the paper besides the owner.",
+    )
+    is_public: bool = Field(
+        default=False,
+        description="Grant read access to all verified users when true.",
+    )
 
 
 class GraphNodePayload(BaseModel):
@@ -285,19 +302,41 @@ def create_app(
         tags=["export"],
         summary="Create shareable export link",
         response_model=ShareExportResponse,
+        description="Requires authentication; exports are constrained to the caller's accessible papers.",
     )
-    def create_share_link(payload: ShareExportAPIRequest) -> ShareExportResponse:
+    def create_share_link(
+        payload: ShareExportAPIRequest,
+        current_user: AuthUser = Depends(get_current_user),
+    ) -> ShareExportResponse:
         """Generate a shareable export link for the provided filters."""
 
         service: Optional[ShareExportService] = getattr(app.state, "share_export_service", None)
         if service is None:
             raise HTTPException(status_code=503, detail="Share export service unavailable")
+        registry = _require_registry(app)
+        allowed_ids = (
+            []
+            if current_user.role is UserRole.ADMIN
+            else registry.accessible_paper_ids(current_user.id, current_user.role)
+        )
+        allowed_set = {paper.strip() for paper in allowed_ids if paper.strip()}
+        requested_papers = {
+            paper.strip() for paper in payload.filters.papers if paper and paper.strip()
+        }
+        if current_user.role is not UserRole.ADMIN and requested_papers - allowed_set:
+            raise HTTPException(status_code=403, detail="Not authorised to export requested papers")
+        allowed_for_request = (
+            None
+            if current_user.role is UserRole.ADMIN
+            else tuple(paper for paper in allowed_ids if paper)
+        )
         request = ShareExportRequest(
             filters=payload.filters,
             include_snippets=payload.include_snippets,
             truncate_snippets=payload.truncate_snippets,
-            requested_by=payload.requested_by,
+            requested_by=current_user.id,
             pipeline_version=resolved_config.pipeline.version,
+            allowed_papers=allowed_for_request,
         )
         try:
             response = service.create_share(request)
@@ -414,15 +453,22 @@ def create_app(
         "/api/export/share/{metadata_id}/revoke",
         tags=["export"],
         summary="Revoke a shareable export link",
+        description="Requires admin privileges.",
     )
-    def revoke_share_link(metadata_id: str, payload: ShareLinkRevokeRequest) -> dict[str, object]:
+    def revoke_share_link(
+        metadata_id: str,
+        _payload: ShareLinkRevokeRequest,
+        current_user: AuthUser = Depends(get_current_user),
+    ) -> dict[str, object]:
         """Revoke an existing share link, preventing further downloads."""
 
+        if current_user.role is not UserRole.ADMIN:
+            raise HTTPException(status_code=403, detail="Only admins can revoke share links")
         service: Optional[ShareExportService] = getattr(app.state, "share_export_service", None)
         if service is None:
             raise HTTPException(status_code=503, detail="Share export service unavailable")
         try:
-            updated = service.revoke_share(metadata_id, revoked_by=payload.revoked_by)
+            updated = service.revoke_share(metadata_id, revoked_by=current_user.id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Share metadata not found") from exc
         except Exception as exc:  # pragma: no cover - defensive logging
@@ -430,10 +476,21 @@ def create_app(
             raise HTTPException(status_code=500, detail="Unable to revoke share link") from exc
         return {"metadata_id": metadata_id, "revoked": True, "previously_revoked": not updated}
 
-    @app.post("/api/extract/{paper_id}", tags=["extraction"], summary="Run extraction pipeline")
-    def extract(paper_id: str, request: ExtractionRequest) -> dict[str, object]:
+    @app.post(
+        "/api/extract/{paper_id}",
+        tags=["extraction"],
+        summary="Run extraction pipeline",
+        description="Requires an authenticated admin user.",
+    )
+    def extract(
+        paper_id: str,
+        request: ExtractionRequest,
+        current_user: AuthUser = Depends(get_current_user),
+    ) -> dict[str, object]:
         """Run the extraction orchestrator for the supplied paper."""
 
+        if current_user.role is not UserRole.ADMIN:
+            raise HTTPException(status_code=403, detail="Only admins can run extractions")
         orchestrator_obj = getattr(app.state, "orchestrator", None)
         if orchestrator_obj is None:
             raise HTTPException(status_code=503, detail="Extraction orchestrator unavailable")
@@ -460,10 +517,15 @@ def create_app(
         "/api/ui/upload",
         tags=["ui"],
         summary="Upload a PDF for extraction",
+        description="Requires an authenticated user or admin.",
     )
-    def upload_paper(request: UploadPaperRequest) -> PaperSummary:
+    def upload_paper(
+        request: UploadPaperRequest, current_user: AuthUser = Depends(get_current_user)
+    ) -> PaperSummary:
         """Persist an uploaded PDF and register it for processing."""
 
+        if current_user.role not in {UserRole.ADMIN, UserRole.USER}:
+            raise HTTPException(status_code=403, detail="User role cannot upload papers")
         registry = _require_registry(app)
         upload_dir: Path = getattr(app.state, "upload_dir")
         original_name = request.paper_id or request.filename or "paper"
@@ -475,32 +537,43 @@ def create_app(
         upload_dir.mkdir(parents=True, exist_ok=True)
         pdf_path = upload_dir / f"{candidate_id}.pdf"
         pdf_path.write_bytes(content)
-        record = registry.register_upload(candidate_id, request.filename or pdf_path.name, pdf_path)
+        record = registry.register_upload(
+            candidate_id,
+            request.filename or pdf_path.name,
+            pdf_path,
+            owner_id=current_user.id,
+        )
         return _record_to_summary(record)
 
     @app.get(
         "/api/ui/papers",
         tags=["ui"],
         summary="List uploaded papers and their processing status",
+        description="Returns papers owned by or shared with the authenticated user.",
     )
-    def list_papers() -> List[PaperSummary]:
+    def list_papers(current_user: AuthUser = Depends(get_current_user)) -> List[PaperSummary]:
         """Return registered papers sorted by upload time."""
 
         registry = _require_registry(app)
-        return [_record_to_summary(record) for record in registry.list_records()]
+        records = registry.list_records_for_user(current_user.id, current_user.role)
+        return [_record_to_summary(record) for record in records]
 
     @app.post(
         "/api/ui/papers/{paper_id}/extract",
         tags=["ui"],
         summary="Run extraction for an uploaded paper",
     )
-    def extract_uploaded(paper_id: str) -> dict[str, object]:
+    def extract_uploaded(
+        paper_id: str, current_user: AuthUser = Depends(get_current_user)
+    ) -> dict[str, object]:
         """Execute the extraction pipeline for a previously uploaded PDF."""
 
         registry = _require_registry(app)
         record = registry.get(paper_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Paper not found")
+        if current_user.role is not UserRole.ADMIN and record.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorised to extract this paper")
         force_reprocess = record.status in {PaperStatus.COMPLETE, PaperStatus.FAILED}
         orchestrator_obj = getattr(app.state, "orchestrator", None)
         if orchestrator_obj is None:
@@ -544,10 +617,39 @@ def create_app(
         }
         return response
 
+    @app.post(
+        "/api/ui/papers/{paper_id}/access",
+        tags=["ui"],
+        summary="Update paper access controls",
+        description="Owner or admin may grant access to additional users.",
+    )
+    def update_paper_access(
+        paper_id: str,
+        payload: PaperAccessUpdate,
+        current_user: AuthUser = Depends(get_current_user),
+    ) -> PaperSummary:
+        """Adjust explicit access for a paper record."""
+
+        registry = _require_registry(app)
+        record = registry.get(paper_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Paper not found")
+        if current_user.role is not UserRole.ADMIN and record.owner_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorised to update paper access")
+        updated = registry.update_access(
+            paper_id,
+            shared_with=payload.shared_with,
+            is_public=payload.is_public,
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Paper not found")
+        return _record_to_summary(updated)
+
     @app.get(
         "/api/ui/graph",
         tags=["ui"],
         summary="Fetch a filtered graph view",
+        description="Requires authentication; results are limited to accessible papers.",
     )
     def graph_view(
         relations: Optional[str] = Query(None, description="Comma-separated relation filters"),
@@ -556,10 +658,12 @@ def create_app(
         include_co_mentions: Optional[bool] = Query(None, description="Whether to include co-mention edges"),
         papers: Optional[str] = Query(None, description="Comma-separated paper identifiers"),
         limit: int = Query(500, ge=1, le=2000),
+        current_user: AuthUser = Depends(get_current_user),
     ) -> GraphResponse:
         """Return nodes and edges satisfying the provided filters."""
 
         service = _require_graph_service(app)
+        registry = _require_registry(app)
         defaults = getattr(app.state, "ui_config").graph_defaults
         relation_list = _parse_csv(relations) or list(defaults.relations)
         section_list = _parse_csv(sections) or list(defaults.sections)
@@ -568,14 +672,23 @@ def create_app(
         include = (
             include_co_mentions if include_co_mentions is not None else defaults.show_co_mentions
         )
-        view = service.fetch_graph(
-            relations=relation_list,
-            min_confidence=min_conf,
-            sections=section_list,
-            include_co_mentions=include,
-            papers=paper_list,
-            limit=limit,
+        allowed = (
+            None
+            if current_user.role is UserRole.ADMIN
+            else registry.accessible_paper_ids(current_user.id, current_user.role)
         )
+        try:
+            view = service.fetch_graph(
+                relations=relation_list,
+                min_confidence=min_conf,
+                sections=section_list,
+                include_co_mentions=include,
+                papers=paper_list,
+                limit=limit,
+                allowed_papers=allowed,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         return _graph_response_from_view(view)
 
     @app.post(
@@ -583,9 +696,13 @@ def create_app(
         tags=["ui"],
         summary="Remove graph data from the Neo4j store",
     )
-    def clear_graph() -> dict[str, str]:
+    def clear_graph(
+        current_user: AuthUser = Depends(get_current_user),
+    ) -> dict[str, str]:
         """Delete nodes and edges so subsequent UI fetches return an empty graph."""
 
+        if current_user.role is not UserRole.ADMIN:
+            raise HTTPException(status_code=403, detail="Only admins can clear the graph")
         service = _require_graph_service(app)
         try:
             service.clear_graph()

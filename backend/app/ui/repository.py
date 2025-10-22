@@ -54,7 +54,9 @@ class GraphEdgeRecord:
 class GraphViewRepositoryProtocol(Protocol):
     """Protocol describing repository methods for graph retrieval."""
 
-    def fetch_edges(self, filters: GraphViewFilters) -> Sequence[GraphEdgeRecord]:
+    def fetch_edges(
+        self, filters: GraphViewFilters, allowed_papers: Optional[Sequence[str]] = None
+    ) -> Sequence[GraphEdgeRecord]:
         """Return graph edges satisfying the provided filters."""
 
     def clear_graph(self) -> None:
@@ -75,7 +77,9 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
     def __init__(self, driver: Driver) -> None:
         self._driver = driver
 
-    def fetch_edges(self, filters: GraphViewFilters) -> Sequence[GraphEdgeRecord]:
+    def fetch_edges(
+        self, filters: GraphViewFilters, allowed_papers: Optional[Sequence[str]] = None
+    ) -> Sequence[GraphEdgeRecord]:
         params = {"limit": self._query_limit(filters)}
         records = self._run_query(params)
         edges = [self._record_to_edge(record) for record in records]
@@ -87,6 +91,7 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
         if filters.papers:
             edges = self._apply_paper_filter(edges, filters.papers)
         filtered = self._apply_section_filter(edges, filters.sections)
+        filtered = self._apply_authorization_filter(filtered, allowed_papers)
         filtered = self._sort_edges(filtered)
         limit = max(int(filters.limit), 0)
         return filtered[:limit] if limit else []
@@ -156,6 +161,25 @@ class Neo4jGraphViewRepository(GraphViewRepositoryProtocol):
         if not filtered and trimmed:
             return list(edges)
         return filtered
+
+    @staticmethod
+    def _apply_authorization_filter(
+        edges: Sequence[GraphEdgeRecord], allowed: Optional[Sequence[str]]
+    ) -> List[GraphEdgeRecord]:
+        if allowed is None:
+            return list(edges)
+        allowed_set = {
+            str(paper).strip()
+            for paper in allowed
+            if paper is not None and str(paper).strip()
+        }
+        if not allowed_set:
+            return []
+        return [
+            edge
+            for edge in edges
+            if Neo4jGraphViewRepository._matches_papers(edge, allowed_set)
+        ]
 
     @staticmethod
     def _sort_edges(edges: Sequence[GraphEdgeRecord]) -> List[GraphEdgeRecord]:
