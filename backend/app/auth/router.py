@@ -107,7 +107,8 @@ async def register(
         response, token, expires_at = await service.register_user(payload)
     except AuthServiceError as exc:
         raise HTTPException(status_code=_status_from_reason(exc.reason), detail=str(exc)) from exc
-    background_tasks.add_task(service.send_verification_email, payload.email, token, expires_at)
+    if token is not None and expires_at is not None:
+        background_tasks.add_task(service.send_verification_email, payload.email, token, expires_at)
     return response
 
 

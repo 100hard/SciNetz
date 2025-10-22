@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Tuple
+from typing import Optional, Tuple
 
 from backend.app.auth.enums import UserRole
 from backend.app.auth.repository import AuthRepository
@@ -63,31 +63,44 @@ class AuthService:
             updated_at=user.updated_at,
         )
 
-    async def register_user(self, payload: RegisterRequest) -> Tuple[RegistrationResponse, str, datetime]:
+    async def register_user(
+        self, payload: RegisterRequest
+    ) -> Tuple[RegistrationResponse, Optional[str], Optional[datetime]]:
         """Register a new user and create a verification token."""
 
         existing = await self._repository.get_user_by_email(payload.email)
         if existing is not None:
             raise AuthServiceError("Email already registered", reason="conflict")
 
+        requires_verification = self._config.verification.enabled
+        token: Optional[str] = None
+        expires_at: Optional[datetime] = None
+        now = self._now()
         try:
             user = await self._repository.create_user(
                 payload.email, payload.password, role=UserRole.USER
             )
-            token = generate_refresh_token(32)
-            expires_at = self._now() + timedelta(
-                minutes=self._config.verification.token_ttl_minutes
-            )
-            await self._repository.create_email_verification(user, token, expires_at)
+            if requires_verification:
+                token = generate_refresh_token(32)
+                expires_at = now + self._config.verification.token_ttl
+                await self._repository.create_email_verification(user, token, expires_at)
+            else:
+                user.is_verified = True
+                user.updated_at = now
             await self._repository.commit()
         except Exception as exc:  # pragma: no cover - defensive rollback
             await self._repository.rollback()
             raise exc
 
+        message = (
+            "Registration successful. Please verify your email."
+            if requires_verification
+            else "Registration successful."
+        )
         response = RegistrationResponse(
-            message="Registration successful. Please verify your email.",
+            message=message,
             user=self._to_auth_user(user),
-            requires_verification=True,
+            requires_verification=requires_verification,
         )
         return response, token, expires_at
 
@@ -96,6 +109,8 @@ class AuthService:
     ) -> None:
         """Send the verification email via dispatcher."""
 
+        if not self._config.verification.enabled:
+            return
         await self._email_dispatcher.send_verification_email(email, token, expires_at)
 
     async def verify_email(self, token: str) -> VerificationResponse:

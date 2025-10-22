@@ -90,6 +90,7 @@ def test_email_verification_flow() -> None:
                 refresh_token_expires_minutes=60,
             ),
             verification=AuthVerificationConfig(
+                enabled=True,
                 token_ttl_minutes=60,
                 link_base_url="https://example.com/verify",
             ),
@@ -107,6 +108,8 @@ def test_email_verification_flow() -> None:
         registration, token, expires_at = await service.register_user(register_payload)
         assert registration.user.email == "user@example.com"
         assert registration.user.role is UserRole.USER
+        assert token is not None
+        assert expires_at is not None
         await service.send_verification_email(registration.user.email, token, expires_at)
         assert dispatcher.messages, "Verification email should be enqueued"
         verification_response = await service.verify_email(token)
@@ -120,6 +123,49 @@ def test_email_verification_flow() -> None:
         await service.logout(login_response.tokens.refresh_token)
         with pytest.raises(AuthServiceError):
             await service.verify_email(token)
+        await repo.session.close()
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_registration_without_verification_when_disabled() -> None:
+    async def _run() -> None:
+        repo, engine = await _setup_repository()
+        dispatcher = StubEmailDispatcher()
+        config = AuthConfig(
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt=AuthJWTConfig(
+                secret_key="no-verification-secret-key-that-is-long-enough-789012",
+                algorithm="HS256",
+                access_token_expires_minutes=5,
+                refresh_token_expires_minutes=60,
+            ),
+            verification=AuthVerificationConfig(
+                enabled=False,
+                token_ttl_minutes=60,
+                link_base_url="https://example.com/verify",
+            ),
+            smtp=AuthSMTPConfig(
+                host="localhost",
+                port=1025,
+                username="",
+                password="",
+                use_tls=False,
+                from_email="no-reply@example.com",
+            ),
+        )
+        service = AuthService(config, repo, JWTManager(config.jwt), dispatcher)
+        register_payload = RegisterRequest(email="instant@example.com", password="password123")
+        registration, token, expires_at = await service.register_user(register_payload)
+        assert registration.requires_verification is False
+        assert registration.user.is_verified is True
+        assert token is None
+        assert expires_at is None
+        assert dispatcher.messages == []
+        login_payload = LoginRequest(email="instant@example.com", password="password123")
+        login_response = await service.login(login_payload)
+        assert login_response.user.email == "instant@example.com"
         await repo.session.close()
         await engine.dispose()
 

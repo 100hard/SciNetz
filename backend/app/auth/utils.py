@@ -107,9 +107,8 @@ class EmailDispatcher:
                 password=self._smtp_config.password or None,
                 start_tls=self._smtp_config.use_tls,
             )
-        except Exception as exc:  # pragma: no cover - network failures are logged
-            LOGGER.error("Failed to send verification email: %s", exc)
-            raise
+        except Exception:  # pragma: no cover - network failures are logged
+            LOGGER.exception("Failed to send verification email")
 
 
 __all__ = [
