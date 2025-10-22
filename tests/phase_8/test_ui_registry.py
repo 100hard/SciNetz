@@ -14,8 +14,11 @@ def test_paper_registry_tracks_status_transitions(tmp_path: Path) -> None:
     pdf_path = tmp_path / "doc.pdf"
     pdf_path.write_text("dummy", encoding="utf-8")
 
-    record = registry.register_upload("paper-1", "doc.pdf", pdf_path)
+    record = registry.register_upload("paper-1", "doc.pdf", pdf_path, owner_id="user-1")
     assert record.status is PaperStatus.UPLOADED
+    assert record.owner_id == "user-1"
+    assert record.shared_with == []
+    assert not record.is_public
 
     in_progress = registry.mark_processing("paper-1")
     assert in_progress is not None
@@ -46,7 +49,7 @@ def test_paper_registry_records_failures(tmp_path: Path) -> None:
     pdf_path = tmp_path / "doc.pdf"
     pdf_path.write_text("dummy", encoding="utf-8")
 
-    registry.register_upload("paper-2", "doc.pdf", pdf_path)
+    registry.register_upload("paper-2", "doc.pdf", pdf_path, owner_id="owner-2")
     failed = registry.mark_failed("paper-2", ["boom"])
     assert failed is not None
     assert failed.status is PaperStatus.FAILED

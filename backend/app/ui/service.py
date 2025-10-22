@@ -75,18 +75,35 @@ class GraphViewService:
         include_co_mentions: bool,
         papers: Sequence[str] = (),
         limit: Optional[int] = None,
+        allowed_papers: Optional[Sequence[str]] = None,
     ) -> GraphView:
         """Fetch a graph using the supplied filters."""
 
+        allowed_set = None
+        if allowed_papers is not None:
+            allowed_set = {paper.strip() for paper in allowed_papers if paper and paper.strip()}
+            if not allowed_set:
+                return GraphView(nodes=[], edges=[])
+            requested_list = [paper.strip() for paper in papers if paper and paper.strip()]
+            requested = set(requested_list)
+            if requested and not requested <= allowed_set:
+                raise PermissionError("User is not authorised to access the requested papers")
+            effective_papers: Sequence[str]
+            if requested_list:
+                effective_papers = requested_list
+            else:
+                effective_papers = sorted(allowed_set)
+        else:
+            effective_papers = papers
         filters = GraphViewFilters(
             relations=relations,
             min_confidence=min_confidence,
             sections=sections,
             include_co_mentions=include_co_mentions,
-            papers=papers,
+            papers=effective_papers,
             limit=limit or self._default_limit,
         )
-        records = self._repository.fetch_edges(filters)
+        records = self._repository.fetch_edges(filters, allowed_papers=allowed_set)
         node_map: Dict[str, GraphNode] = {}
         edges: List[GraphEdge] = []
         for record in records:

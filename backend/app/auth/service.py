@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
+from backend.app.auth.enums import UserRole
 from backend.app.auth.repository import AuthRepository
 from backend.app.auth.schemas import (
     AuthUser,
@@ -57,6 +58,7 @@ class AuthService:
             id=user.id,
             email=user.email,
             is_verified=user.is_verified,
+            role=user.role,
             created_at=user.created_at,
             updated_at=user.updated_at,
         )
@@ -69,7 +71,9 @@ class AuthService:
             raise AuthServiceError("Email already registered", reason="conflict")
 
         try:
-            user = await self._repository.create_user(payload.email, payload.password)
+            user = await self._repository.create_user(
+                payload.email, payload.password, role=UserRole.USER
+            )
             token = generate_refresh_token(32)
             expires_at = self._now() + timedelta(
                 minutes=self._config.verification.token_ttl_minutes
@@ -132,7 +136,7 @@ class AuthService:
         now = self._now()
         access_token = self._jwt_manager.create_access_token(
             subject=user.id,
-            additional_claims={"email": user.email},
+            additional_claims={"email": user.email, "role": user.role.value},
         )
         refresh_token = generate_refresh_token()
         refresh_expires = now + timedelta(
@@ -178,7 +182,10 @@ class AuthService:
         if not user.is_active:
             raise AuthServiceError("User is disabled", reason="forbidden")
 
-        new_access_token = self._jwt_manager.create_access_token(subject=user.id)
+        new_access_token = self._jwt_manager.create_access_token(
+            subject=user.id,
+            additional_claims={"email": user.email, "role": user.role.value},
+        )
         new_refresh_token = generate_refresh_token()
         new_refresh_expires = now + timedelta(
             minutes=self._config.jwt.refresh_token_expires_minutes

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from threading import RLock
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence
 
+from backend.app.auth.enums import UserRole
 from backend.app.contracts import PaperMetadata
 
 
@@ -37,6 +38,9 @@ class PaperRecord:
     nodes_written: int = 0
     edges_written: int = 0
     co_mention_edges: int = 0
+    owner_id: Optional[str] = None
+    shared_with: List[str] = field(default_factory=list)
+    is_public: bool = False
 
     def to_dict(self) -> Dict[str, object]:
         """Return a JSON-serialisable payload for API responses."""
@@ -51,10 +55,26 @@ class PaperRecord:
             "nodes_written": self.nodes_written,
             "edges_written": self.edges_written,
             "co_mention_edges": self.co_mention_edges,
+            "owner_id": self.owner_id,
+            "shared_with": list(self.shared_with),
+            "is_public": self.is_public,
         }
         if self.metadata is not None:
             payload["metadata"] = self.metadata.model_dump()
         return payload
+
+    def is_accessible_by(self, user_id: str, role: UserRole) -> bool:
+        """Return True if the supplied user can access the record."""
+
+        if role is UserRole.ADMIN:
+            return True
+        if self.is_public:
+            return True
+        if self.owner_id is None:
+            return False
+        if self.owner_id == user_id:
+            return True
+        return user_id in self.shared_with
 
     def with_status(
         self,
@@ -65,7 +85,7 @@ class PaperRecord:
         nodes_written: Optional[int] = None,
         edges_written: Optional[int] = None,
         co_mention_edges: Optional[int] = None,
-    ) -> "PaperRecord":
+        ) -> "PaperRecord":
         """Create a copy with updated status and derived fields."""
 
         updated = datetime.now(timezone.utc)
@@ -83,6 +103,9 @@ class PaperRecord:
             co_mention_edges=(
                 co_mention_edges if co_mention_edges is not None else self.co_mention_edges
             ),
+            owner_id=self.owner_id,
+            shared_with=list(self.shared_with),
+            is_public=self.is_public,
         )
 
 
@@ -94,10 +117,22 @@ class PaperRegistry:
         self._lock = RLock()
         self._records = self._load()
 
-    def register_upload(self, paper_id: str, filename: str, pdf_path: Path) -> PaperRecord:
+    def register_upload(
+        self,
+        paper_id: str,
+        filename: str,
+        pdf_path: Path,
+        owner_id: str,
+        *,
+        shared_with: Optional[Iterable[str]] = None,
+        is_public: bool = False,
+    ) -> PaperRecord:
         """Record a new upload and persist the registry."""
 
         now = datetime.now(timezone.utc)
+        normalized_owner = owner_id.strip()
+        if not normalized_owner:
+            raise ValueError("Owner ID cannot be empty")
         record = PaperRecord(
             paper_id=paper_id,
             filename=filename,
@@ -105,6 +140,9 @@ class PaperRegistry:
             status=PaperStatus.UPLOADED,
             uploaded_at=now,
             updated_at=now,
+            owner_id=normalized_owner,
+            shared_with=self._normalise_user_ids(shared_with),
+            is_public=bool(is_public),
         )
         with self._lock:
             self._records[paper_id] = record
@@ -149,11 +187,68 @@ class PaperRegistry:
         with self._lock:
             return self._records.get(paper_id)
 
+    def get_for_user(self, paper_id: str, user_id: str, role: UserRole) -> Optional[PaperRecord]:
+        """Return a paper when the user is authorised to access it."""
+
+        with self._lock:
+            record = self._records.get(paper_id)
+            if record is None:
+                return None
+            return record if record.is_accessible_by(user_id, role) else None
+
     def list_records(self) -> List[PaperRecord]:
         """Return all records ordered by upload time (most recent first)."""
 
         with self._lock:
             return sorted(self._records.values(), key=lambda rec: rec.uploaded_at, reverse=True)
+
+    def list_records_for_user(self, user_id: str, role: UserRole) -> List[PaperRecord]:
+        """Return accessible records for the supplied user."""
+
+        with self._lock:
+            if role is UserRole.ADMIN:
+                candidates = self._records.values()
+            else:
+                candidates = [
+                    record
+                    for record in self._records.values()
+                    if record.is_accessible_by(user_id, role)
+                ]
+            return sorted(candidates, key=lambda rec: rec.uploaded_at, reverse=True)
+
+    def accessible_paper_ids(self, user_id: str, role: UserRole) -> List[str]:
+        """Return identifiers for papers the user may access."""
+
+        return [record.paper_id for record in self.list_records_for_user(user_id, role)]
+
+    def update_access(
+        self,
+        paper_id: str,
+        *,
+        shared_with: Optional[Iterable[str]] = None,
+        is_public: Optional[bool] = None,
+    ) -> Optional[PaperRecord]:
+        """Update the access control lists for the supplied paper."""
+
+        with self._lock:
+            record = self._records.get(paper_id)
+            if record is None:
+                return None
+            new_shared = (
+                self._normalise_user_ids(shared_with)
+                if shared_with is not None
+                else list(record.shared_with)
+            )
+            new_public = bool(is_public) if is_public is not None else record.is_public
+            updated = replace(
+                record,
+                updated_at=datetime.now(timezone.utc),
+                shared_with=new_shared,
+                is_public=new_public,
+            )
+            self._records[paper_id] = updated
+            self._persist()
+            return updated
 
     def _update(
         self,
@@ -181,6 +276,22 @@ class PaperRegistry:
             self._records[paper_id] = updated
             self._persist()
             return updated
+
+    @staticmethod
+    def _normalise_user_ids(user_ids: Optional[Iterable[str]]) -> List[str]:
+        if user_ids is None:
+            return []
+        if isinstance(user_ids, (str, bytes)):
+            candidates = [str(user_ids)]
+        else:
+            candidates = [str(candidate) for candidate in user_ids]
+        seen: List[str] = []
+        for candidate in candidates:
+            trimmed = candidate.strip()
+            if not trimmed or trimmed in seen:
+                continue
+            seen.append(trimmed)
+        return seen
 
     def _load(self) -> Dict[str, PaperRecord]:
         if not self._path.exists():
@@ -253,6 +364,23 @@ class PaperRegistry:
         nodes_written = int(payload.get("nodes_written", 0) or 0)
         edges_written = int(payload.get("edges_written", 0) or 0)
         co_mention_edges = int(payload.get("co_mention_edges", 0) or 0)
+        owner_raw = payload.get("owner_id")
+        owner_id: Optional[str]
+        if isinstance(owner_raw, str):
+            owner_id = owner_raw.strip() or None
+        elif owner_raw is None:
+            owner_id = None
+        else:
+            owner_id = str(owner_raw).strip() or None
+        shared_raw = payload.get("shared_with")
+        shared_with: List[str]
+        if isinstance(shared_raw, list):
+            shared_with = PaperRegistry._normalise_user_ids(shared_raw)
+        elif isinstance(shared_raw, (str, bytes)):
+            shared_with = PaperRegistry._normalise_user_ids([shared_raw])
+        else:
+            shared_with = []
+        is_public = bool(payload.get("is_public", False))
         return PaperRecord(
             paper_id=paper_id,
             filename=filename,
@@ -265,5 +393,8 @@ class PaperRegistry:
             nodes_written=nodes_written,
             edges_written=edges_written,
             co_mention_edges=co_mention_edges,
+            owner_id=owner_id,
+            shared_with=shared_with,
+            is_public=is_public,
         )
 

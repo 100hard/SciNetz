@@ -46,6 +46,7 @@ class ShareExportRequest(_FrozenModel):
     requested_by: str = Field(..., min_length=1)
     pipeline_version: str = Field(..., min_length=1)
     estimated_size_bytes: Optional[int] = Field(default=None, ge=0)
+    allowed_papers: Optional[tuple[str, ...]] = Field(default=None)
 
 
 class ShareExportResponse(_FrozenModel):

@@ -6,6 +6,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from backend.app.auth.enums import UserRole
+
 
 class _FrozenModel(BaseModel):
     """Base immutable schema."""
@@ -19,6 +21,7 @@ class AuthUser(_FrozenModel):
     id: str = Field(..., min_length=1)
     email: EmailStr
     is_verified: bool
+    role: UserRole
     created_at: datetime
     updated_at: datetime
 

@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Enum as SAEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from backend.app.auth.enums import UserRole
 
 class Base(DeclarativeBase):
     """Base declarative class for authentication models."""
@@ -23,6 +24,11 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    role: Mapped[UserRole] = mapped_column(
+        SAEnum(UserRole, name="user_role", native_enum=False, length=16),
+        default=UserRole.USER,
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -75,4 +81,4 @@ class RefreshToken(Base):
     user: Mapped[User] = relationship(back_populates="refresh_tokens")
 
 
-__all__ = ["Base", "User", "EmailVerification", "RefreshToken"]
+__all__ = ["Base", "User", "EmailVerification", "RefreshToken", "UserRole"]

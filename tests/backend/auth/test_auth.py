@@ -8,6 +8,7 @@ from typing import List, Tuple
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from backend.app.auth.enums import UserRole
 from backend.app.auth.models import Base
 from backend.app.auth.repository import AuthRepository
 from backend.app.auth.schemas import LoginRequest, RegisterRequest
@@ -94,6 +95,7 @@ def test_email_verification_flow() -> None:
         register_payload = RegisterRequest(email="user@example.com", password="password123")
         registration, token, expires_at = await service.register_user(register_payload)
         assert registration.user.email == "user@example.com"
+        assert registration.user.role is UserRole.USER
         await service.send_verification_email(registration.user.email, token, expires_at)
         assert dispatcher.messages, "Verification email should be enqueued"
         verification_response = await service.verify_email(token)
@@ -101,6 +103,9 @@ def test_email_verification_flow() -> None:
         login_payload = LoginRequest(email="user@example.com", password="password123")
         login_response = await service.login(login_payload)
         assert login_response.tokens.access_token
+        assert login_response.user.role is UserRole.USER
+        decoded = JWTManager(config.jwt).decode(login_response.tokens.access_token)
+        assert decoded.get("role") == UserRole.USER.value
         await service.logout(login_response.tokens.refresh_token)
         with pytest.raises(AuthServiceError):
             await service.verify_email(token)
