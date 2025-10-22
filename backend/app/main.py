@@ -221,6 +221,11 @@ def create_app(
         resolved_config.auth.smtp, resolved_config.auth.verification
     )
 
+    @app.on_event("startup")
+    async def _init_auth_schema() -> None:
+        async with auth_engine.begin() as connection:
+            await connection.run_sync(AuthBase.metadata.create_all)
+
     @app.on_event("shutdown")
     async def _dispose_auth_engine() -> None:
         await auth_engine.dispose()

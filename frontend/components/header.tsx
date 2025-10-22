@@ -1,6 +1,40 @@
-import { Bell, Search } from "lucide-react";
+"use client";
+
+import { Bell, LogOut, Search } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useMemo } from "react";
+import { toast } from "sonner";
+
+import { useAuth } from "./auth-provider";
+import { extractErrorMessage } from "../lib/http";
 
 const Header = () => {
+  const router = useRouter();
+  const { user, logout } = useAuth();
+
+  const initials = useMemo(() => {
+    if (!user?.email) {
+      return "SN";
+    }
+    return user.email
+      .split("@")[0]
+      .split(/[._-]/)
+      .filter(Boolean)
+      .map((segment) => segment[0]?.toUpperCase())
+      .join("")
+      .slice(0, 2) || user.email[0]?.toUpperCase() || "SN";
+  }, [user?.email]);
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+      toast.success("Signed out successfully.");
+      router.replace("/login");
+    } catch (error) {
+      toast.error(extractErrorMessage(error, "Unable to sign out."));
+    }
+  };
+
   return (
     <header className="flex items-center border-b bg-card/80 px-6 py-4 backdrop-blur supports-[backdrop-filter]:bg-card/60">
       <div>
@@ -23,8 +57,25 @@ const Header = () => {
         >
           <Bell className="h-4 w-4" />
         </button>
-        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold uppercase text-primary">
-          SN
+        <div className="flex items-center gap-3">
+          <div className="hidden text-right sm:block">
+            <p className="text-sm font-medium text-foreground">{user?.email ?? "Account"}</p>
+            <p className="text-xs text-muted-foreground">
+              {user?.is_verified ? "Verified" : "Awaiting verification"}
+            </p>
+          </div>
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold uppercase text-primary">
+            {initials}
+          </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm font-medium text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
+          >
+            <LogOut className="h-4 w-4" />
+            <span className="hidden sm:inline">Sign out</span>
+            <span className="sr-only">Sign out</span>
+          </button>
         </div>
       </div>
     </header>
