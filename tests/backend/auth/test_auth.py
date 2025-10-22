@@ -6,10 +6,11 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from backend.app.auth.enums import UserRole
-from backend.app.auth.models import Base
+from backend.app.auth.models import AuthBase
 from backend.app.auth.repository import AuthRepository
 from backend.app.auth.schemas import LoginRequest, RegisterRequest
 from backend.app.auth.service import AuthService, AuthServiceError
@@ -30,7 +31,7 @@ class StubEmailDispatcher:
 async def _setup_repository() -> Tuple[AuthRepository, AsyncEngine]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+        await connection.run_sync(AuthBase.metadata.create_all)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     session = session_factory()
     repo = AuthRepository(session)
@@ -47,6 +48,16 @@ def test_password_hashing_round_trip() -> None:
         await engine.dispose()
 
     asyncio.run(_run())
+
+
+def test_password_length_restriction() -> None:
+    """Passwords longer than bcrypt's limit should be rejected."""
+
+    with pytest.raises(ValidationError):
+        RegisterRequest(
+            email="toolong@example.com",
+            password="x" * 73,
+        )
 
 
 def test_jwt_expiry_enforced() -> None:
