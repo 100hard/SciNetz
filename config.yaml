@@ -8,6 +8,7 @@ auth:
     access_token_expires_minutes: 15
     refresh_token_expires_minutes: 10080
   verification:
+    enabled: false
     token_ttl_minutes: 1440
     link_base_url: https://localhost:3000/verify
   smtp:

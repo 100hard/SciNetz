@@ -346,6 +346,7 @@ class AuthJWTConfig(_FrozenModel):
 class AuthVerificationConfig(_FrozenModel):
     """Email verification token settings."""
 
+    enabled: bool = True
     token_ttl_minutes: int = Field(..., ge=1)
     link_base_url: str = Field(..., min_length=1)
 
