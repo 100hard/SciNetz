@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 from functools import lru_cache
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -321,6 +322,60 @@ class UIConfig(_FrozenModel):
     allowed_origins: List[str] = Field(default_factory=list)
 
 
+class AuthJWTConfig(_FrozenModel):
+    """JWT signing settings."""
+
+    secret_key: str = Field(..., min_length=32)
+    algorithm: str = Field("HS256", min_length=1)
+    access_token_expires_minutes: int = Field(..., ge=1)
+    refresh_token_expires_minutes: int = Field(..., ge=1)
+
+    @property
+    def access_token_ttl(self) -> timedelta:
+        """Return the configured access token lifetime."""
+
+        return timedelta(minutes=self.access_token_expires_minutes)
+
+    @property
+    def refresh_token_ttl(self) -> timedelta:
+        """Return the configured refresh token lifetime."""
+
+        return timedelta(minutes=self.refresh_token_expires_minutes)
+
+
+class AuthVerificationConfig(_FrozenModel):
+    """Email verification token settings."""
+
+    token_ttl_minutes: int = Field(..., ge=1)
+    link_base_url: str = Field(..., min_length=1)
+
+    @property
+    def token_ttl(self) -> timedelta:
+        """Return the verification token lifetime."""
+
+        return timedelta(minutes=self.token_ttl_minutes)
+
+
+class AuthSMTPConfig(_FrozenModel):
+    """SMTP credentials for transactional email delivery."""
+
+    host: str = Field(..., min_length=1)
+    port: int = Field(..., ge=1, le=65535)
+    username: str = Field(default="")
+    password: str = Field(default="")
+    use_tls: bool = False
+    from_email: str = Field(..., min_length=3)
+
+
+class AuthConfig(_FrozenModel):
+    """Top-level authentication configuration."""
+
+    database_url: str = Field(..., min_length=1)
+    jwt: AuthJWTConfig
+    verification: AuthVerificationConfig
+    smtp: AuthSMTPConfig
+
+
 class AppConfig(_FrozenModel):
     """Top-level application configuration composed from config.yaml."""
 
@@ -334,6 +389,7 @@ class AppConfig(_FrozenModel):
     qa: QAConfig
     export: ExportConfig
     ui: UIConfig
+    auth: AuthConfig
 
     @staticmethod
     def default_path() -> Path:
