@@ -12,7 +12,7 @@ auth:
     token_ttl_minutes: 1440
     link_base_url: https://localhost:3000/verify
   smtp:
-    host: localhost
+    host: mailhog
     port: 1025
     username: ""
     password: ""
