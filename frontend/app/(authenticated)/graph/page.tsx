@@ -1,6 +1,6 @@
 import dynamic from "next/dynamic";
 
-const GraphExplorer = dynamic(() => import("../../components/graph-explorer"), {
+const GraphExplorer = dynamic(() => import("../../../components/graph-explorer"), {
   ssr: false,
 });
 
