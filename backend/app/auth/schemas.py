@@ -74,14 +74,14 @@ class RegisterRequest(BaseModel):
     """Registration input payload."""
 
     email: EmailStr
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=72)
 
 
 class LoginRequest(BaseModel):
     """Login request payload."""
 
     email: EmailStr
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=72)
     user_agent: Optional[str] = Field(default=None, max_length=255)
 
 

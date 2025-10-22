@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from backend.app.auth.enums import UserRole
@@ -47,6 +48,16 @@ def test_password_hashing_round_trip() -> None:
         await engine.dispose()
 
     asyncio.run(_run())
+
+
+def test_password_length_restriction() -> None:
+    """Passwords longer than bcrypt's limit should be rejected."""
+
+    with pytest.raises(ValidationError):
+        RegisterRequest(
+            email="toolong@example.com",
+            password="x" * 73,
+        )
 
 
 def test_jwt_expiry_enforced() -> None:
