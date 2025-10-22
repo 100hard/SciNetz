@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from backend.app.auth.models import Base as AuthBase
 from backend.app.auth.router import router as auth_router
 from backend.app.auth.utils import EmailDispatcher, JWTManager
 from backend.app.canonicalization import CanonicalizationPipeline
@@ -202,6 +203,11 @@ def create_app(
     app.state.email_dispatcher = EmailDispatcher(
         resolved_config.auth.smtp, resolved_config.auth.verification
     )
+
+    @app.on_event("startup")
+    async def _init_auth_schema() -> None:
+        async with auth_engine.begin() as connection:
+            await connection.run_sync(AuthBase.metadata.create_all)
 
     @app.on_event("shutdown")
     async def _dispose_auth_engine() -> None:
