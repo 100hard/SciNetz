@@ -21,6 +21,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      mailhog:
+        condition: service_started
 
   frontend:
     build:
@@ -71,6 +73,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    ports:
+      - "1025:1025"
+      - "8025:8025"
 
 volumes:
   neo4j_data:
