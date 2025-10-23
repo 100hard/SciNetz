@@ -40,13 +40,16 @@ class GraphViewExportProvider(GraphProviderProtocol):
     def fetch(
         self, filters: ShareExportFilters, *, allowed_papers: Optional[Sequence[str]] = None
     ) -> GraphView:
+        kwargs: Dict[str, object] = {}
+        if allowed_papers is not None:
+            kwargs["allowed_papers"] = allowed_papers
         view = self._service.fetch_graph(
             relations=filters.relations,
             min_confidence=filters.min_confidence,
             sections=filters.sections,
             include_co_mentions=filters.include_co_mentions,
             papers=filters.papers,
-            allowed_papers=allowed_papers,
+            **kwargs,
         )
         return view
 
@@ -73,9 +76,10 @@ class ExportBundleBuilder:
     def build(self, request: ShareExportRequest) -> ExportBundle:
         """Build an export bundle for the given request."""
 
-        graph = self._graph_provider.fetch(
-            request.filters, allowed_papers=request.allowed_papers
-        )
+        fetch_kwargs = {}
+        if request.allowed_papers is not None:
+            fetch_kwargs["allowed_papers"] = request.allowed_papers
+        graph = self._graph_provider.fetch(request.filters, **fetch_kwargs)
         created_at = self._clock().astimezone(timezone.utc)
         sanitized = self._serialise_graph(graph, request)
         files: Dict[str, bytes] = {

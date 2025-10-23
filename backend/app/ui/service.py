@@ -103,7 +103,10 @@ class GraphViewService:
             papers=effective_papers,
             limit=limit or self._default_limit,
         )
-        records = self._repository.fetch_edges(filters, allowed_papers=allowed_set)
+        if allowed_set is not None:
+            records = self._repository.fetch_edges(filters, allowed_papers=allowed_set)
+        else:
+            records = self._repository.fetch_edges(filters)
         node_map: Dict[str, GraphNode] = {}
         edges: List[GraphEdge] = []
         for record in records:

@@ -123,7 +123,10 @@ class AuthService:
         now = self._now()
         if verification.consumed_at is not None:
             raise AuthServiceError("Verification token already used", reason="gone")
-        if verification.expires_at < now:
+        expires_at = verification.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < now:
             raise AuthServiceError("Verification token expired", reason="gone")
 
         try:
