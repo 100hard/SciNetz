@@ -78,6 +78,48 @@ const MODE_LABELS: Record<QAResponse["mode"], string> = {
   conflicting: "Conflicting evidence",
 };
 
+const HISTORY_STORAGE_KEY = "scinetz.qa.history";
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isChatTurn = (value: unknown): value is ChatTurn => {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (typeof value.id !== "string" || typeof value.question !== "string" || typeof value.createdAt !== "string") {
+    return false;
+  }
+  const response = value.response;
+  if (!isRecord(response)) {
+    return false;
+  }
+  if (typeof response.mode !== "string" || typeof response.summary !== "string") {
+    return false;
+  }
+  if (!Array.isArray(response.resolved_entities) || !Array.isArray(response.paths) || !Array.isArray(response.fallback_edges)) {
+    return false;
+  }
+  return true;
+};
+
+const parseStoredHistory = (raw: string | null): ChatTurn[] => {
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const turns = parsed.filter(isChatTurn);
+    return turns;
+  } catch (err) {
+    console.warn("Failed to parse stored QA history", err);
+    return [];
+  }
+};
+
 const formatTimestamp = (value: string) => {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
@@ -201,6 +243,7 @@ const QaPanel = () => {
   const [question, setQuestion] = useState("");
   const [history, setHistory] = useState<ChatTurn[]>([]);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [qaSettings, setQaSettings] = useState<{ llmEnabled: boolean | null; provider: string | null }>({
@@ -233,6 +276,32 @@ const QaPanel = () => {
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const stored = window.localStorage.getItem(HISTORY_STORAGE_KEY);
+    const restored = parseStoredHistory(stored);
+    if (restored.length > 0) {
+      setHistory(restored);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (history.length === 0) {
+      window.localStorage.removeItem(HISTORY_STORAGE_KEY);
+      return;
+    }
+    try {
+      window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
+    } catch (err) {
+      console.warn("Failed to persist QA history", err);
+    }
+  }, [history]);
 
   const settingsLoaded = qaSettings.llmEnabled !== null;
   const isLlmEnabled = qaSettings.llmEnabled ?? false;
@@ -287,6 +356,7 @@ const QaPanel = () => {
           createdAt: new Date().toISOString(),
         };
         setHistory((prev) => [...prev, turn]);
+        setSelectedTurnId(turn.id);
         setQuestion("");
       } catch (err) {
         const message = extractErrorMessage(err, "Unable to answer the question right now.");
@@ -295,14 +365,31 @@ const QaPanel = () => {
         setPendingQuestion(null);
         setIsLoading(false);
       }
-    }, [question, settingsLoaded]);
+  }, [question, settingsLoaded]);
 
   const handleClear = () => {
     setQuestion("");
     setHistory([]);
     setPendingQuestion(null);
     setError(null);
+    setSelectedTurnId(null);
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(HISTORY_STORAGE_KEY);
+    }
   };
+
+  const selectedTurn = useMemo(() => {
+    if (history.length === 0) {
+      return null;
+    }
+    if (selectedTurnId) {
+      const match = history.find((turn) => turn.id === selectedTurnId);
+      if (match) {
+        return match;
+      }
+    }
+    return history[history.length - 1];
+  }, [history, selectedTurnId]);
 
   return (
     <section className="rounded-lg border bg-card p-6 shadow-sm">
@@ -379,31 +466,70 @@ const QaPanel = () => {
             )}
           </div>
         ) : (
-          history
-            .slice()
-            .reverse()
-            .map((turn) => {
-              const llmAnswer = turn.response.llm_answer?.trim();
-              return (
-                <article key={turn.id} className="space-y-4 rounded-lg border bg-card/70 p-5 shadow-sm">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,240px)_1fr]">
+            <aside className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-foreground">History</h3>
+                <span className="text-xs text-muted-foreground">
+                  {history.length} {history.length === 1 ? "question" : "questions"}
+                </span>
+              </div>
+              <ul className="space-y-2">
+                {history
+                  .slice()
+                  .reverse()
+                  .map((turn) => {
+                    const answerPreview = (turn.response.llm_answer?.trim() || turn.response.summary).replace(/\s+/g, " ");
+                    const snippet =
+                      answerPreview.length > 140 ? `${answerPreview.slice(0, 137).trimEnd()}…` : answerPreview;
+                    const activeId = selectedTurn?.id ?? null;
+                    const isActive = activeId === turn.id;
+                    return (
+                      <li key={turn.id}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTurnId(turn.id)}
+                          className={`w-full rounded-md border px-3 py-3 text-left text-sm transition ${
+                            isActive
+                              ? "border-primary/60 bg-primary/10 text-foreground"
+                              : "border-border bg-background text-foreground hover:border-primary/40 hover:bg-primary/5"
+                          }`}
+                        >
+                          <p className="font-semibold">{turn.question}</p>
+                          <p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+                            {MODE_LABELS[turn.response.mode]} · {formatTimestamp(turn.createdAt)}
+                          </p>
+                          <p className="mt-1 text-xs text-muted-foreground">{snippet}</p>
+                        </button>
+                      </li>
+                    );
+                  })}
+              </ul>
+            </aside>
+
+            <div>
+              {selectedTurn ? (
+                <article className="space-y-4 rounded-lg border bg-card/70 p-5 shadow-sm">
                   <header className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                       <p className="text-xs uppercase tracking-wide text-muted-foreground">Question</p>
-                      <p className="text-sm font-semibold text-foreground">{turn.question}</p>
+                      <p className="text-sm font-semibold text-foreground">{selectedTurn.question}</p>
                     </div>
-                    <span className="text-xs text-muted-foreground">{formatTimestamp(turn.createdAt)}</span>
+                    <span className="text-xs text-muted-foreground">{formatTimestamp(selectedTurn.createdAt)}</span>
                   </header>
 
                   <div className="rounded-md border border-primary/30 bg-primary/5 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs uppercase tracking-wide text-muted-foreground">
-                      <span className="font-semibold text-foreground">{MODE_LABELS[turn.response.mode]}</span>
-                      <span>{turn.response.paths.length} reasoning paths</span>
+                      <span className="font-semibold text-foreground">{MODE_LABELS[selectedTurn.response.mode]}</span>
+                      <span>{selectedTurn.response.paths.length} reasoning paths</span>
                     </div>
                     <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
-                      {llmAnswer || turn.response.summary}
+                      {selectedTurn.response.llm_answer?.trim() || selectedTurn.response.summary}
                     </p>
-                    {llmAnswer ? (
-                      <p className="mt-3 text-xs text-muted-foreground">Graph summary: {turn.response.summary}</p>
+                    {selectedTurn.response.llm_answer ? (
+                      <p className="mt-3 text-xs text-muted-foreground">
+                        Graph summary: {selectedTurn.response.summary}
+                      </p>
                     ) : null}
                   </div>
 
@@ -414,11 +540,11 @@ const QaPanel = () => {
                     <div className="mt-4 space-y-6 text-sm">
                       <section className="space-y-3">
                         <h4 className="text-sm font-semibold text-foreground">Resolved entities</h4>
-                        {turn.response.resolved_entities.length === 0 ? (
+                        {selectedTurn.response.resolved_entities.length === 0 ? (
                           <p className="text-xs text-muted-foreground">No entities were resolved from the question.</p>
                         ) : (
                           <div className="grid gap-4 md:grid-cols-2">
-                            {turn.response.resolved_entities.map((entity) => (
+                            {selectedTurn.response.resolved_entities.map((entity) => (
                               <div key={entity.mention} className="space-y-2 rounded-lg border bg-card p-4 shadow-sm">
                                 <p className="text-sm font-semibold text-foreground">Mention: {entity.mention}</p>
                                 <CandidateList candidates={entity.candidates} />
@@ -430,8 +556,8 @@ const QaPanel = () => {
 
                       <section className="space-y-3">
                         <h4 className="text-sm font-semibold text-foreground">Reasoning paths</h4>
-                        {turn.response.paths.length > 0 ? (
-                          <PathList paths={turn.response.paths} />
+                        {selectedTurn.response.paths.length > 0 ? (
+                          <PathList paths={selectedTurn.response.paths} />
                         ) : (
                           <p className="text-xs text-muted-foreground">No multi-hop paths discovered.</p>
                         )}
@@ -439,8 +565,8 @@ const QaPanel = () => {
 
                       <section className="space-y-3">
                         <h4 className="text-sm font-semibold text-foreground">Fallback evidence</h4>
-                        {turn.response.fallback_edges.length > 0 ? (
-                          <EdgeList edges={turn.response.fallback_edges} title="Related findings" />
+                        {selectedTurn.response.fallback_edges.length > 0 ? (
+                          <EdgeList edges={selectedTurn.response.fallback_edges} title="Related findings" />
                         ) : (
                           <p className="text-xs text-muted-foreground">No fallback evidence returned.</p>
                         )}
@@ -448,8 +574,13 @@ const QaPanel = () => {
                     </div>
                   </details>
                 </article>
-              );
-            })
+              ) : (
+                <div className="rounded-lg border bg-background p-6 text-sm text-muted-foreground shadow-sm">
+                  Select a question from the history to review its answer and supporting evidence.
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
     </section>
