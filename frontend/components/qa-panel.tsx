@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, HelpCircle, Loader2, MessageSquare } from "lucide-react";
 
-import apiClient, { extractErrorMessage } from "../lib/http";
+import apiClient, { extractErrorMessage } from "@/lib/http";
 
 type EvidenceModel = {
   doc_id: string;

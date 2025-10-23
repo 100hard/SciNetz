@@ -12,7 +12,7 @@ import {
   UploadCloud,
 } from "lucide-react";
 
-import apiClient, { extractErrorMessage } from "../../../lib/http";
+import apiClient, { extractErrorMessage } from "@/lib/http";
 
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 800;

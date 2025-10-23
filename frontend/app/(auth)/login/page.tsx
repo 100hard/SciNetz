@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 
 import { useAuth } from "../../../components/auth-provider";
-import { extractErrorMessage } from "../../../lib/http";
+import { extractErrorMessage } from "@/lib/http";
 
 const LoginPage = () => {
   const router = useRouter();

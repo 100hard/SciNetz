@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 
-import apiClient from "../lib/http";
+import apiClient from "@/lib/http";
 import type {
   AuthUser,
   LoginResponse,

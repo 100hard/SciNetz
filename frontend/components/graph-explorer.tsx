@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 
 import GraphVisualization, { GRAPH_VISUALIZATION_NODE_LIMIT } from "./graph-visualization";
-import apiClient, { buildApiUrl, extractErrorMessage } from "../lib/http";
+import apiClient, { buildApiUrl, extractErrorMessage } from "@/lib/http";
 
 type GraphDefaults = {
   relations: string[];
