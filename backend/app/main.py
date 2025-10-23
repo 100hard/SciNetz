@@ -209,6 +209,7 @@ def create_app(
 
     resolved_config = config or load_config()
     app = FastAPI(title="SciNets API", version=resolved_config.pipeline.version)
+    app.state.app_config = resolved_config
 
     async def _test_user() -> AuthUser:
         now = datetime.now(timezone.utc)
@@ -971,8 +972,27 @@ def _require_registry(app: FastAPI) -> PaperRegistry:
     return registry
 
 
+def _reinitialize_graph_service(app: FastAPI) -> Optional[GraphViewService]:
+    config = getattr(app.state, "app_config", None)
+    if config is None:
+        return None
+    driver = getattr(app.state, "neo4j_driver", None)
+    if driver is None:
+        driver = _create_neo4j_driver(config)
+        if driver is None:
+            return None
+        app.state.neo4j_driver = driver
+    service = _build_graph_view_service(driver)
+    if service is None:
+        return None
+    app.state.graph_view_service = service
+    return service
+
+
 def _require_graph_service(app: FastAPI) -> GraphViewService:
     service = getattr(app.state, "graph_view_service", None)
+    if service is None:
+        service = _reinitialize_graph_service(app)
     if service is None:
         raise HTTPException(status_code=503, detail="Graph view service unavailable")
     return service

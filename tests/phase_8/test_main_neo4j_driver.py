@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from fastapi import FastAPI
 import pytest
 from neo4j.exceptions import ServiceUnavailable
 
@@ -129,3 +130,33 @@ def test_create_neo4j_driver_falls_back_when_routing_unavailable(monkeypatch: py
         "bolt://example.com:7687",
     ]
     assert recording.first_driver.closed is True
+
+
+def test_require_graph_service_rebuilds_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The graph view service is recreated when a driver becomes available."""
+
+    app = FastAPI()
+    config = load_config()
+    app.state.app_config = config
+    app.state.graph_view_service = None
+    app.state.neo4j_driver = None
+
+    created: Dict[str, Any] = {}
+
+    def _fake_create_driver(received_config: Any) -> _DummyDriver:
+        created["config"] = received_config
+        return _DummyDriver()
+
+    def _fake_build_service(driver: Any) -> str:
+        created["driver"] = driver
+        return "service"
+
+    monkeypatch.setattr(main, "_create_neo4j_driver", _fake_create_driver)
+    monkeypatch.setattr(main, "_build_graph_view_service", _fake_build_service)
+
+    service = main._require_graph_service(app)
+
+    assert service == "service"
+    assert app.state.graph_view_service == "service"
+    assert app.state.neo4j_driver is created["driver"]
+    assert created["config"] is config
