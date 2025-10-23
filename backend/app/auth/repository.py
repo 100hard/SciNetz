@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from passlib.context import CryptContext
 from sqlalchemy import select
@@ -14,27 +14,50 @@ from backend.app.auth.enums import UserRole
 from backend.app.auth.models import EmailVerification, RefreshToken, User
 
 
+class _ManagedAsyncSession:
+    """Proxy around :class:`AsyncSession` that auto-nests transactions."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._session, name)
+
+    def begin(self, *args: Any, **kwargs: Any):  # type: ignore[override]
+        """Start a transaction, nesting when one is already active."""
+
+        nested_flag = kwargs.pop("nested", False)
+        if nested_flag:
+            return self._session.begin_nested()
+        if self._session.in_transaction():
+            return self._session.begin_nested()
+        return self._session.begin(*args, **kwargs)
+
+
 class AuthRepository:
     """Provide database access helpers for authentication workflows."""
 
     def __init__(self, session: AsyncSession, pwd_context: Optional[CryptContext] = None) -> None:
         self._session = session
+        self._session_wrapper = _ManagedAsyncSession(session)
         self._pwd_context = pwd_context or CryptContext(schemes=["bcrypt"], deprecated="auto")
 
     @property
     def session(self) -> AsyncSession:
         """Return the underlying SQLAlchemy session."""
 
-        return self._session
+        return self._session_wrapper  # type: ignore[return-value]
 
     def hash_password(self, password: str) -> str:
         """Hash the provided password using bcrypt."""
 
         return self._pwd_context.hash(password)
 
-    def verify_password(self, plain_password: str, hashed_password: str) -> bool:
+    def verify_password(self, plain_password: str, hashed_password: Optional[str]) -> bool:
         """Verify whether a plaintext password matches a stored hash."""
 
+        if not hashed_password:
+            return False
         return self._pwd_context.verify(plain_password, hashed_password)
 
     @staticmethod
@@ -46,13 +69,23 @@ class AuthRepository:
         return digest.hexdigest()
 
     async def create_user(
-        self, email: str, password: str, *, role: UserRole = UserRole.USER
+        self,
+        email: str,
+        password: Optional[str] = None,
+        *,
+        role: UserRole = UserRole.USER,
+        is_verified: bool = False,
     ) -> User:
         """Persist a new user with the provided credentials."""
 
         normalized_email = email.strip().lower()
-        hashed = self.hash_password(password)
-        user = User(email=normalized_email, hashed_password=hashed, role=role)
+        hashed = self.hash_password(password) if password is not None else None
+        user = User(
+            email=normalized_email,
+            hashed_password=hashed,
+            role=role,
+            is_verified=is_verified,
+        )
         self._session.add(user)
         await self._session.flush()
         return user

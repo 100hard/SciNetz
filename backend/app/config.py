@@ -368,6 +368,21 @@ class AuthSMTPConfig(_FrozenModel):
     from_email: str = Field(..., min_length=3)
 
 
+class AuthGoogleConfig(_FrozenModel):
+    """Configuration for Google identity integration."""
+
+    client_ids: List[str] = Field(default_factory=list)
+
+    @field_validator("client_ids")
+    @classmethod
+    def _validate_client_ids(cls, value: List[str]) -> List[str]:
+        normalized = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        if not normalized:
+            msg = "At least one Google client ID must be configured"
+            raise ValueError(msg)
+        return normalized
+
+
 class AuthConfig(_FrozenModel):
     """Top-level authentication configuration."""
 
@@ -375,6 +390,7 @@ class AuthConfig(_FrozenModel):
     jwt: AuthJWTConfig
     verification: AuthVerificationConfig
     smtp: AuthSMTPConfig
+    google: AuthGoogleConfig
 
 
 class AppConfig(_FrozenModel):
