@@ -11,13 +11,7 @@ import {
 } from "react";
 
 import apiClient from "@/lib/http";
-import type {
-  AuthUser,
-  LoginResponse,
-  RegistrationResponse,
-  TokenPair,
-  TokenRefreshResponse,
-} from "../types/auth";
+import type { AuthUser, LoginResponse, TokenPair, TokenRefreshResponse } from "../types/auth";
 
 const AUTH_STORAGE_KEY = "scinets.auth.session";
 
@@ -29,8 +23,7 @@ type AuthContextValue = {
   accessToken: string | null;
   refreshToken: string | null;
   expiresAt: number | null;
-  login: (email: string, password: string) => Promise<LoginResponse>;
-  register: (email: string, password: string) => Promise<RegistrationResponse>;
+  loginWithGoogle: (credential: string) => Promise<LoginResponse>;
   logout: () => Promise<void>;
   refresh: () => Promise<TokenPair>;
 };
@@ -217,11 +210,10 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
     };
   }, [clearSession, persistSession]);
 
-  const login = useCallback(
-    async (email: string, password: string) => {
-      const { data } = await apiClient.post<LoginResponse>("/api/auth/login", {
-        email,
-        password,
+  const loginWithGoogle = useCallback(
+    async (credential: string) => {
+      const { data } = await apiClient.post<LoginResponse>("/api/auth/google", {
+        credential,
         user_agent: readUserAgent(),
       });
       persistSession(data.user, data.tokens);
@@ -229,14 +221,6 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
     },
     [persistSession],
   );
-
-  const register = useCallback(async (email: string, password: string) => {
-    const { data } = await apiClient.post<RegistrationResponse>("/api/auth/register", {
-      email,
-      password,
-    });
-    return data;
-  }, []);
 
   const logout = useCallback(async () => {
     const refreshToken = state.tokens.refreshToken;
@@ -281,12 +265,11 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
       accessToken: state.tokens.accessToken,
       refreshToken: state.tokens.refreshToken,
       expiresAt: state.tokens.expiresAt,
-      login,
-      register,
+      loginWithGoogle,
       logout,
       refresh,
     }),
-    [login, logout, refresh, register, state.status, state.tokens.accessToken, state.tokens.expiresAt, state.tokens.refreshToken, state.user],
+    [loginWithGoogle, logout, refresh, state.status, state.tokens.accessToken, state.tokens.expiresAt, state.tokens.refreshToken, state.user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

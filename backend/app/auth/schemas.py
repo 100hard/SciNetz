@@ -85,6 +85,13 @@ class LoginRequest(BaseModel):
     user_agent: Optional[str] = Field(default=None, max_length=255)
 
 
+class GoogleLoginRequest(BaseModel):
+    """Google identity login payload."""
+
+    credential: str = Field(..., min_length=1)
+    user_agent: Optional[str] = Field(default=None, max_length=255)
+
+
 class RefreshRequest(BaseModel):
     """Refresh token request payload."""
 
@@ -108,6 +115,7 @@ __all__ = [
     "VerificationResponse",
     "RegisterRequest",
     "LoginRequest",
+    "GoogleLoginRequest",
     "RefreshRequest",
     "LogoutRequest",
 ]
