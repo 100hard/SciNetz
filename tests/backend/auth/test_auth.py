@@ -10,10 +10,11 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from backend.app.auth.enums import UserRole
 from backend.app.auth.models import AuthBase, User
 from backend.app.auth.repository import AuthRepository
 from backend.app.auth.router import google_config
-from backend.app.auth.schemas import GoogleLoginRequest, RegisterRequest
+from backend.app.auth.schemas import GoogleLoginRequest, RefreshRequest, RegisterRequest
 from backend.app.auth.service import AuthService, AuthServiceError
 from backend.app.auth.utils import (
     GoogleTokenVerificationError,
@@ -291,6 +292,74 @@ def test_google_login_reuses_existing_user() -> None:
             count = await repo.session.execute(select(User))
             users = count.scalars().all()
         assert len(users) == 1
+        await repo.session.close()
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_refresh_tokens_extends_existing_session() -> None:
+    async def _run() -> None:
+        repo, engine = await _setup_repository()
+        dispatcher = StubEmailDispatcher()
+        verifier = StubGoogleVerifier({}, allowed_audiences=["client-id"])
+        config = AuthConfig(
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt=AuthJWTConfig(
+                secret_key="refresh-secret-key-that-is-long-enough-123456",
+                algorithm="HS256",
+                access_token_expires_minutes=5,
+                refresh_token_expires_minutes=60,
+            ),
+            verification=AuthVerificationConfig(
+                enabled=False,
+                token_ttl_minutes=60,
+                link_base_url="https://example.com/verify",
+            ),
+            smtp=AuthSMTPConfig(
+                host="localhost",
+                port=1025,
+                username="",
+                password="",
+                use_tls=False,
+                from_email="no-reply@example.com",
+            ),
+            google=AuthGoogleConfig(client_ids=["client-id"]),
+        )
+        service = AuthService(config, repo, JWTManager(config.jwt), dispatcher, verifier)
+
+        user = await repo.create_user(
+            "refresh@example.com",
+            password="refreshpass",
+            role=UserRole.USER,
+            is_verified=True,
+        )
+        await repo.commit()
+
+        initial_expires = service._now() + timedelta(minutes=5)
+        refresh_token = "static-refresh-token"
+        await repo.create_refresh_token(
+            user,
+            refresh_token,
+            initial_expires,
+            user_agent="initial-agent",
+        )
+        await repo.commit()
+
+        response = await service.refresh_tokens(
+            RefreshRequest(refresh_token=refresh_token, user_agent="updated-agent")
+        )
+
+        assert response.tokens.refresh_token == refresh_token
+        assert response.tokens.access_token
+        stored = await repo.get_refresh_token(refresh_token)
+        assert stored is not None
+        assert stored.user_agent == "updated-agent"
+        stored_expires = stored.expires_at
+        if stored_expires.tzinfo is None:
+            stored_expires = stored_expires.replace(tzinfo=timezone.utc)
+        assert stored_expires > initial_expires
+
         await repo.session.close()
         await engine.dispose()
 

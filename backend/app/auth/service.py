@@ -222,14 +222,17 @@ class AuthService:
         )
 
     async def refresh_tokens(self, payload: RefreshRequest) -> TokenRefreshResponse:
-        """Rotate refresh tokens and issue a new access token."""
+        """Issue a new access token and extend the refresh token lifetime."""
 
         record = await self._repository.get_refresh_token(payload.refresh_token)
         if record is None:
             raise AuthServiceError("Unknown refresh token", reason="unauthorized")
 
         now = self._now()
-        if record.revoked_at is not None or record.expires_at < now:
+        expires_at = record.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if record.revoked_at is not None or expires_at < now:
             raise AuthServiceError("Refresh token expired", reason="unauthorized")
 
         await self._repository.session.refresh(record, attribute_names=["user"])
@@ -243,16 +246,14 @@ class AuthService:
             subject=user.id,
             additional_claims={"email": user.email, "role": user.role.value},
         )
-        new_refresh_token = generate_refresh_token()
         new_refresh_expires = now + timedelta(
             minutes=self._config.jwt.refresh_token_expires_minutes
         )
 
         try:
-            await self._repository.revoke_refresh_token(record, now)
-            await self._repository.create_refresh_token(
-                user, new_refresh_token, new_refresh_expires, payload.user_agent
-            )
+            record.expires_at = new_refresh_expires
+            record.user_agent = payload.user_agent
+            await self._repository.session.flush()
             await self._repository.commit()
         except Exception as exc:  # pragma: no cover - defensive rollback
             await self._repository.rollback()
@@ -260,7 +261,7 @@ class AuthService:
 
         pair = TokenPair(
             access_token=new_access_token,
-            refresh_token=new_refresh_token,
+            refresh_token=payload.refresh_token,
             token_type="bearer",
             expires_in=self._config.jwt.access_token_expires_minutes * 60,
         )

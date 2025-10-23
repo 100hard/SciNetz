@@ -209,6 +209,7 @@ def create_app(
 
     resolved_config = config or load_config()
     app = FastAPI(title="SciNets API", version=resolved_config.pipeline.version)
+    app.state.app_config = resolved_config
 
     async def _test_user() -> AuthUser:
         now = datetime.now(timezone.utc)
@@ -971,8 +972,27 @@ def _require_registry(app: FastAPI) -> PaperRegistry:
     return registry
 
 
+def _reinitialize_graph_service(app: FastAPI) -> Optional[GraphViewService]:
+    config = getattr(app.state, "app_config", None)
+    if config is None:
+        return None
+    driver = getattr(app.state, "neo4j_driver", None)
+    if driver is None:
+        driver = _create_neo4j_driver(config)
+        if driver is None:
+            return None
+        app.state.neo4j_driver = driver
+    service = _build_graph_view_service(driver)
+    if service is None:
+        return None
+    app.state.graph_view_service = service
+    return service
+
+
 def _require_graph_service(app: FastAPI) -> GraphViewService:
     service = getattr(app.state, "graph_view_service", None)
+    if service is None:
+        service = _reinitialize_graph_service(app)
     if service is None:
         raise HTTPException(status_code=503, detail="Graph view service unavailable")
     return service
@@ -1157,6 +1177,30 @@ def _verify_driver_connectivity(driver: object) -> None:
     verify = getattr(driver, "verify_connectivity", None)
     if callable(verify):
         verify()
+    execute_query = getattr(driver, "execute_query", None)
+    if callable(execute_query):
+        execute_query("RETURN 1 AS ok")
+        return
+    session_factory = getattr(driver, "session", None)
+    if not callable(session_factory):
+        return
+    session = session_factory()
+    try:
+        runner = getattr(session, "run", None)
+        if not callable(runner):
+            return
+        result = runner("RETURN 1 AS ok")
+        consumer = getattr(result, "consume", None)
+        if callable(consumer):
+            consumer()
+            return
+        single = getattr(result, "single", None)
+        if callable(single):
+            single()
+    finally:
+        closer = getattr(session, "close", None)
+        if callable(closer):
+            closer()
 
 
 def _close_driver_quietly(driver: object) -> None:
