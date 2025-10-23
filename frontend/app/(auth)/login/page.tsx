@@ -31,6 +31,26 @@ declare global {
 
 const GOOGLE_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
 
+type GoogleCredentialResponse = {
+  credential?: string;
+};
+
+declare global {
+  interface Window {
+    google?: {
+      accounts?: {
+        id?: {
+          initialize: (config: { client_id: string; callback: (response: GoogleCredentialResponse) => void }) => void;
+          renderButton: (element: HTMLElement, options: Record<string, unknown>) => void;
+          prompt: () => void;
+        };
+      };
+    };
+  }
+}
+
+const GOOGLE_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
+
 const LoginPage = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
