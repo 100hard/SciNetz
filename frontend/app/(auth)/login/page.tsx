@@ -46,6 +46,7 @@ const LoginPage = () => {
     initialClientId ? "ready" : "loading",
   );
   const [configError, setConfigError] = useState<string | null>(null);
+  const [isGoogleButtonRendered, setGoogleButtonRendered] = useState(false);
 
   const rawNextParam = searchParams?.get("next") ?? "/";
   const nextParam = rawNextParam.startsWith("/") ? rawNextParam : "/";
@@ -123,6 +124,14 @@ const LoginPage = () => {
   );
 
   useEffect(() => {
+    if (!googleClientId && buttonContainerRef.current) {
+      buttonContainerRef.current.innerHTML = "";
+    }
+    scriptInitializedRef.current = false;
+    setGoogleButtonRendered(false);
+  }, [googleClientId]);
+
+  useEffect(() => {
     if (!googleClientId || typeof window === "undefined") {
       return;
     }
@@ -135,16 +144,24 @@ const LoginPage = () => {
       if (!googleAccounts || !buttonContainerRef.current) {
         return;
       }
-      googleAccounts.initialize({ client_id: googleClientId, callback: handleCredential });
-      googleAccounts.renderButton(buttonContainerRef.current, {
-        type: "standard",
-        theme: "outline",
-        size: "large",
-        text: "continue_with",
-        shape: "pill",
-      });
-      googleAccounts.prompt();
-      scriptInitializedRef.current = true;
+      try {
+        buttonContainerRef.current.innerHTML = "";
+        googleAccounts.initialize({ client_id: googleClientId, callback: handleCredential });
+        googleAccounts.renderButton(buttonContainerRef.current, {
+          type: "standard",
+          theme: "outline",
+          size: "large",
+          text: "continue_with",
+          shape: "pill",
+        });
+        setGoogleButtonRendered(true);
+        googleAccounts.prompt();
+        scriptInitializedRef.current = true;
+      } catch (error) {
+        console.error("Unable to render Google Sign-In button", error);
+        setGoogleButtonRendered(false);
+        toast.error("Unable to initialize Google Sign-In. Please try again.");
+      }
     };
 
     if (window.google?.accounts?.id) {
@@ -177,6 +194,29 @@ const LoginPage = () => {
   const isConfigLoading = configState === "loading";
   const isDisabled = isSubmitting || status === "loading" || !isConfigReady;
 
+  const handleFallbackClick = useCallback(() => {
+    if (isDisabled) {
+      return;
+    }
+
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const googleAccounts = window.google?.accounts?.id;
+    if (!googleAccounts) {
+      toast.error("Google authentication is still loading. Please try again in a moment.");
+      return;
+    }
+
+    try {
+      googleAccounts.prompt();
+    } catch (error) {
+      console.error("Unable to trigger Google Sign-In prompt", error);
+      toast.error("Unable to open Google Sign-In. Please refresh and try again.");
+    }
+  }, [isDisabled]);
+
   return (
     <div className="w-full max-w-md space-y-6">
       <div className="space-y-2 text-center">
@@ -193,7 +233,21 @@ const LoginPage = () => {
               Continue with Google to securely authenticate without a password.
             </p>
             <div className={`flex justify-center ${isDisabled ? "pointer-events-none opacity-75" : ""}`}>
-              <div ref={buttonContainerRef} />
+              <div
+                ref={buttonContainerRef}
+                className={isGoogleButtonRendered ? "" : "hidden"}
+                aria-hidden={!isGoogleButtonRendered}
+              />
+              {!isGoogleButtonRendered && (
+                <button
+                  type="button"
+                  onClick={handleFallbackClick}
+                  disabled={isDisabled}
+                  className="inline-flex items-center justify-center gap-2 rounded-full border border-input bg-background px-5 py-2 text-sm font-medium text-foreground shadow-sm transition hover:bg-accent focus:outline-none focus:ring-2 focus:ring-primary/40 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  Continue with Google
+                </button>
+              )}
             </div>
             {isSubmitting && <p className="text-xs text-muted-foreground">Signing you in…</p>}
           </div>
