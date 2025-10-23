@@ -100,7 +100,7 @@ export default function Home() {
             </span>
             <div className="space-y-1">
               <p className="font-medium text-foreground">Monitor extraction progress on Papers</p>
-              <p>Watch statuses update from uploaded -> processing -> complete. Re-run extraction or inspect warnings if a pipeline step fails.</p>
+              <p>Watch statuses update from uploaded → processing → complete. Re-run extraction or inspect warnings if a pipeline step fails.</p>
             </div>
           </li>
           <li className="flex items-start gap-3">
