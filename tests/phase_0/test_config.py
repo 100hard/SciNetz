@@ -80,3 +80,34 @@ def test_config_strict_fields_match_yaml() -> None:
         raw["ui"]["graph_defaults"]["min_confidence"]
         == config.ui.graph_defaults.min_confidence
     )
+
+
+def test_google_client_ids_override_from_env(monkeypatch) -> None:
+    load_config.cache_clear()
+    monkeypatch.setenv(
+        "SCINETS_AUTH_GOOGLE_CLIENT_IDS",
+        "client-one.apps.googleusercontent.com, client-two.apps.googleusercontent.com",
+    )
+    try:
+        config = load_config()
+        assert config.auth.google.client_ids == [
+            "client-one.apps.googleusercontent.com",
+            "client-two.apps.googleusercontent.com",
+        ]
+    finally:
+        load_config.cache_clear()
+
+
+def test_google_client_ids_fallbacks_to_frontend_env(monkeypatch) -> None:
+    load_config.cache_clear()
+    monkeypatch.setenv(
+        "NEXT_PUBLIC_GOOGLE_CLIENT_ID",
+        "client-only.apps.googleusercontent.com",
+    )
+    try:
+        config = load_config()
+        assert config.auth.google.client_ids == [
+            "client-only.apps.googleusercontent.com",
+        ]
+    finally:
+        load_config.cache_clear()
