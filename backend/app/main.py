@@ -476,7 +476,7 @@ def create_app(
     )
     def revoke_share_link(
         metadata_id: str,
-        _payload: ShareLinkRevokeRequest,
+        payload: ShareLinkRevokeRequest,
         current_user: AuthUser = Depends(get_current_user),
     ) -> dict[str, object]:
         """Revoke an existing share link, preventing further downloads."""
@@ -487,7 +487,8 @@ def create_app(
         if service is None:
             raise HTTPException(status_code=503, detail="Share export service unavailable")
         try:
-            updated = service.revoke_share(metadata_id, revoked_by=current_user.id)
+            revoked_by = payload.revoked_by or current_user.id
+            updated = service.revoke_share(metadata_id, revoked_by=revoked_by)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Share metadata not found") from exc
         except Exception as exc:  # pragma: no cover - defensive logging

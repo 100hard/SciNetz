@@ -7,6 +7,7 @@ from typing import Optional
 
 from passlib.context import CryptContext
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth.enums import UserRole
@@ -88,7 +89,9 @@ class AuthRepository:
 
         token_hash = self.hash_token(token)
         result = await self._session.execute(
-            select(EmailVerification).where(EmailVerification.token_hash == token_hash)
+            select(EmailVerification)
+            .options(selectinload(EmailVerification.user))
+            .where(EmailVerification.token_hash == token_hash)
         )
         return result.scalar_one_or_none()
 
