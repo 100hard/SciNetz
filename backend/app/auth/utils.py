@@ -1,17 +1,28 @@
-"""Utilities for JWT handling and email dispatch."""
+"""Utilities for JWT handling, email dispatch, and Google token verification."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 from aiosmtplib import send
 from jose import JWTError, jwt
 
 from backend.app.config import AuthJWTConfig, AuthSMTPConfig, AuthVerificationConfig
+
+try:  # pragma: no cover - import validated via dependency management
+    from google.oauth2 import id_token
+    from google.auth.transport import requests as google_requests
+except Exception as exc:  # pragma: no cover - surfaced during initialization
+    GOOGLE_IMPORT_ERROR = exc
+    id_token = None  # type: ignore[assignment]
+    google_requests = None  # type: ignore[assignment]
+else:  # pragma: no cover - exercised indirectly
+    GOOGLE_IMPORT_ERROR = None
 
 LOGGER = logging.getLogger(__name__)
 
@@ -53,6 +64,43 @@ def generate_refresh_token(size: int = 48) -> str:
     """Generate a cryptographically secure refresh token."""
 
     return secrets.token_urlsafe(size)
+
+
+class GoogleTokenVerificationError(RuntimeError):
+    """Raised when Google credential validation fails."""
+
+
+class GoogleTokenVerifier:
+    """Verify Google ID tokens against the configured audiences."""
+
+    def __init__(self, client_ids: Sequence[str]) -> None:
+        if GOOGLE_IMPORT_ERROR is not None:
+            msg = "google-auth dependency is unavailable"
+            raise RuntimeError(msg) from GOOGLE_IMPORT_ERROR
+        normalized = [client_id.strip() for client_id in client_ids if client_id and client_id.strip()]
+        if not normalized:
+            msg = "At least one Google client ID must be supplied"
+            raise ValueError(msg)
+        self._allowed_audiences = set(normalized)
+
+    async def verify(self, credential: str) -> Dict[str, Any]:
+        """Validate the provided Google credential and return its claims."""
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._verify_sync, credential)
+
+    def _verify_sync(self, credential: str) -> Dict[str, Any]:
+        if not credential:
+            raise GoogleTokenVerificationError("Missing Google credential")
+        request = google_requests.Request()
+        try:
+            claims = id_token.verify_oauth2_token(credential, request, audience=None)
+        except Exception as exc:  # pragma: no cover - upstream library handles edge cases
+            raise GoogleTokenVerificationError("Failed to verify Google credential") from exc
+        audience = claims.get("aud")
+        if audience not in self._allowed_audiences:
+            raise GoogleTokenVerificationError("Google credential has an unexpected audience")
+        return claims
 
 
 def build_verification_link(config: AuthVerificationConfig, token: str) -> str:
@@ -117,5 +165,7 @@ __all__ = [
     "build_verification_email",
     "build_verification_link",
     "generate_refresh_token",
+    "GoogleTokenVerifier",
+    "GoogleTokenVerificationError",
     "JWTError",
 ]
