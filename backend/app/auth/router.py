@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.auth.repository import AuthRepository
 from backend.app.auth.schemas import (
     AuthUser,
-    LoginRequest,
+    GoogleLoginRequest,
     LoginResponse,
     LogoutRequest,
     LogoutResponse,
@@ -21,12 +21,12 @@ from backend.app.auth.schemas import (
     VerificationResponse,
 )
 from backend.app.auth.service import AuthService, AuthServiceError
-from backend.app.auth.utils import EmailDispatcher, JWTManager
+from backend.app.auth.utils import EmailDispatcher, GoogleTokenVerifier, JWTManager
 from backend.app.config import AuthConfig
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/google")
 
 
 def _status_from_reason(reason: str) -> int:
@@ -71,16 +71,29 @@ def get_email_dispatcher(request: Request) -> EmailDispatcher:
     return request.app.state.email_dispatcher
 
 
+def get_google_verifier(request: Request) -> GoogleTokenVerifier:
+    """Return the Google token verifier stored on the app state."""
+
+    return request.app.state.google_verifier
+
+
 async def get_auth_service(
     session: AsyncSession = Depends(get_auth_session),
     config: AuthConfig = Depends(get_auth_config),
     jwt_manager: JWTManager = Depends(get_jwt_manager),
     dispatcher: EmailDispatcher = Depends(get_email_dispatcher),
+    google_verifier: GoogleTokenVerifier = Depends(get_google_verifier),
 ) -> AuthService:
     """Construct an AuthService for the current request."""
 
     repository = AuthRepository(session)
-    return AuthService(config=config, repository=repository, jwt_manager=jwt_manager, email_dispatcher=dispatcher)
+    return AuthService(
+        config=config,
+        repository=repository,
+        jwt_manager=jwt_manager,
+        email_dispatcher=dispatcher,
+        google_verifier=google_verifier,
+    )
 
 
 async def get_current_user(
@@ -112,12 +125,14 @@ async def register(
     return response
 
 
-@router.post("/login", response_model=LoginResponse)
-async def login(payload: LoginRequest, service: AuthService = Depends(get_auth_service)) -> LoginResponse:
-    """Authenticate user credentials."""
+@router.post("/google", response_model=LoginResponse)
+async def login_with_google(
+    payload: GoogleLoginRequest, service: AuthService = Depends(get_auth_service)
+) -> LoginResponse:
+    """Authenticate a Google credential."""
 
     try:
-        return await service.login(payload)
+        return await service.login_with_google(payload)
     except AuthServiceError as exc:
         raise HTTPException(status_code=_status_from_reason(exc.reason), detail=str(exc)) from exc
 
@@ -171,4 +186,5 @@ __all__ = [
     "get_auth_service",
     "get_auth_session",
     "get_auth_config",
+    "get_google_verifier",
 ]

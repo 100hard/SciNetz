@@ -32,9 +32,11 @@ class AuthRepository:
 
         return self._pwd_context.hash(password)
 
-    def verify_password(self, plain_password: str, hashed_password: str) -> bool:
+    def verify_password(self, plain_password: str, hashed_password: Optional[str]) -> bool:
         """Verify whether a plaintext password matches a stored hash."""
 
+        if not hashed_password:
+            return False
         return self._pwd_context.verify(plain_password, hashed_password)
 
     @staticmethod
@@ -46,13 +48,23 @@ class AuthRepository:
         return digest.hexdigest()
 
     async def create_user(
-        self, email: str, password: str, *, role: UserRole = UserRole.USER
+        self,
+        email: str,
+        password: Optional[str] = None,
+        *,
+        role: UserRole = UserRole.USER,
+        is_verified: bool = False,
     ) -> User:
         """Persist a new user with the provided credentials."""
 
         normalized_email = email.strip().lower()
-        hashed = self.hash_password(password)
-        user = User(email=normalized_email, hashed_password=hashed, role=role)
+        hashed = self.hash_password(password) if password is not None else None
+        user = User(
+            email=normalized_email,
+            hashed_password=hashed,
+            role=role,
+            is_verified=is_verified,
+        )
         self._session.add(user)
         await self._session.flush()
         return user
