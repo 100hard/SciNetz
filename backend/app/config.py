@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from functools import lru_cache
 from datetime import timedelta
@@ -14,6 +15,13 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 LOGGER = logging.getLogger(__name__)
+
+GOOGLE_CLIENT_ENV_VARS = (
+    "SCINETS_AUTH_GOOGLE_CLIENT_IDS",
+    "GOOGLE_CLIENT_IDS",
+    "GOOGLE_CLIENT_ID",
+    "NEXT_PUBLIC_GOOGLE_CLIENT_ID",
+)
 
 
 class ConfigError(RuntimeError):
@@ -418,6 +426,64 @@ class AppConfig(_FrozenModel):
         return Path(__file__).resolve().parents[2] / "config.yaml"
 
 
+def _parse_google_client_ids(value: str) -> List[str]:
+    """Parse an environment variable value into unique Google client IDs.
+
+    Args:
+        value: Raw string read from an environment variable.
+
+    Returns:
+        List[str]: Ordered, de-duplicated list of Google client IDs.
+    """
+
+    candidates = [item.strip() for item in re.split(r"[,\s]+", value) if item and item.strip()]
+    unique: List[str] = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _collect_google_client_ids_from_env() -> List[str]:
+    """Collect Google client IDs from supported environment variables.
+
+    Returns:
+        List[str]: Client IDs discovered in environment variables, preserving order.
+    """
+
+    aggregated: List[str] = []
+    for key in GOOGLE_CLIENT_ENV_VARS:
+        raw = os.getenv(key)
+        if not raw:
+            continue
+        for client_id in _parse_google_client_ids(raw):
+            if client_id not in aggregated:
+                aggregated.append(client_id)
+    return aggregated
+
+
+def _apply_environment_overrides(raw_content: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge environment-based overrides into the raw configuration mapping.
+
+    Args:
+        raw_content: Parsed YAML configuration prior to Pydantic validation.
+
+    Returns:
+        Dict[str, Any]: Configuration mapping with environment overrides applied.
+    """
+
+    google_client_ids = _collect_google_client_ids_from_env()
+    if google_client_ids:
+        auth_section = raw_content.setdefault("auth", {})
+        google_section = auth_section.setdefault("google", {})
+        google_section["client_ids"] = google_client_ids
+        LOGGER.info(
+            "Auth Google client IDs overridden from environment (count=%d)",
+            len(google_client_ids),
+        )
+    return raw_content
+
+
 def _read_yaml(path: Path) -> Dict[str, Any]:
     """Read YAML content from disk.
 
@@ -460,6 +526,7 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     """
     config_path = path or AppConfig.default_path()
     raw_content = _read_yaml(config_path)
+    raw_content = _apply_environment_overrides(raw_content)
     try:
         return AppConfig(**raw_content)
     except ValidationError as exc:
