@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    env_file:
+      - .env
     environment:
       - UVICORN_PORT=8000
       - OPENAI_API_KEY=${OPENAI_API_KEY:?OPENAI_API_KEY not set}
@@ -12,9 +14,10 @@ services:
       - EXPORT_STORAGE_SECURE=${EXPORT_STORAGE_SECURE:-false}
       - EXPORT_STORAGE_PUBLIC_ENDPOINT=${EXPORT_STORAGE_PUBLIC_ENDPOINT:-http://localhost:9000}
       - EXPORT_TOKEN_SECRET=${EXPORT_TOKEN_SECRET:-dev-export-token-secret}
-      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - SCINETS_AUTH_GOOGLE_CLIENT_IDS=${SCINETS_AUTH_GOOGLE_CLIENT_IDS:-}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
     ports:
       - "8000:8000"
     volumes:
@@ -31,6 +34,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    env_file:
+      - .env
     working_dir: /app
     command: ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
     volumes:
@@ -39,8 +44,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_BASE_URL=http://api:8000
-      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID}
 
   neo4j:
     image: neo4j:5-community

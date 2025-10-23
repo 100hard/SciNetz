@@ -20,12 +20,16 @@ declare global {
     google?: {
       accounts?: {
         id?: {
-          initialize: (config: { client_id: string; callback: (response: GoogleCredentialResponse) => void }) => void;
+          initialize: (config: {
+            client_id: string;
+            callback: (response: GoogleCredentialResponse) => void;
+          }) => void;
           renderButton: (element: HTMLElement, options: Record<string, unknown>) => void;
           prompt: () => void;
         };
       };
     };
+    NEXT_PUBLIC_GOOGLE_CLIENT_ID?: string;
   }
 }
 
@@ -37,13 +41,28 @@ const LoginPage = () => {
   const buttonContainerRef = useRef<HTMLDivElement | null>(null);
   const scriptInitializedRef = useRef(false);
   const scriptLoadingRef = useRef(false);
+
+  // ✅ Resolve Google Client ID (supports Docker + Local)
   const initialClientId = useMemo(() => {
-    const raw = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+    let raw = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+
+    if (typeof window !== "undefined") {
+      const runtimeId = window.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+      if ((!raw || raw === "undefined") && runtimeId) raw = runtimeId;
+
+      if ((!raw || raw === "undefined") && !runtimeId) {
+        const meta = document.querySelector('meta[name="google-client-id"]');
+        if (meta) raw = meta.getAttribute("content") ?? "";
+      }
+    }
+
+    console.log("✅ Resolved Google Client ID:", raw);
     return typeof raw === "string" ? raw.trim() : "";
   }, []);
+
   const [googleClientId, setGoogleClientId] = useState(initialClientId);
   const [configState, setConfigState] = useState<"loading" | "ready" | "error">(
-    initialClientId ? "ready" : "loading",
+    initialClientId ? "ready" : "loading"
   );
   const [configError, setConfigError] = useState<string | null>(null);
   const [isGoogleButtonRendered, setGoogleButtonRendered] = useState(false);
@@ -51,27 +70,33 @@ const LoginPage = () => {
   const rawNextParam = searchParams?.get("next") ?? "/";
   const nextParam = rawNextParam.startsWith("/") ? rawNextParam : "/";
 
+  // 1️⃣ Redirect if already authenticated
   useEffect(() => {
     if (status === "authenticated") {
       router.replace(nextParam || "/");
     }
   }, [nextParam, router, status]);
 
+  // 2️⃣ Load or resolve Google Client ID
   useEffect(() => {
-    if (initialClientId) {
-      return;
-    }
-
     let isMounted = true;
+
+    if (initialClientId) {
+      setGoogleClientId(initialClientId);
+      setConfigError(null);
+      setConfigState("ready");
+      return () => {
+        isMounted = false;
+      };
+    }
 
     const loadGoogleConfig = async () => {
       setConfigState("loading");
       try {
         const { data } = await apiClient.get<GoogleConfigResponse>("/api/auth/google/config");
-        if (!isMounted) {
-          return;
-        }
-        const resolvedId = data.client_ids.map((id) => id.trim()).find((id) => id.length > 0) ?? "";
+        if (!isMounted) return;
+        const resolvedId =
+          data.client_ids.map((id) => id.trim()).find((id) => id.length > 0) ?? "";
         if (resolvedId) {
           setGoogleClientId(resolvedId);
           setConfigError(null);
@@ -79,16 +104,16 @@ const LoginPage = () => {
         } else {
           setGoogleClientId("");
           setConfigError(
-            "Google Sign-In is not configured. Add a client ID to auth.google.client_ids or set NEXT_PUBLIC_GOOGLE_CLIENT_ID.",
+            "Google Sign-In is not configured. Add a client ID to auth.google.client_ids or set NEXT_PUBLIC_GOOGLE_CLIENT_ID."
           );
           setConfigState("error");
         }
       } catch (error) {
-        if (!isMounted) {
-          return;
-        }
+        if (!isMounted) return;
         setGoogleClientId("");
-        setConfigError(extractErrorMessage(error, "Unable to load Google Sign-In configuration."));
+        setConfigError(
+          extractErrorMessage(error, "Unable to load Google Sign-In configuration.")
+        );
         setConfigState("error");
       }
     };
@@ -100,6 +125,7 @@ const LoginPage = () => {
     };
   }, [initialClientId]);
 
+  // 3️⃣ Handle Google credential response
   const handleCredential = useCallback(
     (response: GoogleCredentialResponse) => {
       const credential = response.credential;
@@ -120,33 +146,38 @@ const LoginPage = () => {
         }
       })();
     },
-    [loginWithGoogle, nextParam, router],
+    [loginWithGoogle, nextParam, router]
   );
 
+  // 4️⃣ Google Sign-In button rendering and script initialization
   useEffect(() => {
-    if (!googleClientId && buttonContainerRef.current) {
-      buttonContainerRef.current.innerHTML = "";
-    }
-    scriptInitializedRef.current = false;
-    setGoogleButtonRendered(false);
-  }, [googleClientId]);
+    if (typeof window === "undefined") return;
 
-  useEffect(() => {
-    if (!googleClientId || typeof window === "undefined") {
+    if (!googleClientId) {
+      console.warn("⏳ Waiting for Google Client ID to become available...");
+      if (buttonContainerRef.current) buttonContainerRef.current.innerHTML = "";
+      scriptInitializedRef.current = false;
+      setGoogleButtonRendered(false);
       return;
     }
 
     const initializeButton = () => {
-      if (scriptInitializedRef.current) {
-        return;
-      }
+      if (scriptInitializedRef.current) return;
+
       const googleAccounts = window.google?.accounts?.id;
       if (!googleAccounts || !buttonContainerRef.current) {
+        console.warn("⚠️ Google accounts object not yet available, retrying...");
+        setTimeout(initializeButton, 300);
         return;
       }
+
       try {
+        console.log("🚀 Initializing Google Sign-In with ID:", googleClientId);
         buttonContainerRef.current.innerHTML = "";
-        googleAccounts.initialize({ client_id: googleClientId, callback: handleCredential });
+        googleAccounts.initialize({
+          client_id: googleClientId,
+          callback: handleCredential,
+        });
         googleAccounts.renderButton(buttonContainerRef.current, {
           type: "standard",
           theme: "outline",
@@ -154,54 +185,50 @@ const LoginPage = () => {
           text: "continue_with",
           shape: "pill",
         });
-        setGoogleButtonRendered(true);
         googleAccounts.prompt();
+        setGoogleButtonRendered(true);
         scriptInitializedRef.current = true;
       } catch (error) {
-        console.error("Unable to render Google Sign-In button", error);
+        console.error("❌ Unable to render Google Sign-In button:", error);
         setGoogleButtonRendered(false);
         toast.error("Unable to initialize Google Sign-In. Please try again.");
       }
     };
 
-    if (window.google?.accounts?.id) {
-      initializeButton();
-      return;
-    }
+    const ensureScript = () => {
+      if (window.google?.accounts?.id) {
+        initializeButton();
+        return;
+      }
+      if (scriptLoadingRef.current) return;
 
-    if (scriptLoadingRef.current) {
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = "https://accounts.google.com/gsi/client";
-    script.async = true;
-    script.defer = true;
-    script.onload = initializeButton;
-    script.onerror = () => {
-      toast.error("Unable to load Google authentication. Please try again later.");
+      const script = document.createElement("script");
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.onload = initializeButton;
+      script.onerror = () => toast.error("Failed to load Google authentication script.");
+      document.head.appendChild(script);
+      scriptLoadingRef.current = true;
     };
-    document.head.appendChild(script);
-    scriptLoadingRef.current = true;
 
-    return () => {
-      script.onload = null;
-      script.onerror = null;
-    };
+    if (document.readyState === "complete") {
+      ensureScript();
+    } else {
+      window.addEventListener("load", ensureScript);
+      return () => window.removeEventListener("load", ensureScript);
+    }
   }, [googleClientId, handleCredential]);
 
+  // Fallback manual click handler
   const isConfigReady = configState === "ready" && Boolean(googleClientId);
   const isConfigLoading = configState === "loading";
   const isDisabled = isSubmitting || status === "loading" || !isConfigReady;
 
   const handleFallbackClick = useCallback(() => {
-    if (isDisabled) {
-      return;
-    }
+    if (isDisabled) return;
 
-    if (typeof window === "undefined") {
-      return;
-    }
+    if (typeof window === "undefined") return;
 
     const googleAccounts = window.google?.accounts?.id;
     if (!googleAccounts) {
