@@ -132,6 +132,41 @@ def test_create_neo4j_driver_falls_back_when_routing_unavailable(monkeypatch: py
     assert recording.first_driver.closed is True
 
 
+def test_create_neo4j_driver_uses_config_when_env_connection_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Environment overrides fall back to the configured credentials when invalid."""
+
+    config = load_config()
+
+    monkeypatch.setenv("NEO4J_URI", "neo4j://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "bad-user")
+    monkeypatch.setenv("NEO4J_PASSWORD", "bad-password")
+
+    class _FailThenSucceedGraphDatabase:
+        def __init__(self) -> None:
+            self.calls: List[Any] = []
+
+        def driver(self, uri: str, auth: tuple[str, str]) -> _DummyDriver:
+            self.calls.append((uri, auth))
+            if len(self.calls) == 1:
+                raise ServiceUnavailable("Connection refused")
+            return _DummyDriver()
+
+    recording = _FailThenSucceedGraphDatabase()
+    monkeypatch.setattr(main, "GraphDatabase", recording)
+
+    driver = main._create_neo4j_driver(config)
+
+    assert isinstance(driver, _DummyDriver)
+    assert driver.verified is True
+    assert driver.executed is True
+    assert recording.calls == [
+        ("neo4j://localhost:7687", ("bad-user", "bad-password")),
+        (config.graph.uri, (config.graph.username, config.graph.password)),
+    ]
+
+
 def test_require_graph_service_rebuilds_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     """The graph view service is recreated when a driver becomes available."""
 

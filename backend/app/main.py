@@ -1129,34 +1129,73 @@ def _create_neo4j_driver(config: AppConfig) -> Optional[object]:
 
     if GraphDatabase is None:
         return None
-    uri = os.getenv("NEO4J_URI") or config.graph.uri
-    user = os.getenv("NEO4J_USER") or config.graph.username
-    password = os.getenv("NEO4J_PASSWORD") or config.graph.password
+
+    env_uri = os.getenv("NEO4J_URI")
+    env_user = os.getenv("NEO4J_USER")
+    env_password = os.getenv("NEO4J_PASSWORD")
+    config_uri = config.graph.uri
+    config_user = config.graph.username
+    config_password = config.graph.password
+
+    uri = env_uri or config_uri
+    user = env_user or config_user
+    password = env_password or config_password
     if not (uri and user and password):
         LOGGER.warning("Neo4j connection details missing; graph-dependent features disabled")
         return None
 
-    try:
-        return _open_neo4j_driver(uri, user, password)
-    except Exception as exc:  # noqa: BLE001 - connection issues
-        fallback_uri = _fallback_to_direct_uri(uri, exc)
-        if fallback_uri is None:
-            LOGGER.exception("Failed to connect to Neo4j driver")
-            return None
-        LOGGER.warning(
-            "Routing Neo4j connection failed for %s (%s); retrying with %s",
-            uri,
-            exc,
-            fallback_uri,
-        )
+    env_overrides_present = any(value is not None for value in (env_uri, env_user, env_password))
+    attempts: List[Tuple[str, str, str, str]] = []
+    primary_label = "environment overrides" if env_overrides_present else "application configuration"
+    attempts.append((uri, user, password, primary_label))
+
+    if env_overrides_present and config_uri and config_user and config_password:
+        config_attempt = (config_uri, config_user, config_password)
+        if config_attempt != (uri, user, password):
+            attempts.append((*config_attempt, "application configuration"))
+
+    def _attempt_connection(candidate_uri: str, candidate_user: str, candidate_password: str, label: str) -> Optional[object]:
         try:
-            return _open_neo4j_driver(fallback_uri, user, password)
-        except Exception:  # noqa: BLE001 - fallback connection failed
-            LOGGER.exception(
-                "Failed to connect to Neo4j driver using fallback URI %s",
-                fallback_uri,
+            return _open_neo4j_driver(candidate_uri, candidate_user, candidate_password)
+        except Exception as exc:  # noqa: BLE001 - connection issues
+            fallback_uri = _fallback_to_direct_uri(candidate_uri, exc)
+            if fallback_uri is not None:
+                LOGGER.warning(
+                    "Routing Neo4j connection failed for %s (%s); retrying with %s",
+                    candidate_uri,
+                    exc,
+                    fallback_uri,
+                )
+                try:
+                    return _open_neo4j_driver(fallback_uri, candidate_user, candidate_password)
+                except Exception:  # noqa: BLE001 - fallback connection failed
+                    LOGGER.exception(
+                        "Failed to connect to Neo4j driver using fallback URI %s",
+                        fallback_uri,
+                    )
+                    return None
+            LOGGER.error(
+                "Failed to connect to Neo4j driver at %s using %s",
+                candidate_uri,
+                label,
+                exc_info=True,
             )
             return None
+
+    for index, (candidate_uri, candidate_user, candidate_password, label) in enumerate(attempts):
+        driver = _attempt_connection(candidate_uri, candidate_user, candidate_password, label)
+        if driver is not None:
+            return driver
+        if index < len(attempts) - 1:
+            next_label = attempts[index + 1][3]
+            LOGGER.info(
+                "Neo4j connection attempt using %s failed; retrying with %s",
+                label,
+                next_label,
+            )
+
+    LOGGER.error("Neo4j driver unavailable after exhausting configured connection attempts")
+    return None
 
 
 def _open_neo4j_driver(uri: str, user: str, password: str) -> object:
