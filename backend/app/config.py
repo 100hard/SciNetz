@@ -447,19 +447,31 @@ def _parse_google_client_ids(value: str) -> List[str]:
 def _collect_google_client_ids_from_env() -> List[str]:
     """Collect Google client IDs from supported environment variables.
 
+    Environment variables are checked in priority order. The first variable
+    with any client IDs provides the primary set and prevents lower-priority
+    variables from overriding it. The public Next.js variable is appended when
+    present so the backend accepts the audience used by the frontend button.
+
     Returns:
         List[str]: Client IDs discovered in environment variables, preserving order.
     """
 
-    aggregated: List[str] = []
+    resolved: List[str] = []
     for key in GOOGLE_CLIENT_ENV_VARS:
         raw = os.getenv(key)
         if not raw:
             continue
-        for client_id in _parse_google_client_ids(raw):
-            if client_id not in aggregated:
-                aggregated.append(client_id)
-    return aggregated
+        parsed = _parse_google_client_ids(raw)
+        if not parsed:
+            continue
+        if not resolved:
+            resolved.extend(parsed)
+            continue
+        if key == "NEXT_PUBLIC_GOOGLE_CLIENT_ID":
+            for client_id in parsed:
+                if client_id not in resolved:
+                    resolved.append(client_id)
+    return resolved
 
 
 def _apply_environment_overrides(raw_content: Dict[str, Any]) -> Dict[str, Any]:

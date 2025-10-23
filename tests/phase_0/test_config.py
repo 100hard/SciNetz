@@ -111,3 +111,23 @@ def test_google_client_ids_fallbacks_to_frontend_env(monkeypatch) -> None:
         ]
     finally:
         load_config.cache_clear()
+
+
+def test_google_client_ids_append_frontend_id_when_overridden(monkeypatch) -> None:
+    load_config.cache_clear()
+    monkeypatch.setenv(
+        "SCINETS_AUTH_GOOGLE_CLIENT_IDS",
+        "client-one.apps.googleusercontent.com",
+    )
+    monkeypatch.setenv(
+        "NEXT_PUBLIC_GOOGLE_CLIENT_ID",
+        "client-two.apps.googleusercontent.com",
+    )
+    try:
+        config = load_config()
+        assert config.auth.google.client_ids == [
+            "client-one.apps.googleusercontent.com",
+            "client-two.apps.googleusercontent.com",
+        ]
+    finally:
+        load_config.cache_clear()
