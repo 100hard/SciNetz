@@ -26,7 +26,7 @@ from backend.app.auth.enums import UserRole
 from backend.app.auth.models import AuthBase
 from backend.app.auth.router import get_current_user, router as auth_router
 from backend.app.auth.schemas import AuthUser
-from backend.app.auth.utils import EmailDispatcher, JWTManager
+from backend.app.auth.utils import EmailDispatcher, GoogleTokenVerifier, JWTManager
 from backend.app.canonicalization import CanonicalizationPipeline
 from backend.app.config import AppConfig, load_config
 from backend.app.export.bundle import ExportBundleBuilder, GraphViewExportProvider
@@ -238,6 +238,9 @@ def create_app(
     app.state.jwt_manager = JWTManager(resolved_config.auth.jwt)
     app.state.email_dispatcher = EmailDispatcher(
         resolved_config.auth.smtp, resolved_config.auth.verification
+    )
+    app.state.google_verifier = GoogleTokenVerifier(
+        resolved_config.auth.google.client_ids
     )
 
     @app.on_event("startup")

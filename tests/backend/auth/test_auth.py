@@ -1,21 +1,32 @@
-"""Tests covering authentication workflows."""
+"""Tests for authentication utilities and Google login flow."""
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import List, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from backend.app.auth.enums import UserRole
-from backend.app.auth.models import AuthBase
+from backend.app.auth.models import AuthBase, User
 from backend.app.auth.repository import AuthRepository
-from backend.app.auth.schemas import LoginRequest, RegisterRequest
+from backend.app.auth.router import google_config
+from backend.app.auth.schemas import GoogleLoginRequest, RegisterRequest
 from backend.app.auth.service import AuthService, AuthServiceError
-from backend.app.auth.utils import JWTError, JWTManager
-from backend.app.config import AuthConfig, AuthJWTConfig, AuthSMTPConfig, AuthVerificationConfig
+from backend.app.auth.utils import (
+    GoogleTokenVerificationError,
+    JWTError,
+    JWTManager,
+)
+from backend.app.config import (
+    AuthConfig,
+    AuthGoogleConfig,
+    AuthJWTConfig,
+    AuthSMTPConfig,
+    AuthVerificationConfig,
+)
 
 
 class StubEmailDispatcher:
@@ -26,6 +37,23 @@ class StubEmailDispatcher:
 
     async def send_verification_email(self, recipient: str, token: str, expires_at: datetime) -> None:
         self.messages.append((recipient, token, expires_at))
+
+
+class StubGoogleVerifier:
+    """Return precomputed claims for Google credentials."""
+
+    def __init__(self, claims_map: Dict[str, Dict[str, Any]], allowed_audiences: Sequence[str]) -> None:
+        self._claims_map = claims_map
+        self._allowed_audiences = set(allowed_audiences)
+
+    async def verify(self, credential: str) -> Dict[str, Any]:
+        if credential not in self._claims_map:
+            raise GoogleTokenVerificationError("invalid credential")
+        claims = self._claims_map[credential]
+        audience = claims.get("aud")
+        if audience not in self._allowed_audiences:
+            raise GoogleTokenVerificationError("unexpected audience")
+        return claims
 
 
 async def _setup_repository() -> Tuple[AuthRepository, AsyncEngine]:
@@ -77,10 +105,54 @@ def test_jwt_expiry_enforced() -> None:
         manager.decode(token)
 
 
-def test_email_verification_flow() -> None:
+def test_google_config_endpoint_returns_client_ids() -> None:
+    config = AuthConfig(
+        database_url="sqlite+aiosqlite:///:memory:",
+        jwt=AuthJWTConfig(
+            secret_key="config-secret-key-that-is-long-enough-012345",
+            algorithm="HS256",
+            access_token_expires_minutes=5,
+            refresh_token_expires_minutes=60,
+        ),
+        verification=AuthVerificationConfig(
+            enabled=False,
+            token_ttl_minutes=60,
+            link_base_url="https://example.com/verify",
+        ),
+        smtp=AuthSMTPConfig(
+            host="localhost",
+            port=1025,
+            username="",
+            password="",
+            use_tls=False,
+            from_email="no-reply@example.com",
+        ),
+        google=AuthGoogleConfig(client_ids=["client-one.apps.googleusercontent.com", "client-two.apps.googleusercontent.com"]),
+    )
+
+    response = asyncio.run(google_config(config=config))
+
+    assert response.client_ids == [
+        "client-one.apps.googleusercontent.com",
+        "client-two.apps.googleusercontent.com",
+    ]
+
+
+def test_google_login_creates_verified_user() -> None:
     async def _run() -> None:
         repo, engine = await _setup_repository()
         dispatcher = StubEmailDispatcher()
+        verifier = StubGoogleVerifier(
+            {
+                "valid-token": {
+                    "sub": "abc-123",
+                    "email": "user@example.com",
+                    "email_verified": True,
+                    "aud": "client-id",
+                }
+            },
+            allowed_audiences=["client-id"],
+        )
         config = AuthConfig(
             database_url="sqlite+aiosqlite:///:memory:",
             jwt=AuthJWTConfig(
@@ -102,37 +174,39 @@ def test_email_verification_flow() -> None:
                 use_tls=False,
                 from_email="no-reply@example.com",
             ),
+            google=AuthGoogleConfig(client_ids=["client-id"]),
         )
-        service = AuthService(config, repo, JWTManager(config.jwt), dispatcher)
-        register_payload = RegisterRequest(email="user@example.com", password="password123")
-        registration, token, expires_at = await service.register_user(register_payload)
-        assert registration.user.email == "user@example.com"
-        assert registration.user.role is UserRole.USER
-        assert token is not None
-        assert expires_at is not None
-        await service.send_verification_email(registration.user.email, token, expires_at)
-        assert dispatcher.messages, "Verification email should be enqueued"
-        verification_response = await service.verify_email(token)
-        assert "Email verified" in verification_response.message
-        login_payload = LoginRequest(email="user@example.com", password="password123")
-        login_response = await service.login(login_payload)
-        assert login_response.tokens.access_token
-        assert login_response.user.role is UserRole.USER
-        decoded = JWTManager(config.jwt).decode(login_response.tokens.access_token)
-        assert decoded.get("role") == UserRole.USER.value
-        await service.logout(login_response.tokens.refresh_token)
-        with pytest.raises(AuthServiceError):
-            await service.verify_email(token)
+        service = AuthService(config, repo, JWTManager(config.jwt), dispatcher, verifier)
+        payload = GoogleLoginRequest(credential="valid-token", user_agent="Firefox")
+        response = await service.login_with_google(payload)
+        assert response.user.email == "user@example.com"
+        assert response.user.is_verified is True
+        assert response.tokens.access_token
+        stored = await repo.get_user_by_email("user@example.com")
+        assert stored is not None
+        assert stored.is_verified is True
+        assert stored.hashed_password is None
         await repo.session.close()
         await engine.dispose()
 
     asyncio.run(_run())
 
 
-def test_registration_without_verification_when_disabled() -> None:
+def test_google_login_requires_verified_email() -> None:
     async def _run() -> None:
         repo, engine = await _setup_repository()
         dispatcher = StubEmailDispatcher()
+        verifier = StubGoogleVerifier(
+            {
+                "unverified-token": {
+                    "sub": "def-456",
+                    "email": "user@example.com",
+                    "email_verified": False,
+                    "aud": "client-id",
+                }
+            },
+            allowed_audiences=["client-id"],
+        )
         config = AuthConfig(
             database_url="sqlite+aiosqlite:///:memory:",
             jwt=AuthJWTConfig(
@@ -154,18 +228,69 @@ def test_registration_without_verification_when_disabled() -> None:
                 use_tls=False,
                 from_email="no-reply@example.com",
             ),
+            google=AuthGoogleConfig(client_ids=["client-id"]),
         )
-        service = AuthService(config, repo, JWTManager(config.jwt), dispatcher)
-        register_payload = RegisterRequest(email="instant@example.com", password="password123")
-        registration, token, expires_at = await service.register_user(register_payload)
-        assert registration.requires_verification is False
-        assert registration.user.is_verified is True
-        assert token is None
-        assert expires_at is None
-        assert dispatcher.messages == []
-        login_payload = LoginRequest(email="instant@example.com", password="password123")
-        login_response = await service.login(login_payload)
-        assert login_response.user.email == "instant@example.com"
+        service = AuthService(config, repo, JWTManager(config.jwt), dispatcher, verifier)
+        with pytest.raises(AuthServiceError) as excinfo:
+            await service.login_with_google(GoogleLoginRequest(credential="unverified-token"))
+        assert excinfo.value.reason == "forbidden"
+        await repo.session.close()
+        await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_google_login_reuses_existing_user() -> None:
+    async def _run() -> None:
+        repo, engine = await _setup_repository()
+        dispatcher = StubEmailDispatcher()
+        claims = {
+            "shared-token": {
+                "sub": "ghi-789",
+                "email": "existing@example.com",
+                "email_verified": True,
+                "aud": "client-id",
+            }
+        }
+        verifier = StubGoogleVerifier(claims, allowed_audiences=["client-id"])
+        config = AuthConfig(
+            database_url="sqlite+aiosqlite:///:memory:",
+            jwt=AuthJWTConfig(
+                secret_key="reuse-secret-key-that-is-long-enough-012345",
+                algorithm="HS256",
+                access_token_expires_minutes=5,
+                refresh_token_expires_minutes=60,
+            ),
+            verification=AuthVerificationConfig(
+                enabled=False,
+                token_ttl_minutes=60,
+                link_base_url="https://example.com/verify",
+            ),
+            smtp=AuthSMTPConfig(
+                host="localhost",
+                port=1025,
+                username="",
+                password="",
+                use_tls=False,
+                from_email="no-reply@example.com",
+            ),
+            google=AuthGoogleConfig(client_ids=["client-id"]),
+        )
+        service = AuthService(config, repo, JWTManager(config.jwt), dispatcher, verifier)
+        payload = GoogleLoginRequest(credential="shared-token")
+        first_response = await service.login_with_google(payload)
+        stored_user = await repo.get_user_by_email("existing@example.com")
+        assert stored_user is not None
+        first_user_id = stored_user.id
+        second_response = await service.login_with_google(payload)
+        assert second_response.user.id == first_response.user.id
+        refreshed_user = await repo.get_user_by_email("existing@example.com")
+        assert refreshed_user is not None
+        assert refreshed_user.id == first_user_id
+        async with repo.session.begin():
+            count = await repo.session.execute(select(User))
+            users = count.scalars().all()
+        assert len(users) == 1
         await repo.session.close()
         await engine.dispose()
 

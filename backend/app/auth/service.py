@@ -15,9 +15,16 @@ from backend.app.auth.schemas import (
     TokenRefreshResponse,
     VerificationResponse,
 )
-from backend.app.auth.utils import EmailDispatcher, JWTError, JWTManager, generate_refresh_token
+from backend.app.auth.utils import (
+    EmailDispatcher,
+    GoogleTokenVerificationError,
+    GoogleTokenVerifier,
+    JWTError,
+    JWTManager,
+    generate_refresh_token,
+)
 from backend.app.config import AuthConfig
-from backend.app.auth.schemas import LoginRequest, RefreshRequest, RegisterRequest
+from backend.app.auth.schemas import GoogleLoginRequest, RefreshRequest, RegisterRequest
 from backend.app.auth.models import User
 
 
@@ -38,11 +45,13 @@ class AuthService:
         repository: AuthRepository,
         jwt_manager: JWTManager,
         email_dispatcher: EmailDispatcher,
+        google_verifier: GoogleTokenVerifier,
     ) -> None:
         self._config = config
         self._repository = repository
         self._jwt_manager = jwt_manager
         self._email_dispatcher = email_dispatcher
+        self._google_verifier = google_verifier
 
     @staticmethod
     def _now() -> datetime:
@@ -78,7 +87,7 @@ class AuthService:
         now = self._now()
         try:
             user = await self._repository.create_user(
-                payload.email, payload.password, role=UserRole.USER
+                payload.email, password=payload.password, role=UserRole.USER
             )
             if requires_verification:
                 token = generate_refresh_token(32)
@@ -138,20 +147,50 @@ class AuthService:
 
         return VerificationResponse(message="Email verified successfully")
 
-    async def login(self, payload: LoginRequest) -> LoginResponse:
-        """Authenticate credentials and return JWT tokens."""
+    async def login_with_google(self, payload: GoogleLoginRequest) -> LoginResponse:
+        """Authenticate a Google credential and return JWT tokens."""
 
-        user = await self._repository.get_user_by_email(payload.email)
-        if user is None:
-            raise AuthServiceError("Invalid credentials", reason="unauthorized")
-        if not user.is_verified:
-            raise AuthServiceError("Email verification required", reason="forbidden")
-        if not user.is_active:
-            raise AuthServiceError("User is disabled", reason="forbidden")
-        if not self._repository.verify_password(payload.password, user.hashed_password):
-            raise AuthServiceError("Invalid credentials", reason="unauthorized")
+        try:
+            claims = await self._google_verifier.verify(payload.credential)
+        except GoogleTokenVerificationError as exc:
+            raise AuthServiceError("Invalid Google credential", reason="unauthorized") from exc
 
+        raw_email = claims.get("email")
+        if not isinstance(raw_email, str) or not raw_email.strip():
+            raise AuthServiceError("Google account email is unavailable", reason="unauthorized")
+        email = raw_email.strip().lower()
+
+        email_verified_claim = claims.get("email_verified", False)
+        if isinstance(email_verified_claim, str):
+            is_email_verified = email_verified_claim.lower() == "true"
+        else:
+            is_email_verified = bool(email_verified_claim)
+        if not is_email_verified:
+            raise AuthServiceError("Google account email is not verified", reason="forbidden")
+
+        user = await self._repository.get_user_by_email(email)
         now = self._now()
+
+        if user is None:
+            try:
+                user = await self._repository.create_user(
+                    email,
+                    password=None,
+                    role=UserRole.USER,
+                    is_verified=True,
+                )
+                user.is_active = True
+                user.updated_at = now
+            except Exception as exc:  # pragma: no cover - defensive rollback
+                await self._repository.rollback()
+                raise exc
+        else:
+            if not user.is_active:
+                raise AuthServiceError("User is disabled", reason="forbidden")
+            if not user.is_verified:
+                user.is_verified = True
+                user.updated_at = now
+
         access_token = self._jwt_manager.create_access_token(
             subject=user.id,
             additional_claims={"email": user.email, "role": user.role.value},
