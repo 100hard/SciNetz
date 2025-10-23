@@ -468,7 +468,10 @@ def _load_env_file(path: Path) -> None:
                     continue
                 key, raw_value = line.split("=", 1)
                 key = key.strip()
-                if not key or key in os.environ:
+                if not key:
+                    continue
+                existing_value = os.environ.get(key)
+                if existing_value is not None and existing_value.strip() != "":
                     continue
                 value = raw_value.strip()
                 if not value:
