@@ -447,19 +447,22 @@ def _parse_google_client_ids(value: str) -> List[str]:
 def _collect_google_client_ids_from_env() -> List[str]:
     """Collect Google client IDs from supported environment variables.
 
+    Environment variables are checked in priority order. The first variable
+    with any client IDs wins, ensuring downstream configuration exactly matches
+    the highest-precedence setting and does not merge values across variables.
+
     Returns:
         List[str]: Client IDs discovered in environment variables, preserving order.
     """
 
-    aggregated: List[str] = []
     for key in GOOGLE_CLIENT_ENV_VARS:
         raw = os.getenv(key)
         if not raw:
             continue
-        for client_id in _parse_google_client_ids(raw):
-            if client_id not in aggregated:
-                aggregated.append(client_id)
-    return aggregated
+        parsed = _parse_google_client_ids(raw)
+        if parsed:
+            return parsed
+    return []
 
 
 def _apply_environment_overrides(raw_content: Dict[str, Any]) -> Dict[str, Any]:
