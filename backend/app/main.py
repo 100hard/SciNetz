@@ -1157,6 +1157,30 @@ def _verify_driver_connectivity(driver: object) -> None:
     verify = getattr(driver, "verify_connectivity", None)
     if callable(verify):
         verify()
+    execute_query = getattr(driver, "execute_query", None)
+    if callable(execute_query):
+        execute_query("RETURN 1 AS ok")
+        return
+    session_factory = getattr(driver, "session", None)
+    if not callable(session_factory):
+        return
+    session = session_factory()
+    try:
+        runner = getattr(session, "run", None)
+        if not callable(runner):
+            return
+        result = runner("RETURN 1 AS ok")
+        consumer = getattr(result, "consume", None)
+        if callable(consumer):
+            consumer()
+            return
+        single = getattr(result, "single", None)
+        if callable(single):
+            single()
+    finally:
+        closer = getattr(session, "close", None)
+        if callable(closer):
+            closer()
 
 
 def _close_driver_quietly(driver: object) -> None:
