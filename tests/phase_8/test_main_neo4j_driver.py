@@ -14,10 +14,14 @@ class _DummyDriver:
 
     def __init__(self) -> None:
         self.verified = False
+        self.executed = False
         self.closed = False
 
     def verify_connectivity(self) -> None:
         self.verified = True
+
+    def execute_query(self, query: str) -> None:  # noqa: D401 - mimic driver method
+        self.executed = True
 
     def close(self) -> None:
         self.closed = True
@@ -59,6 +63,7 @@ def test_create_neo4j_driver_prefers_config_when_env_missing(monkeypatch: pytest
     assert driver.verified is True
     assert recording.calls["uri"] == config.graph.uri
     assert recording.calls["auth"] == (config.graph.username, config.graph.password)
+    assert driver.executed is True
 
 
 def test_create_neo4j_driver_returns_none_without_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,7 +100,8 @@ def test_create_neo4j_driver_falls_back_when_routing_unavailable(monkeypatch: py
     _clear_neo4j_env(monkeypatch)
 
     class _FailingDriver(_DummyDriver):
-        def verify_connectivity(self) -> None:  # noqa: D401 - override
+        def execute_query(self, query: str) -> None:  # noqa: D401 - override
+            super().execute_query(query)
             raise ServiceUnavailable("Unable to retrieve routing information")
 
     class _RoutingGraphDatabase:
@@ -117,6 +123,7 @@ def test_create_neo4j_driver_falls_back_when_routing_unavailable(monkeypatch: py
     assert isinstance(driver, _DummyDriver)
     assert driver is not recording.first_driver
     assert driver.verified is True
+    assert driver.executed is True
     assert recording.calls == [
         "neo4j://example.com:7687",
         "bolt://example.com:7687",
