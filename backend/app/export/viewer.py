@@ -72,6 +72,16 @@ def render_share_html(
     bundle_lines = "\n            ".join(
         _format_bundle_item(key, value) for key, value in bundle_info.items()
     )
+    download_link_markup = ""
+    if download_url:
+        escaped_url = html.escape(download_url, quote=True)
+        download_link_markup = (
+            "<div class=\"download-actions\">"
+            f"<a id=\"download-link\" class=\"download-link\" href=\"{escaped_url}\" download>"
+            "Download bundle (.zip)</a>"
+            "</div>"
+        )
+
     expires_js = (
         _escape_script_value(json.dumps(expires_at.isoformat(), ensure_ascii=False))
         if expires_at
@@ -102,6 +112,9 @@ def render_share_html(
         padding: 1.5rem 2rem;
         border-bottom: 1px solid rgba(148, 163, 184, 0.18);
         background: #ffffff;
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
       }}
       header h1 {{
         margin: 0;
@@ -109,8 +122,34 @@ def render_share_html(
         font-weight: 600;
       }}
       header p {{
-        margin: 0.5rem 0 0;
+        margin: 0;
         color: rgba(15, 23, 42, 0.65);
+      }}
+      .download-actions {{
+        display: inline-flex;
+      }}
+      .download-link {{
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.6rem 1rem;
+        border-radius: 9999px;
+        border: 1px solid rgba(37, 99, 235, 0.28);
+        background: #2563eb;
+        color: #ffffff;
+        font-weight: 600;
+        font-size: 0.95rem;
+        text-decoration: none;
+        box-shadow: 0 12px 24px rgba(37, 99, 235, 0.25);
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }}
+      .download-link:hover {{
+        transform: translateY(-1px);
+        box-shadow: 0 18px 30px rgba(37, 99, 235, 0.35);
+      }}
+      .download-link:focus {{
+        outline: 3px solid rgba(37, 99, 235, 0.35);
+        outline-offset: 2px;
       }}
       main {{
         flex: 1;
@@ -208,6 +247,7 @@ def render_share_html(
     <header>
       <h1>SciNets Shared Graph</h1>
       <p>Interactive snapshot exported from the SciNets knowledge graph.</p>
+      __DOWNLOAD_LINK__
     </header>
     <main>
       <section id="graph"></section>
@@ -1434,6 +1474,7 @@ def render_share_html(
         html_template.replace("__GRAPH_DATA__", payload)
         .replace("__EXPIRES_AT__", expires_js)
         .replace("__BUNDLE_LINES__", bundle_lines)
+        .replace("__DOWNLOAD_LINK__", download_link_markup)
         .replace("__NODE_LIMIT__", str(VISUALIZATION_NODE_LIMIT))
     )
     return html_content
