@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from passlib.context import CryptContext
 from sqlalchemy import select
@@ -14,18 +14,39 @@ from backend.app.auth.enums import UserRole
 from backend.app.auth.models import EmailVerification, RefreshToken, User
 
 
+class _ManagedAsyncSession:
+    """Proxy around :class:`AsyncSession` that auto-nests transactions."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._session, name)
+
+    def begin(self, *args: Any, **kwargs: Any):  # type: ignore[override]
+        """Start a transaction, nesting when one is already active."""
+
+        nested_flag = kwargs.pop("nested", False)
+        if nested_flag:
+            return self._session.begin_nested()
+        if self._session.in_transaction():
+            return self._session.begin_nested()
+        return self._session.begin(*args, **kwargs)
+
+
 class AuthRepository:
     """Provide database access helpers for authentication workflows."""
 
     def __init__(self, session: AsyncSession, pwd_context: Optional[CryptContext] = None) -> None:
         self._session = session
+        self._session_wrapper = _ManagedAsyncSession(session)
         self._pwd_context = pwd_context or CryptContext(schemes=["bcrypt"], deprecated="auto")
 
     @property
     def session(self) -> AsyncSession:
         """Return the underlying SQLAlchemy session."""
 
-        return self._session
+        return self._session_wrapper  # type: ignore[return-value]
 
     def hash_password(self, password: str) -> str:
         """Hash the provided password using bcrypt."""
