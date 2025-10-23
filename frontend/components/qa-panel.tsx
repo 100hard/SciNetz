@@ -255,7 +255,7 @@ const QaPanel = () => {
     }
     const latest = history[history.length - 1];
     return `Latest results for "${latest.question}".`;
-  }, [error, history, isLoading, pendingQuestion]);
+  }, [error, history, isLlmEnabled, isLoading, pendingQuestion, settingsLoaded]);
 
   const handleSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
@@ -295,9 +295,7 @@ const QaPanel = () => {
         setPendingQuestion(null);
         setIsLoading(false);
       }
-    },
-    [question],
-  );
+    }, [question, settingsLoaded]);
 
   const handleClear = () => {
     setQuestion("");
@@ -375,8 +373,8 @@ const QaPanel = () => {
             ) : (
               <p>
                 No questions asked yet. Try queries like{" "}
-                <span className="font-medium text-foreground">"How does Method A compare to Method B?"</span> or{" "}
-                <span className="font-medium text-foreground">"What evidence links Dataset X to Metric Y?"</span>
+                <span className="font-medium text-foreground">&ldquo;How does Method A compare to Method B?&rdquo;</span> or{" "}
+                <span className="font-medium text-foreground">&ldquo;What evidence links Dataset X to Metric Y?&rdquo;</span>
               </p>
             )}
           </div>
