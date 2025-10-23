@@ -131,3 +131,29 @@ def test_google_client_ids_append_frontend_id_when_overridden(monkeypatch) -> No
         ]
     finally:
         load_config.cache_clear()
+
+
+def test_google_client_ids_loaded_from_env_file(monkeypatch, tmp_path) -> None:
+    load_config.cache_clear()
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "# Sample .env file\nNEXT_PUBLIC_GOOGLE_CLIENT_ID=client-from-env-file.apps.googleusercontent.com\n",
+        encoding="utf-8",
+    )
+    for key in (
+        "SCINETS_AUTH_GOOGLE_CLIENT_IDS",
+        "GOOGLE_CLIENT_IDS",
+        "GOOGLE_CLIENT_ID",
+        "NEXT_PUBLIC_GOOGLE_CLIENT_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("SCINETS_ENV_FILE", str(env_file))
+    try:
+        config = load_config()
+        assert config.auth.google.client_ids == [
+            "client-from-env-file.apps.googleusercontent.com",
+        ]
+    finally:
+        load_config.cache_clear()
+        monkeypatch.delenv("SCINETS_ENV_FILE", raising=False)
+        monkeypatch.delenv("NEXT_PUBLIC_GOOGLE_CLIENT_ID", raising=False)

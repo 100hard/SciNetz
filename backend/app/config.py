@@ -4,8 +4,8 @@ from __future__ import annotations
 import logging
 import os
 import re
-from functools import lru_cache
 from datetime import timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -15,6 +15,9 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 LOGGER = logging.getLogger(__name__)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ENV_FILE = REPO_ROOT / ".env"
 
 GOOGLE_CLIENT_ENV_VARS = (
     "SCINETS_AUTH_GOOGLE_CLIENT_IDS",
@@ -426,6 +429,59 @@ class AppConfig(_FrozenModel):
         return Path(__file__).resolve().parents[2] / "config.yaml"
 
 
+def _determine_env_file_path() -> Optional[Path]:
+    """Return the path to the environment file if one should be loaded."""
+
+    override = os.getenv("SCINETS_ENV_FILE")
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.exists():
+            return candidate
+        LOGGER.warning("Configured environment file override does not exist: %s", candidate)
+        return None
+    if DEFAULT_ENV_FILE.exists():
+        return DEFAULT_ENV_FILE
+    return None
+
+
+def _strip_inline_comment(value: str) -> str:
+    """Remove inline comments from an environment value when unquoted."""
+
+    comment_index = value.find("#")
+    if comment_index == -1:
+        return value
+    return value[:comment_index].rstrip()
+
+
+def _load_env_file(path: Path) -> None:
+    """Populate ``os.environ`` with values read from a ``.env`` file."""
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.lower().startswith("export "):
+                    line = line[7:].lstrip()
+                if "=" not in line:
+                    continue
+                key, raw_value = line.split("=", 1)
+                key = key.strip()
+                if not key or key in os.environ:
+                    continue
+                value = raw_value.strip()
+                if not value:
+                    os.environ[key] = ""
+                    continue
+                if value[0] in {'"', "'"} and value[-1] == value[0]:
+                    os.environ[key] = value[1:-1]
+                    continue
+                os.environ[key] = _strip_inline_comment(value)
+    except OSError:
+        LOGGER.warning("Unable to read environment file at %s", path)
+
+
 def _parse_google_client_ids(value: str) -> List[str]:
     """Parse an environment variable value into unique Google client IDs.
 
@@ -483,6 +539,10 @@ def _apply_environment_overrides(raw_content: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Configuration mapping with environment overrides applied.
     """
+
+    env_file_path = _determine_env_file_path()
+    if env_file_path is not None:
+        _load_env_file(env_file_path)
 
     google_client_ids = _collect_google_client_ids_from_env()
     if google_client_ids:
