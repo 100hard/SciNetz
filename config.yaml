@@ -18,6 +18,9 @@ auth:
     password: ""
     use_tls: false
     from_email: no-reply@scinets.local
+  google:
+    client_ids:
+      - your-google-client-id.apps.googleusercontent.com
 parsing:
   section_fuzzy_threshold: 0.85
   metadata_max_pages: 2

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -51,6 +51,12 @@ class LoginResponse(_FrozenModel):
     tokens: TokenPair
 
 
+class GoogleConfigResponse(_FrozenModel):
+    """Exposed Google authentication configuration."""
+
+    client_ids: List[str]
+
+
 class TokenRefreshResponse(_FrozenModel):
     """Response payload when refreshing authentication tokens."""
 
@@ -85,6 +91,13 @@ class LoginRequest(BaseModel):
     user_agent: Optional[str] = Field(default=None, max_length=255)
 
 
+class GoogleLoginRequest(BaseModel):
+    """Google identity login payload."""
+
+    credential: str = Field(..., min_length=1)
+    user_agent: Optional[str] = Field(default=None, max_length=255)
+
+
 class RefreshRequest(BaseModel):
     """Refresh token request payload."""
 
@@ -103,11 +116,13 @@ __all__ = [
     "TokenPair",
     "RegistrationResponse",
     "LoginResponse",
+    "GoogleConfigResponse",
     "TokenRefreshResponse",
     "LogoutResponse",
     "VerificationResponse",
     "RegisterRequest",
     "LoginRequest",
+    "GoogleLoginRequest",
     "RefreshRequest",
     "LogoutRequest",
 ]

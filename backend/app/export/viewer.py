@@ -77,7 +77,7 @@ def render_share_html(
         escaped_url = html.escape(download_url, quote=True)
         download_link_markup = (
             "<div class=\"download-actions\">"
-            f"<a id=\"download-link\" class=\"download-link\" href=\"{escaped_url}\" download>"
+            f"<a id=\"download-bundle\" class=\"download-bundle\" href=\"{escaped_url}\" download>"
             "Download bundle (.zip)</a>"
             "</div>"
         )
@@ -128,7 +128,7 @@ def render_share_html(
       .download-actions {{
         display: inline-flex;
       }}
-      .download-link {{
+      .download-bundle {{
         display: inline-flex;
         align-items: center;
         gap: 0.5rem;
@@ -143,11 +143,11 @@ def render_share_html(
         box-shadow: 0 12px 24px rgba(37, 99, 235, 0.25);
         transition: transform 0.15s ease, box-shadow 0.15s ease;
       }}
-      .download-link:hover {{
+      .download-bundle:hover {{
         transform: translateY(-1px);
         box-shadow: 0 18px 30px rgba(37, 99, 235, 0.35);
       }}
-      .download-link:focus {{
+      .download-bundle:focus {{
         outline: 3px solid rgba(37, 99, 235, 0.35);
         outline-offset: 2px;
       }}

@@ -162,7 +162,7 @@ var Jo=function(){function e(e){return-e.tension*e.x-e.friction*e.v}function t(t
             <li><strong>Link expires:</strong> Never</li>
           </ul>
         </div>
-        <a id="download-link" class="download" rel="noopener" href="#" style="display:none;">
+        <a id="download-bundle" class="download" rel="noopener" href="#" style="display:none;">
           Download bundle (.zip)
         </a>
         <section id="details">
@@ -177,7 +177,7 @@ var Jo=function(){function e(e){return-e.tension*e.x-e.friction*e.v}function t(t
         const graphData = GRAPH_DATA || {{}};
         const downloadUrl = DOWNLOAD_URL;
         const expiresAt = EXPIRES_AT;
-        const downloadLink = document.getElementById("download-link");
+        const downloadLink = document.getElementById("download-bundle");
         if (downloadLink && downloadUrl) {{
           downloadLink.href = downloadUrl;
           downloadLink.style.display = "inline-flex";
