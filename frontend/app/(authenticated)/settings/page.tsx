@@ -10,7 +10,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 
-import apiClient, { extractErrorMessage } from "../../lib/http";
+import apiClient, { extractErrorMessage } from "@/lib/http";
 
 const AUTO_FETCH_STORAGE_KEY = "graphAutoFetchEnabled";
 

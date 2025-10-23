@@ -6,7 +6,7 @@ import { useMemo } from "react";
 import { toast } from "sonner";
 
 import { useAuth } from "./auth-provider";
-import { extractErrorMessage } from "../lib/http";
+import { extractErrorMessage } from "@/lib/http";
 
 const Header = () => {
   const router = useRouter();

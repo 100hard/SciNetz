@@ -12,7 +12,7 @@ import {
 
 import { toast } from "sonner";
 
-import apiClient, { extractErrorMessage } from "../../lib/http";
+import apiClient, { extractErrorMessage } from "@/lib/http";
 
 type PaperMetadata = {
   doc_id: string;

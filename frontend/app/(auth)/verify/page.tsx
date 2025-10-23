@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
-import apiClient, { extractErrorMessage } from "../../../lib/http";
+import apiClient, { extractErrorMessage } from "@/lib/http";
 import type { VerificationResponse } from "../../../types/auth";
 
 type VerificationState = "idle" | "loading" | "success" | "error";
