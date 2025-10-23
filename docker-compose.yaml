@@ -12,6 +12,9 @@ services:
       - EXPORT_STORAGE_SECURE=${EXPORT_STORAGE_SECURE:-false}
       - EXPORT_STORAGE_PUBLIC_ENDPOINT=${EXPORT_STORAGE_PUBLIC_ENDPOINT:-http://localhost:9000}
       - EXPORT_TOKEN_SECRET=${EXPORT_TOKEN_SECRET:-dev-export-token-secret}
+      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - SCINETS_AUTH_GOOGLE_CLIENT_IDS=${SCINETS_AUTH_GOOGLE_CLIENT_IDS:-}
     ports:
       - "8000:8000"
     volumes:
@@ -37,6 +40,7 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_BASE_URL=http://api:8000
+      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
 
   neo4j:
     image: neo4j:5-community
