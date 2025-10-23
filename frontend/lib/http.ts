@@ -1,6 +1,21 @@
 import axios, { AxiosError } from "axios";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "";
+const DEFAULT_API_BASE_URL = "http://localhost:8000";
+
+const sanitizeBaseUrl = (value: string): string => value.replace(/\/$/, "");
+
+const resolveApiBaseUrl = (): string => {
+  const raw = process.env.NEXT_PUBLIC_API_URL;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    const sanitized = sanitizeBaseUrl(raw.trim());
+    if (sanitized.length > 0) {
+      return sanitized;
+    }
+  }
+  return sanitizeBaseUrl(DEFAULT_API_BASE_URL);
+};
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL || undefined,
