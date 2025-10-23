@@ -29,28 +29,6 @@ declare global {
   }
 }
 
-const GOOGLE_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
-
-type GoogleCredentialResponse = {
-  credential?: string;
-};
-
-declare global {
-  interface Window {
-    google?: {
-      accounts?: {
-        id?: {
-          initialize: (config: { client_id: string; callback: (response: GoogleCredentialResponse) => void }) => void;
-          renderButton: (element: HTMLElement, options: Record<string, unknown>) => void;
-          prompt: () => void;
-        };
-      };
-    };
-  }
-}
-
-const GOOGLE_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
-
 const LoginPage = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -179,7 +157,7 @@ const LoginPage = () => {
     }
 
     const script = document.createElement("script");
-    script.src = GOOGLE_SCRIPT_SRC;
+    script.src = "https://accounts.google.com/gsi/client";
     script.async = true;
     script.defer = true;
     script.onload = initializeButton;
