@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.app.auth.repository import AuthRepository
 from backend.app.auth.schemas import (
     AuthUser,
+    GoogleConfigResponse,
     GoogleLoginRequest,
     LoginResponse,
     LogoutRequest,
@@ -135,6 +136,13 @@ async def login_with_google(
         return await service.login_with_google(payload)
     except AuthServiceError as exc:
         raise HTTPException(status_code=_status_from_reason(exc.reason), detail=str(exc)) from exc
+
+
+@router.get("/google/config", response_model=GoogleConfigResponse)
+async def google_config(config: AuthConfig = Depends(get_auth_config)) -> GoogleConfigResponse:
+    """Expose Google authentication configuration for the UI."""
+
+    return GoogleConfigResponse(client_ids=list(config.google.client_ids))
 
 
 @router.post("/token/refresh", response_model=TokenRefreshResponse)

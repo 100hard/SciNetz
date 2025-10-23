@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from backend.app.auth.models import AuthBase, User
 from backend.app.auth.repository import AuthRepository
+from backend.app.auth.router import google_config
 from backend.app.auth.schemas import GoogleLoginRequest, RegisterRequest
 from backend.app.auth.service import AuthService, AuthServiceError
 from backend.app.auth.utils import (
@@ -102,6 +103,39 @@ def test_jwt_expiry_enforced() -> None:
     )
     with pytest.raises(JWTError):
         manager.decode(token)
+
+
+def test_google_config_endpoint_returns_client_ids() -> None:
+    config = AuthConfig(
+        database_url="sqlite+aiosqlite:///:memory:",
+        jwt=AuthJWTConfig(
+            secret_key="config-secret-key-that-is-long-enough-012345",
+            algorithm="HS256",
+            access_token_expires_minutes=5,
+            refresh_token_expires_minutes=60,
+        ),
+        verification=AuthVerificationConfig(
+            enabled=False,
+            token_ttl_minutes=60,
+            link_base_url="https://example.com/verify",
+        ),
+        smtp=AuthSMTPConfig(
+            host="localhost",
+            port=1025,
+            username="",
+            password="",
+            use_tls=False,
+            from_email="no-reply@example.com",
+        ),
+        google=AuthGoogleConfig(client_ids=["client-one.apps.googleusercontent.com", "client-two.apps.googleusercontent.com"]),
+    )
+
+    response = asyncio.run(google_config(config=config))
+
+    assert response.client_ids == [
+        "client-one.apps.googleusercontent.com",
+        "client-two.apps.googleusercontent.com",
+    ]
 
 
 def test_google_login_creates_verified_user() -> None:

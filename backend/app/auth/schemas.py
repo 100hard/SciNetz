@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -49,6 +49,12 @@ class LoginResponse(_FrozenModel):
     message: str = Field(..., min_length=1)
     user: AuthUser
     tokens: TokenPair
+
+
+class GoogleConfigResponse(_FrozenModel):
+    """Exposed Google authentication configuration."""
+
+    client_ids: List[str]
 
 
 class TokenRefreshResponse(_FrozenModel):
@@ -110,6 +116,7 @@ __all__ = [
     "TokenPair",
     "RegistrationResponse",
     "LoginResponse",
+    "GoogleConfigResponse",
     "TokenRefreshResponse",
     "LogoutResponse",
     "VerificationResponse",

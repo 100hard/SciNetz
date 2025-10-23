@@ -5,7 +5,31 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 
 import { useAuth } from "../../../components/auth-provider";
-import { extractErrorMessage } from "@/lib/http";
+import apiClient, { extractErrorMessage } from "@/lib/http";
+
+type GoogleCredentialResponse = {
+  credential?: string;
+};
+
+type GoogleConfigResponse = {
+  client_ids: string[];
+};
+
+declare global {
+  interface Window {
+    google?: {
+      accounts?: {
+        id?: {
+          initialize: (config: { client_id: string; callback: (response: GoogleCredentialResponse) => void }) => void;
+          renderButton: (element: HTMLElement, options: Record<string, unknown>) => void;
+          prompt: () => void;
+        };
+      };
+    };
+  }
+}
+
+const GOOGLE_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
 
 type GoogleCredentialResponse = {
   credential?: string;
@@ -35,16 +59,67 @@ const LoginPage = () => {
   const buttonContainerRef = useRef<HTMLDivElement | null>(null);
   const scriptInitializedRef = useRef(false);
   const scriptLoadingRef = useRef(false);
+  const initialClientId = useMemo(() => {
+    const raw = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+    return typeof raw === "string" ? raw.trim() : "";
+  }, []);
+  const [googleClientId, setGoogleClientId] = useState(initialClientId);
+  const [configState, setConfigState] = useState<"loading" | "ready" | "error">(
+    initialClientId ? "ready" : "loading",
+  );
+  const [configError, setConfigError] = useState<string | null>(null);
 
   const rawNextParam = searchParams?.get("next") ?? "/";
   const nextParam = rawNextParam.startsWith("/") ? rawNextParam : "/";
-  const googleClientId = useMemo(() => process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "", []);
 
   useEffect(() => {
     if (status === "authenticated") {
       router.replace(nextParam || "/");
     }
   }, [nextParam, router, status]);
+
+  useEffect(() => {
+    if (initialClientId) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadGoogleConfig = async () => {
+      setConfigState("loading");
+      try {
+        const { data } = await apiClient.get<GoogleConfigResponse>("/api/auth/google/config");
+        if (!isMounted) {
+          return;
+        }
+        const resolvedId = data.client_ids.map((id) => id.trim()).find((id) => id.length > 0) ?? "";
+        if (resolvedId) {
+          setGoogleClientId(resolvedId);
+          setConfigError(null);
+          setConfigState("ready");
+        } else {
+          setGoogleClientId("");
+          setConfigError(
+            "Google Sign-In is not configured. Add a client ID to auth.google.client_ids or set NEXT_PUBLIC_GOOGLE_CLIENT_ID.",
+          );
+          setConfigState("error");
+        }
+      } catch (error) {
+        if (!isMounted) {
+          return;
+        }
+        setGoogleClientId("");
+        setConfigError(extractErrorMessage(error, "Unable to load Google Sign-In configuration."));
+        setConfigState("error");
+      }
+    };
+
+    void loadGoogleConfig();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [initialClientId]);
 
   const handleCredential = useCallback(
     (response: GoogleCredentialResponse) => {
@@ -120,7 +195,9 @@ const LoginPage = () => {
     };
   }, [googleClientId, handleCredential]);
 
-  const isDisabled = isSubmitting || status === "loading";
+  const isConfigReady = configState === "ready" && Boolean(googleClientId);
+  const isConfigLoading = configState === "loading";
+  const isDisabled = isSubmitting || status === "loading" || !isConfigReady;
 
   return (
     <div className="w-full max-w-md space-y-6">
@@ -132,7 +209,7 @@ const LoginPage = () => {
         </p>
       </div>
       <div className="space-y-6 rounded-lg border bg-card p-8 shadow-xl">
-        {googleClientId ? (
+        {isConfigReady ? (
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
               Continue with Google to securely authenticate without a password.
@@ -144,10 +221,14 @@ const LoginPage = () => {
           </div>
         ) : (
           <div className="space-y-2 text-center">
-            <p className="text-sm text-muted-foreground">
-              Google Sign-In is not configured. Set <code className="font-mono">NEXT_PUBLIC_GOOGLE_CLIENT_ID</code> to enable
-              authentication.
-            </p>
+            {isConfigLoading ? (
+              <p className="text-sm text-muted-foreground">Loading Google Sign-In configuration…</p>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {configError ??
+                  "Google Sign-In is not configured. Add a client ID to auth.google.client_ids or set NEXT_PUBLIC_GOOGLE_CLIENT_ID."}
+              </p>
+            )}
           </div>
         )}
         <p className="text-center text-sm text-muted-foreground">
