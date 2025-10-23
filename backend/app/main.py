@@ -13,7 +13,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -1115,9 +1115,72 @@ def _create_neo4j_driver(config: AppConfig) -> Optional[object]:
     if not (uri and user and password):
         LOGGER.warning("Neo4j connection details missing; graph-dependent features disabled")
         return None
+
     try:
-        driver = GraphDatabase.driver(uri, auth=(user, password))
-    except Exception:  # noqa: BLE001 - connection issues
-        LOGGER.exception("Failed to connect to Neo4j driver")
-        return None
+        return _open_neo4j_driver(uri, user, password)
+    except Exception as exc:  # noqa: BLE001 - connection issues
+        fallback_uri = _fallback_to_direct_uri(uri, exc)
+        if fallback_uri is None:
+            LOGGER.exception("Failed to connect to Neo4j driver")
+            return None
+        LOGGER.warning(
+            "Routing Neo4j connection failed for %s (%s); retrying with %s",
+            uri,
+            exc,
+            fallback_uri,
+        )
+        try:
+            return _open_neo4j_driver(fallback_uri, user, password)
+        except Exception:  # noqa: BLE001 - fallback connection failed
+            LOGGER.exception(
+                "Failed to connect to Neo4j driver using fallback URI %s",
+                fallback_uri,
+            )
+            return None
+
+
+def _open_neo4j_driver(uri: str, user: str, password: str) -> object:
+    """Instantiate a Neo4j driver and verify connectivity."""
+
+    driver = GraphDatabase.driver(uri, auth=(user, password))
+    try:
+        _verify_driver_connectivity(driver)
+    except Exception:  # pragma: no cover - propagate for caller handling
+        _close_driver_quietly(driver)
+        raise
     return driver
+
+
+def _verify_driver_connectivity(driver: object) -> None:
+    """Invoke driver connectivity check when available."""
+
+    verify = getattr(driver, "verify_connectivity", None)
+    if callable(verify):
+        verify()
+
+
+def _close_driver_quietly(driver: object) -> None:
+    """Attempt to close a driver instance without raising errors."""
+
+    closer = getattr(driver, "close", None)
+    if callable(closer):
+        with contextlib.suppress(Exception):
+            closer()
+
+
+def _fallback_to_direct_uri(uri: str, exc: Exception) -> Optional[str]:
+    """Return a bolt URI when routing information is unavailable."""
+
+    message = str(exc)
+    if "Unable to retrieve routing information" not in message:
+        return None
+    parsed = urlparse(uri)
+    scheme_map = {
+        "neo4j": "bolt",
+        "neo4j+s": "bolt+s",
+        "neo4j+ssc": "bolt+ssc",
+    }
+    replacement = scheme_map.get(parsed.scheme)
+    if replacement is None:
+        return None
+    return urlunparse(parsed._replace(scheme=replacement))
