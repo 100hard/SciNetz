@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from fastapi import FastAPI
 import pytest
 from neo4j.exceptions import ServiceUnavailable
 
@@ -14,10 +15,14 @@ class _DummyDriver:
 
     def __init__(self) -> None:
         self.verified = False
+        self.executed = False
         self.closed = False
 
     def verify_connectivity(self) -> None:
         self.verified = True
+
+    def execute_query(self, query: str) -> None:  # noqa: D401 - mimic driver method
+        self.executed = True
 
     def close(self) -> None:
         self.closed = True
@@ -59,6 +64,7 @@ def test_create_neo4j_driver_prefers_config_when_env_missing(monkeypatch: pytest
     assert driver.verified is True
     assert recording.calls["uri"] == config.graph.uri
     assert recording.calls["auth"] == (config.graph.username, config.graph.password)
+    assert driver.executed is True
 
 
 def test_create_neo4j_driver_returns_none_without_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,7 +101,8 @@ def test_create_neo4j_driver_falls_back_when_routing_unavailable(monkeypatch: py
     _clear_neo4j_env(monkeypatch)
 
     class _FailingDriver(_DummyDriver):
-        def verify_connectivity(self) -> None:  # noqa: D401 - override
+        def execute_query(self, query: str) -> None:  # noqa: D401 - override
+            super().execute_query(query)
             raise ServiceUnavailable("Unable to retrieve routing information")
 
     class _RoutingGraphDatabase:
@@ -117,8 +124,74 @@ def test_create_neo4j_driver_falls_back_when_routing_unavailable(monkeypatch: py
     assert isinstance(driver, _DummyDriver)
     assert driver is not recording.first_driver
     assert driver.verified is True
+    assert driver.executed is True
     assert recording.calls == [
         "neo4j://example.com:7687",
         "bolt://example.com:7687",
     ]
     assert recording.first_driver.closed is True
+
+
+def test_create_neo4j_driver_uses_config_when_env_connection_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Environment overrides fall back to the configured credentials when invalid."""
+
+    config = load_config()
+
+    monkeypatch.setenv("NEO4J_URI", "neo4j://localhost:7687")
+    monkeypatch.setenv("NEO4J_USER", "bad-user")
+    monkeypatch.setenv("NEO4J_PASSWORD", "bad-password")
+
+    class _FailThenSucceedGraphDatabase:
+        def __init__(self) -> None:
+            self.calls: List[Any] = []
+
+        def driver(self, uri: str, auth: tuple[str, str]) -> _DummyDriver:
+            self.calls.append((uri, auth))
+            if len(self.calls) == 1:
+                raise ServiceUnavailable("Connection refused")
+            return _DummyDriver()
+
+    recording = _FailThenSucceedGraphDatabase()
+    monkeypatch.setattr(main, "GraphDatabase", recording)
+
+    driver = main._create_neo4j_driver(config)
+
+    assert isinstance(driver, _DummyDriver)
+    assert driver.verified is True
+    assert driver.executed is True
+    assert recording.calls == [
+        ("neo4j://localhost:7687", ("bad-user", "bad-password")),
+        (config.graph.uri, (config.graph.username, config.graph.password)),
+    ]
+
+
+def test_require_graph_service_rebuilds_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The graph view service is recreated when a driver becomes available."""
+
+    app = FastAPI()
+    config = load_config()
+    app.state.app_config = config
+    app.state.graph_view_service = None
+    app.state.neo4j_driver = None
+
+    created: Dict[str, Any] = {}
+
+    def _fake_create_driver(received_config: Any) -> _DummyDriver:
+        created["config"] = received_config
+        return _DummyDriver()
+
+    def _fake_build_service(driver: Any) -> str:
+        created["driver"] = driver
+        return "service"
+
+    monkeypatch.setattr(main, "_create_neo4j_driver", _fake_create_driver)
+    monkeypatch.setattr(main, "_build_graph_view_service", _fake_build_service)
+
+    service = main._require_graph_service(app)
+
+    assert service == "service"
+    assert app.state.graph_view_service == "service"
+    assert app.state.neo4j_driver is created["driver"]
+    assert created["config"] is config
