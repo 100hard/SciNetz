@@ -1,0 +1,89 @@
+{
+  "element": {
+    "doc_id": "phys-1",
+    "element_id": "phys-1:0",
+    "section": "Results",
+    "content": "The LIGO interferometer detects gravitational waves from binary black hole mergers. The observatory measures strain signals with laser interferometry.",
+    "content_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "start_char": 0,
+    "end_char": 150
+  },
+  "candidate_entities": [
+    "The LIGO interferometer",
+    "gravitational waves",
+    "binary black hole mergers",
+    "The observatory",
+    "strain signals",
+    "laser interferometry"
+  ],
+  "llm_response": {
+    "triples": [
+      {
+        "subject_text": "The LIGO interferometer",
+        "subject_type": "Instrument",
+        "relation_verbatim": "detects",
+        "object_text": "gravitational waves",
+        "object_type": "Phenomenon",
+        "supportive_sentence": "The LIGO interferometer detects gravitational waves from binary black hole mergers.",
+        "confidence": 0.96
+      },
+      {
+        "subject_text": "The observatory",
+        "subject_type": "Instrument",
+        "relation_verbatim": "measures",
+        "object_text": "strain signals",
+        "object_type": "Measurement",
+        "supportive_sentence": "The observatory measures strain signals with laser interferometry.",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "expected": [
+    {
+      "subject": "The LIGO interferometer",
+      "predicate": "detects",
+      "object": "gravitational waves",
+      "confidence": 0.96,
+      "evidence": {
+        "element_id": "phys-1:0",
+        "text_span": {
+          "start": 0,
+          "end": 83
+        },
+        "doc_id": "phys-1",
+        "full_sentence": "The LIGO interferometer detects gravitational waves from binary black hole mergers."
+      },
+      "pipeline_version": "1.0.0"
+    },
+    {
+      "subject": "The observatory",
+      "predicate": "measures",
+      "object": "strain signals",
+      "confidence": 0.9,
+      "evidence": {
+        "element_id": "phys-1:0",
+        "text_span": {
+          "start": 84,
+          "end": 150
+        },
+        "doc_id": "phys-1",
+        "full_sentence": "The observatory measures strain signals with laser interferometry."
+      },
+      "pipeline_version": "1.0.0"
+    }
+  ],
+  "expected_section_distribution": {
+    "The LIGO interferometer": {
+      "Results": 1
+    },
+    "gravitational waves": {
+      "Results": 1
+    },
+    "The observatory": {
+      "Results": 1
+    },
+    "strain signals": {
+      "Results": 1
+    }
+  }
+}

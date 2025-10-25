@@ -36,7 +36,7 @@ def test_legacy_records_default_to_private(tmp_path: Path) -> None:
     assert not record.is_public
     assert record.shared_with == []
     assert not record.is_accessible_by("user-1", UserRole.USER)
-    assert record.is_accessible_by("admin", UserRole.ADMIN)
+    assert not record.is_accessible_by("admin", UserRole.USER)
 
 
 def test_registry_access_controls(tmp_path: Path) -> None:

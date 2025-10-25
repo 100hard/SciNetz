@@ -5,9 +5,8 @@ from enum import Enum
 
 
 class UserRole(str, Enum):
-    """Enumerated application roles."""
+    """Enumerated application role (single tier)."""
 
-    ADMIN = "admin"
     USER = "user"
 
 

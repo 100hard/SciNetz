@@ -253,3 +253,33 @@ def test_builder_uses_fallback_pipeline_when_loader_fails(config) -> None:
     inventory = builder.build_inventory(element)
 
     assert inventory == []
+
+
+def test_domain_vocabulary_extends_inventory(config) -> None:
+    text = "Cas9 nuclease binds the guide RNA scaffold to edit the BRCA1 locus."
+    stopwords = {"the", "to"}
+
+    def loader(model_name: str) -> Callable[[str], _FakeDoc]:
+        assert model_name in {"en_core_web_sm", "en_core_sci_md"}
+
+        def pipeline(content: str) -> _FakeDoc:
+            tokens = _tokenize(content, stopwords, proper_nouns=set())
+            return _FakeDoc(content, ents=[], noun_chunks=[], tokens=tokens)
+
+        return pipeline
+
+    builder = EntityInventoryBuilder(config, nlp_loader=loader)
+    element = ParsedElement(
+        doc_id="bio-5",
+        element_id="bio-5:0",
+        section="Methods",
+        content=text,
+        content_hash="a" * 64,
+        start_char=0,
+        end_char=len(text),
+    )
+
+    inventory = builder.build_inventory(element, domain="biology")
+
+    assert any(candidate.startswith("Cas9 nuclease") for candidate in inventory)
+    assert any("guide RNA" in candidate for candidate in inventory)

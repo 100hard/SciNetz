@@ -1,0 +1,87 @@
+{
+  "element": {
+    "doc_id": "bio-1",
+    "element_id": "bio-1:0",
+    "section": "Results",
+    "content": "The CRISPR-Cas9 complex reduces BRCA1 expression in breast epithelial cells. Cas9 nuclease binds to the guide RNA scaffold to target the sequence.",
+    "content_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "start_char": 0,
+    "end_char": 146
+  },
+  "candidate_entities": [
+    "The CRISPR-Cas9 complex",
+    "BRCA1 expression",
+    "Cas9 nuclease",
+    "the guide RNA scaffold"
+  ],
+  "llm_response": {
+    "triples": [
+      {
+        "subject_text": "The CRISPR-Cas9 complex",
+        "subject_type": "Material",
+        "relation_verbatim": "reduces",
+        "object_text": "BRCA1 expression",
+        "object_type": "BiologicalProcess",
+        "supportive_sentence": "The CRISPR-Cas9 complex reduces BRCA1 expression in breast epithelial cells.",
+        "confidence": 0.94
+      },
+      {
+        "subject_text": "Cas9 nuclease",
+        "subject_type": "Protein",
+        "relation_verbatim": "binds to",
+        "object_text": "the guide RNA scaffold",
+        "object_type": "Material",
+        "supportive_sentence": "Cas9 nuclease binds to the guide RNA scaffold to target the sequence.",
+        "confidence": 0.91
+      }
+    ]
+  },
+  "expected": [
+    {
+      "subject": "The CRISPR-Cas9 complex",
+      "predicate": "reduces",
+      "object": "BRCA1 expression",
+      "confidence": 0.94,
+      "evidence": {
+        "element_id": "bio-1:0",
+        "text_span": {
+          "start": 0,
+          "end": 76
+        },
+        "doc_id": "bio-1",
+        "full_sentence": "The CRISPR-Cas9 complex reduces BRCA1 expression in breast epithelial cells."
+      },
+      "pipeline_version": "1.0.0"
+    },
+    {
+      "subject": "Cas9 nuclease",
+      "predicate": "binds-to",
+      "object": "the guide RNA scaffold",
+      "confidence": 0.91,
+      "evidence": {
+        "element_id": "bio-1:0",
+        "text_span": {
+          "start": 77,
+          "end": 146
+        },
+        "doc_id": "bio-1",
+        "full_sentence": "Cas9 nuclease binds to the guide RNA scaffold to target the sequence."
+      },
+      "pipeline_version": "1.0.0"
+    }
+  ],
+  "expected_section_distribution": {
+    "The CRISPR-Cas9 complex": {
+      "Results": 1
+    },
+    "BRCA1 expression": {
+      "Results": 1
+    },
+    "Cas9 nuclease": {
+      "Results": 1
+    },
+    "the guide RNA scaffold": {
+      "Results": 1
+    }
+  }
+}

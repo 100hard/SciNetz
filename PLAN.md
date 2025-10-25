@@ -83,6 +83,7 @@ Create a central config with these critical parameters:
 - Golden JSON for 1 tiny sample preserved for CI
 - Schema validation: all models parse example JSON payloads
 - Config loading test: ensure all required fields present
+- Provide SCINETS_SKIP_ENV_FILE to bypass .env when running config tests in CI/local sandboxes.
 
 ---
 
@@ -236,6 +237,14 @@ For each triple from Pass A:
 **Caps:**
 - `max_triples_per_chunk = min(15, ceil(tokens/60))`
 - This scales with content density
+
+### Domain Bundles & Prompt Routing *(Implemented)*
+
+- `config.yaml` owns `extraction.default_domain` plus named bundles (`ml`, `biology`, `physics`) with prompt version, entity taxonomy, vocabulary hints, inventory model, and optional fuzzy threshold override.
+- `DomainRouter` inspects paper metadata (title, venue) and chunk content keywords to pick the best-fit domain per element; the orchestrator forwards the resolved context to inventory + extraction.
+- `DomainLLMExtractor` spins up one OpenAI adapter per domain so prompt versions, entity types, and response caches remain isolated. Cache keys include the domain label to avoid cross-contamination.
+- Span linking accepts per-domain fuzzy thresholds (biology: 0.88, physics: 0.87) and falls back to the global default when unspecified.
+- Golden fixtures cover biology/physics chunks and dedicated tests validate routing + evidence offsets.
 
 ### Model Choice & Adapter Pattern
 
@@ -460,6 +469,12 @@ One endpoint runs the full pipeline safely with idempotence and graceful degrada
 4. **Co-mention fallback** (see below): for failed chunks
 5. **Canonicalize** (Phase 4): raw entities → canonical IDs
 6. **Graph write** (Phase 5): persist to Neo4j
+
+**Domain-aware routing (implemented):**
+
+- Every chunk is scored with DomainRouter; the resolved domain flows to inventory, LLM extraction, and co-mention fallback so prompts + vocab stay in sync.
+- Inventory switches spaCy/scispaCy pipelines and injects domain vocab before the LLM request.
+- Domain labels are logged alongside extraction failures to spotlight field-specific regressions.
 
 **Idempotence via content hashing:**
 
@@ -778,7 +793,7 @@ if estimated_size_mb > config.export.max_bundle_mb:
 **Step 5: Serve downloads**
 - `GET /api/export/share/{token}` validates token, expiry, revocation status, and manifest hash (fail-soft with descriptive errors + logs).
 - Return pre-signed URL (TTL = `config.export.signed_url_ttl_minutes`) or stream file directly with `Content-Disposition` set.
-- Provide admin revocation endpoint (`DELETE /api/export/share/{token}`) to invalidate tokens and delete bundle when necessary.
+- Provide authenticated revocation endpoint (`DELETE /api/export/share/{token}`) gated by paper ownership; revoke and delete bundles when the requester created the export or still has access.
 
 **Step 6: Lifecycle management**
 - Scheduled job scans for expired or revoked bundles, deletes from object storage, and archives minimal audit trail.

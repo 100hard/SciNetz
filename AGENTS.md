@@ -60,6 +60,12 @@ Read PLAN.md for full architecture. We're building a research paper knowledge gr
 - Don't skip content_hash check (wastes compute on unchanged chunks)
 - Don't forget pipeline_version field (breaks reprocessing)
 
+## Authentication Handling
+- Google OAuth configuration is confirmed working; do not modify backend auth services, JWT settings, or OAuth clients unless explicitly assigned.
+- When tests need to suppress `.env` overrides, set `SCINETS_SKIP_ENV_FILE=1` instead of commenting out secrets in the repository.
+- If a workflow requires a different Google client ID locally, export it in your shell; never alter the committed `.env` defaults.
+- Role-based access uses a single `user` tier; rely on paper ownership checks rather than admin-only conditionals.
+
 ## When Stuck
 1. Check PLAN.md Appendix C (Design Decisions) for rationale
 2. Check PLAN.md Appendix A (Risk Mitigations) for known issues

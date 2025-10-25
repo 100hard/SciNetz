@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional
 
-from backend.app.config import AppConfig
+from backend.app.config import AppConfig, ExtractionDomainConfig
 from backend.app.contracts import ParsedElement
 
 LOGGER = logging.getLogger(__name__)
@@ -114,18 +114,23 @@ class EntityInventoryBuilder:
         self._nlp_loader = nlp_loader or self._default_nlp_loader
         self._pipelines: Dict[str, Callable[[str], object]] = {}
 
-    def build_inventory(self, element: ParsedElement) -> List[str]:
+    def build_inventory(self, element: ParsedElement, domain: Optional[str] = None) -> List[str]:
         """Generate ranked entity candidates for a parsed element.
 
         Args:
             element: Parsed chunk produced by the parsing pipeline.
+            domain: Optional domain identifier influencing vocabulary and NLP model.
 
         Returns:
             List[str]: Ordered list of candidate entity mentions capped at fifty items.
         """
         if not element.content.strip():
             return []
-        pipeline_key = self._select_pipeline_key(element.content)
+        domain_config = self._resolve_domain_config(domain)
+        pipeline_key = self._select_pipeline_key(
+            element.content,
+            override_model=(domain_config.inventory_model if domain_config else None),
+        )
         nlp = self._load_pipeline(pipeline_key)
         doc = nlp(element.content)
         candidates: Dict[str, _Candidate] = {}
@@ -134,21 +139,25 @@ class EntityInventoryBuilder:
         self._collect_proper_nouns(doc, element.content, candidates)
         if pipeline_key == _SCISPACY_MODEL:
             self._expand_abbreviations(element.content, candidates)
+        self._inject_domain_vocabulary(element.content, domain_config, candidates)
         ordered = sorted(
             candidates.values(),
             key=lambda candidate: (-candidate.score, candidate.position, candidate.text.lower()),
         )
         return [candidate.text for candidate in ordered[:50]]
 
-    def _select_pipeline_key(self, text: str) -> str:
+    def _select_pipeline_key(self, text: str, override_model: Optional[str] = None) -> str:
         """Determine which NLP pipeline should process the provided text.
 
         Args:
             text: Chunk content used to estimate biomedical vocabulary density.
+            override_model: Optional domain override for the NLP model.
 
         Returns:
             str: Model identifier for spaCy or scispaCy pipeline.
         """
+        if override_model:
+            return override_model
         tokens = re.findall(r"[A-Za-z0-9-]+", text)
         if not tokens:
             return _SPACY_MODEL
@@ -159,6 +168,17 @@ class EntityInventoryBuilder:
         if ratio >= 0.2:
             return _SCISPACY_MODEL
         return _SPACY_MODEL
+
+    def _resolve_domain_config(self, domain: Optional[str]) -> Optional[ExtractionDomainConfig]:
+        """Return domain configuration for inventory enrichment."""
+
+        if not domain:
+            return None
+        try:
+            return self._config.extraction.domain_by_name(domain)
+        except KeyError:
+            LOGGER.debug("Unknown extraction domain '%s'; falling back to heuristics", domain)
+            return None
 
     def _load_pipeline(self, key: str) -> Callable[[str], object]:
         """Fetch or load an NLP pipeline for the given key.
@@ -178,6 +198,25 @@ class EntityInventoryBuilder:
             pipeline = self._fallback_pipeline()
         self._pipelines[key] = pipeline
         return pipeline
+
+    def _inject_domain_vocabulary(
+        self,
+        text: str,
+        domain_config: Optional[ExtractionDomainConfig],
+        candidates: Dict[str, _Candidate],
+    ) -> None:
+        """Boost domain-specific vocabulary items appearing in the text."""
+
+        if domain_config is None:
+            return
+        vocabulary = domain_config.normalized_vocabulary
+        if not vocabulary:
+            return
+        lowered = text.lower()
+        for term in vocabulary:
+            if term.lower() not in lowered:
+                continue
+            self._register_candidate(term, text, 3, candidates)
 
     def _collect_named_entities(
         self,

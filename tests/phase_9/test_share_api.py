@@ -5,6 +5,7 @@ import json
 import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -123,7 +124,9 @@ def _build_test_client(
     ttl_hours: Optional[int] = 24,
 ) -> tuple[TestClient, ShareTokenManager, _InMemoryMetadataRepo, _StubStorageClient]:
     config = load_config()
-    app = create_app(config=config)
+    with patch("backend.app.main.GoogleTokenVerifier") as verifier_ctor:
+        verifier_ctor.return_value = object()
+        app = create_app(config=config)
     token_manager = ShareTokenManager(secret_key="secret-key")
     metadata_repo = _InMemoryMetadataRepo()
     storage_client = _StubStorageClient()
@@ -204,6 +207,7 @@ def test_share_link_create_resolve_and_revoke_flow() -> None:
     assert metadata_id == "meta-001"
     stored = metadata_repo.fetch(metadata_id)
     assert stored is not None
+    assert stored["requested_by"] == "test-user"
 
     storage.set_archive(_make_graph_archive())
 
@@ -274,6 +278,7 @@ def test_share_link_json_response_handles_permanent() -> None:
     metadata_id = data["metadata_id"]
     stored = metadata_repo.fetch(metadata_id)
     assert stored is not None
+    assert stored["requested_by"] == "test-user"
     assert "expires_at" not in stored or stored["expires_at"] is None
 
     storage.set_archive(_make_graph_archive())

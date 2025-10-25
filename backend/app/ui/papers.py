@@ -66,8 +66,6 @@ class PaperRecord:
     def is_accessible_by(self, user_id: str, role: UserRole) -> bool:
         """Return True if the supplied user can access the record."""
 
-        if role is UserRole.ADMIN:
-            return True
         if self.is_public:
             return True
         if self.owner_id is None:
@@ -206,14 +204,9 @@ class PaperRegistry:
         """Return accessible records for the supplied user."""
 
         with self._lock:
-            if role is UserRole.ADMIN:
-                candidates = self._records.values()
-            else:
-                candidates = [
-                    record
-                    for record in self._records.values()
-                    if record.is_accessible_by(user_id, role)
-                ]
+            candidates = [
+                record for record in self._records.values() if record.is_accessible_by(user_id, role)
+            ]
             return sorted(candidates, key=lambda rec: rec.uploaded_at, reverse=True)
 
     def accessible_paper_ids(self, user_id: str, role: UserRole) -> List[str]:

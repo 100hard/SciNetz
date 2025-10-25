@@ -37,9 +37,10 @@ from backend.app.export.storage import S3BundleStorage
 from backend.app.export.token import ExpiredTokenError, InvalidTokenError, ShareTokenManager
 from backend.app.export.viewer import render_share_html
 from backend.app.extraction import (
+    DomainLLMExtractor,
+    DomainRouter,
     EntityInventoryBuilder,
     LLMResponseCache,
-    OpenAIExtractor,
     TokenBudgetCache,
     TwoPassTripletExtractor,
 )
@@ -214,10 +215,10 @@ def create_app(
     async def _test_user() -> AuthUser:
         now = datetime.now(timezone.utc)
         return AuthUser(
-            id="test-admin",
-            email="test-admin@example.com",
+            id="test-user",
+            email="test-user@example.com",
             is_verified=True,
-            role=UserRole.ADMIN,
+            role=UserRole.USER,
             created_at=now,
             updated_at=now,
         )
@@ -226,7 +227,7 @@ def create_app(
     if (bypass_flag and bypass_flag.strip().lower() in {"1", "true", "yes"}) or os.getenv(
         "PYTEST_CURRENT_TEST"
     ):
-        LOGGER.warning("Authentication bypass enabled; using test admin user for all requests")
+        LOGGER.warning("Authentication bypass enabled; using test user for all requests")
         app.dependency_overrides[get_current_user] = _test_user
 
     auth_engine: AsyncEngine = create_async_engine(
@@ -337,22 +338,14 @@ def create_app(
         if service is None:
             raise HTTPException(status_code=503, detail="Share export service unavailable")
         registry = _require_registry(app)
-        allowed_ids = (
-            []
-            if current_user.role is UserRole.ADMIN
-            else registry.accessible_paper_ids(current_user.id, current_user.role)
-        )
+        allowed_ids = registry.accessible_paper_ids(current_user.id, current_user.role)
         allowed_set = {paper.strip() for paper in allowed_ids if paper.strip()}
         requested_papers = {
             paper.strip() for paper in payload.filters.papers if paper and paper.strip()
         }
-        if current_user.role is not UserRole.ADMIN and requested_papers - allowed_set:
+        if requested_papers - allowed_set:
             raise HTTPException(status_code=403, detail="Not authorised to export requested papers")
-        allowed_for_request = (
-            None
-            if current_user.role is UserRole.ADMIN
-            else tuple(paper for paper in allowed_ids if paper)
-        )
+        allowed_for_request = tuple(paper for paper in allowed_ids if paper)
         request = ShareExportRequest(
             filters=payload.filters,
             include_snippets=payload.include_snippets,
@@ -476,7 +469,7 @@ def create_app(
         "/api/export/share/{metadata_id}/revoke",
         tags=["export"],
         summary="Revoke a shareable export link",
-        description="Requires admin privileges.",
+        description="Requires authentication and ownership of the exported papers.",
     )
     def revoke_share_link(
         metadata_id: str,
@@ -485,11 +478,36 @@ def create_app(
     ) -> dict[str, object]:
         """Revoke an existing share link, preventing further downloads."""
 
-        if current_user.role is not UserRole.ADMIN:
-            raise HTTPException(status_code=403, detail="Only admins can revoke share links")
         service: Optional[ShareExportService] = getattr(app.state, "share_export_service", None)
-        if service is None:
+        metadata_repo = getattr(app.state, "share_metadata_repository", None)
+        registry = _require_registry(app)
+        if service is None or metadata_repo is None:
             raise HTTPException(status_code=503, detail="Share export service unavailable")
+        record = metadata_repo.fetch(metadata_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Share metadata not found")
+        requested_by = str(record.get("requested_by") or "").strip()
+        filters = record.get("filters")
+        accessible_ids = set(
+            registry.accessible_paper_ids(current_user.id, current_user.role)
+        )
+        requested_papers: set[str] = set()
+        if isinstance(filters, dict):
+            raw_papers = filters.get("papers")
+            if isinstance(raw_papers, (list, tuple, set)):
+                requested_papers = {
+                    str(item).strip() for item in raw_papers if str(item).strip()
+                }
+        authorised = False
+        if requested_by and requested_by == current_user.id:
+            authorised = True
+        elif requested_papers and not (requested_papers - accessible_ids):
+            authorised = True
+        elif not requested_papers and not requested_by:
+            # Legacy exports before requested_by enforcement fallback to owner check
+            authorised = True
+        if not authorised:
+            raise HTTPException(status_code=403, detail="Not authorised to revoke share link")
         try:
             revoked_by = payload.revoked_by or current_user.id
             updated = service.revoke_share(metadata_id, revoked_by=revoked_by)
@@ -504,7 +522,7 @@ def create_app(
         "/api/extract/{paper_id}",
         tags=["extraction"],
         summary="Run extraction pipeline",
-        description="Requires an authenticated admin user.",
+        description="Requires an authenticated user.",
     )
     def extract(
         paper_id: str,
@@ -513,8 +531,6 @@ def create_app(
     ) -> dict[str, object]:
         """Run the extraction orchestrator for the supplied paper."""
 
-        if current_user.role is not UserRole.ADMIN:
-            raise HTTPException(status_code=403, detail="Only admins can run extractions")
         orchestrator_obj = getattr(app.state, "orchestrator", None)
         if orchestrator_obj is None:
             raise HTTPException(status_code=503, detail="Extraction orchestrator unavailable")
@@ -541,14 +557,14 @@ def create_app(
         "/api/ui/upload",
         tags=["ui"],
         summary="Upload a PDF for extraction",
-        description="Requires an authenticated user or admin.",
+        description="Requires an authenticated user.",
     )
     def upload_paper(
         request: UploadPaperRequest, current_user: AuthUser = Depends(get_current_user)
     ) -> PaperSummary:
         """Persist an uploaded PDF and register it for processing."""
 
-        if current_user.role not in {UserRole.ADMIN, UserRole.USER}:
+        if current_user.role is not UserRole.USER:
             raise HTTPException(status_code=403, detail="User role cannot upload papers")
         registry = _require_registry(app)
         upload_dir: Path = getattr(app.state, "upload_dir")
@@ -596,7 +612,7 @@ def create_app(
         record = registry.get(paper_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Paper not found")
-        if current_user.role is not UserRole.ADMIN and record.owner_id != current_user.id:
+        if record.owner_id != current_user.id:
             raise HTTPException(status_code=403, detail="Not authorised to extract this paper")
         force_reprocess = record.status in {PaperStatus.COMPLETE, PaperStatus.FAILED}
         orchestrator_obj = getattr(app.state, "orchestrator", None)
@@ -645,7 +661,7 @@ def create_app(
         "/api/ui/papers/{paper_id}/access",
         tags=["ui"],
         summary="Update paper access controls",
-        description="Owner or admin may grant access to additional users.",
+        description="Only the owner may grant access to additional users.",
     )
     def update_paper_access(
         paper_id: str,
@@ -658,7 +674,7 @@ def create_app(
         record = registry.get(paper_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Paper not found")
-        if current_user.role is not UserRole.ADMIN and record.owner_id != current_user.id:
+        if record.owner_id != current_user.id:
             raise HTTPException(status_code=403, detail="Not authorised to update paper access")
         updated = registry.update_access(
             paper_id,
@@ -697,9 +713,7 @@ def create_app(
             include_co_mentions if include_co_mentions is not None else defaults.show_co_mentions
         )
         allowed = (
-            None
-            if current_user.role is UserRole.ADMIN
-            else registry.accessible_paper_ids(current_user.id, current_user.role)
+            registry.accessible_paper_ids(current_user.id, current_user.role)
         )
         try:
             view = service.fetch_graph(
@@ -725,8 +739,6 @@ def create_app(
     ) -> dict[str, str]:
         """Delete nodes and edges so subsequent UI fetches return an empty graph."""
 
-        if current_user.role is not UserRole.ADMIN:
-            raise HTTPException(status_code=403, detail="Only admins can clear the graph")
         service = _require_graph_service(app)
         try:
             service.clear_graph()
@@ -892,7 +904,12 @@ def _build_default_orchestrator(
         if llm_extractor is None:
             LOGGER.warning("LLM extractor unavailable; extraction endpoint disabled")
             return None, driver
-        triplet_extractor = TwoPassTripletExtractor(config=config, llm_extractor=llm_extractor)
+        domain_router = DomainRouter(config.extraction)
+        triplet_extractor = TwoPassTripletExtractor(
+            config=config,
+            llm_extractor=llm_extractor,
+            domain_router=domain_router,
+        )
         canonicalization = CanonicalizationPipeline(config=config)
         graph_writer = GraphWriter(
             driver=driver,
@@ -907,6 +924,7 @@ def _build_default_orchestrator(
             parsing_pipeline=parsing,
             inventory_builder=inventory,
             triplet_extractor=triplet_extractor,
+            domain_router=domain_router,
             canonicalization=canonicalization,
             graph_writer=graph_writer,
             chunk_store=chunk_store,
@@ -1053,8 +1071,8 @@ def _derive_paper_id(candidate: str, registry: PaperRegistry) -> str:
     return unique
 
 
-def _create_llm_extractor(config: AppConfig) -> Optional[OpenAIExtractor]:
-    """Instantiate the default OpenAI extractor if credentials are present."""
+def _create_llm_extractor(config: AppConfig) -> Optional[DomainLLMExtractor]:
+    """Instantiate the domain-aware OpenAI extractor when credentials are present."""
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -1069,18 +1087,17 @@ def _create_llm_extractor(config: AppConfig) -> Optional[OpenAIExtractor]:
         token_cache = TokenBudgetCache(
             cache_root / config.extraction.token_cache_filename
         )
-        return OpenAIExtractor(
-            settings=config.extraction.openai,
+        return DomainLLMExtractor(
+            config=config,
             api_key=api_key,
             token_budget_per_triple=config.extraction.tokens_per_triple,
             allowed_relations=config.relations.canonical_relation_names(),
-            entity_types=config.extraction.entity_types,
             max_prompt_entities=config.extraction.max_prompt_entities,
             response_cache=response_cache,
             token_cache=token_cache,
         )
     except Exception:  # noqa: BLE001 - dependency failures should disable extractor
-        LOGGER.exception("Failed to initialize OpenAI extractor")
+        LOGGER.exception("Failed to initialize domain-aware OpenAI extractor")
         return None
 
 

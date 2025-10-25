@@ -56,7 +56,12 @@ class _StaticTripletExtractor:
         self.calls: List[str] = []
 
     def extract_with_metadata(
-        self, element: ParsedElement, candidate_entities: Optional[Iterable[str]]
+        self,
+        element: ParsedElement,
+        candidate_entities: Optional[Iterable[str]],
+        *,
+        metadata: Optional[PaperMetadata] = None,
+        domain: Optional[object] = None,
     ) -> ExtractionResult:
         self.calls.append(element.element_id)
         return self._outputs[element.element_id]
@@ -68,7 +73,7 @@ class _StaticInventoryBuilder:
     def __init__(self, outputs: Dict[str, List[str]]) -> None:
         self._outputs = outputs
 
-    def build_inventory(self, element: ParsedElement) -> List[str]:
+    def build_inventory(self, element: ParsedElement, domain: Optional[str] = None) -> List[str]:
         return list(self._outputs.get(element.element_id, []))
 
 

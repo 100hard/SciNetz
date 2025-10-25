@@ -11,7 +11,7 @@ from typing import Callable, Optional, Sequence
 import pytest
 
 from backend.app.config import load_config
-from backend.app.contracts import ParsedElement
+from backend.app.contracts import PaperMetadata, ParsedElement
 from backend.app.extraction.cache import LLMResponseCache, TokenBudgetCache
 from backend.app.extraction.triplet_extraction import (
     ExtractionResult,
@@ -78,6 +78,8 @@ class _StubExtractor(LLMExtractor):
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]],
         max_triples: int,
+        *,
+        domain: Optional[str] = None,
     ) -> Sequence[RawLLMTriple]:
         """Return the configured triples regardless of inputs."""
 
@@ -378,6 +380,54 @@ def test_golden_triplet_extraction_matches_fixture(config) -> None:
         "the PPO algorithm": {"Method": 1},
         "baseline methods": {"Method": 1},
     }
+
+
+def test_biology_fixture_resolves_domain_specific_entities(config) -> None:
+    """Domain-specific extraction should accept biology entity types and relations."""
+
+    fixture = _load_golden("biology_chunk")
+    element = _element_from_fixture(fixture["element"])
+    metadata = PaperMetadata(
+        doc_id=element.doc_id,
+        title="A programmable RNA editing system using CRISPR-Cas9",
+        venue="Cell",
+    )
+    triples_payload = [RawLLMTriple(**triple) for triple in fixture["llm_response"]["triples"]]
+    extractor = _StubExtractor(triples=triples_payload)
+    pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
+
+    result = pipeline.extract_with_metadata(
+        element,
+        candidate_entities=fixture.get("candidate_entities"),
+        metadata=metadata,
+    )
+
+    assert [trip.model_dump() for trip in result.triplets] == fixture["expected"]
+    assert result.section_distribution == fixture["expected_section_distribution"]
+
+
+def test_physics_fixture_resolves_domain_specific_entities(config) -> None:
+    """Domain-specific extraction should accept physics entity types and thresholds."""
+
+    fixture = _load_golden("physics_chunk")
+    element = _element_from_fixture(fixture["element"])
+    metadata = PaperMetadata(
+        doc_id=element.doc_id,
+        title="Observation of Gravitational Waves from a Binary Black Hole Merger",
+        venue="Physical Review Letters",
+    )
+    triples_payload = [RawLLMTriple(**triple) for triple in fixture["llm_response"]["triples"]]
+    extractor = _StubExtractor(triples=triples_payload)
+    pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
+
+    result = pipeline.extract_with_metadata(
+        element,
+        candidate_entities=fixture.get("candidate_entities"),
+        metadata=metadata,
+    )
+
+    assert [trip.model_dump() for trip in result.triplets] == fixture["expected"]
+    assert result.section_distribution == fixture["expected_section_distribution"]
 
 
 def test_extract_from_element_returns_triplets_only(config) -> None:

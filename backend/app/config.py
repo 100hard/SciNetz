@@ -70,6 +70,62 @@ class OpenAIConfig(_FrozenModel):
 
 
 
+class DomainMatchConfig(_FrozenModel):
+    """Keyword signals used to detect domain-specific content."""
+
+    title_keywords: List[str] = Field(default_factory=list)
+    venue_keywords: List[str] = Field(default_factory=list)
+    content_keywords: List[str] = Field(default_factory=list)
+    priority: int = Field(default=100, ge=0)
+
+    @staticmethod
+    def _normalize(values: Iterable[str]) -> List[str]:
+        unique: List[str] = []
+        for value in values:
+            cleaned = value.strip().lower()
+            if cleaned and cleaned not in unique:
+                unique.append(cleaned)
+        return unique
+
+    @model_validator(mode="after")
+    def _deduplicate(self) -> "DomainMatchConfig":
+        data = self.model_copy()
+        object.__setattr__(data, "title_keywords", self._normalize(self.title_keywords))
+        object.__setattr__(data, "venue_keywords", self._normalize(self.venue_keywords))
+        object.__setattr__(data, "content_keywords", self._normalize(self.content_keywords))
+        return data
+
+
+class ExtractionDomainConfig(_FrozenModel):
+    """Domain-specific overrides for extraction and inventory configuration."""
+
+    name: str = Field(..., min_length=1)
+    prompt_version: Optional[str] = None
+    entity_types: List[str] = Field(default_factory=list)
+    fuzzy_match_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    inventory_model: Optional[str] = Field(default=None, min_length=1)
+    vocabulary: List[str] = Field(default_factory=list)
+    match: DomainMatchConfig
+
+    @property
+    def normalized_entity_types(self) -> Tuple[str, ...]:
+        normalized: List[str] = []
+        for entity_type in self.entity_types:
+            cleaned = entity_type.strip()
+            if cleaned and cleaned not in normalized:
+                normalized.append(cleaned)
+        return tuple(normalized)
+
+    @property
+    def normalized_vocabulary(self) -> Tuple[str, ...]:
+        normalized: List[str] = []
+        for term in self.vocabulary:
+            cleaned = term.strip()
+            if cleaned and cleaned not in normalized:
+                normalized.append(cleaned)
+        return tuple(normalized)
+
+
 class ExtractionConfig(_FrozenModel):
     """Extraction parameters for Phase 3 pipeline."""
 
@@ -96,6 +152,8 @@ class ExtractionConfig(_FrozenModel):
     response_cache_filename: str = Field(..., min_length=1)
     token_cache_filename: str = Field(..., min_length=1)
     entity_types: List[str] = Field(..., min_length=1)
+    default_domain: str = Field(..., min_length=1)
+    domains: List[ExtractionDomainConfig] = Field(default_factory=list)
 
     @property
     def openai(self) -> OpenAIConfig:
@@ -118,6 +176,45 @@ class ExtractionConfig(_FrozenModel):
             backoff_max_seconds=self.openai_backoff_max_seconds,
             retry_statuses=list(self.openai_retry_statuses),
         )
+
+    @model_validator(mode="after")
+    def _validate_domains(self) -> "ExtractionConfig":
+        names = [domain.name for domain in self.domains]
+        if len(names) != len(set(names)):
+            msg = "Domain names must be unique"
+            raise ValueError(msg)
+        if names and self.default_domain not in names:
+            msg = "default_domain must reference a configured domain"
+            raise ValueError(msg)
+        return self
+
+    def domain_by_name(self, name: str) -> ExtractionDomainConfig:
+        """Return the configured domain overrides for the supplied name.
+
+        Args:
+            name: Unique domain identifier.
+
+        Raises:
+            KeyError: When no domain matches the provided name.
+        """
+
+        for domain in self.domains:
+            if domain.name == name:
+                return domain
+        raise KeyError(f"Domain '{name}' not configured")
+
+    def all_entity_types(self) -> Tuple[str, ...]:
+        """Return the merged set of entity types across all domains."""
+
+        ordered: List[str] = []
+        seen: set[str] = set()
+        for source in (self.entity_types,) + tuple(domain.normalized_entity_types for domain in self.domains):
+            for entity_type in source:
+                cleaned = entity_type.strip()
+                if cleaned and cleaned not in seen:
+                    ordered.append(cleaned)
+                    seen.add(cleaned)
+        return tuple(ordered)
 
 
 class QALLMConfig(_FrozenModel):
@@ -432,6 +529,9 @@ class AppConfig(_FrozenModel):
 def _determine_env_file_path() -> Optional[Path]:
     """Return the path to the environment file if one should be loaded."""
 
+    skip_env_file = os.getenv("SCINETS_SKIP_ENV_FILE")
+    if skip_env_file and skip_env_file.lower() not in {"", "0", "false"}:
+        return None
     override = os.getenv("SCINETS_ENV_FILE")
     if override:
         candidate = Path(override).expanduser()

@@ -35,7 +35,8 @@ except ModuleNotFoundError:  # pragma: no cover - tests rely on stub client inst
 json_module = json
 
 from backend.app.config import AppConfig, OpenAIConfig, load_config
-from backend.app.contracts import Evidence, ParsedElement, TextSpan, Triplet
+from backend.app.contracts import Evidence, PaperMetadata, ParsedElement, TextSpan, Triplet
+from backend.app.extraction.domain import DomainRouter, ExtractionDomain
 
 if TYPE_CHECKING:
     from backend.app.extraction.cache import LLMResponseCache, TokenBudgetCache
@@ -152,6 +153,8 @@ class LLMExtractor(ABC):
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]],
         max_triples: int,
+        *,
+        domain: Optional[str] = None,
     ) -> Sequence[RawLLMTriple]:
         """Extract raw triples for a parsed element.
 
@@ -159,6 +162,7 @@ class LLMExtractor(ABC):
             element: Parsed element describing the chunk to analyze.
             candidate_entities: Optional ordered list of candidate entity strings.
             max_triples: Maximum number of triples to return.
+            domain: Optional domain hint guiding the extractor prompt.
 
         Returns:
             Sequence[RawLLMTriple]: Raw triples emitted by the language model.
@@ -327,6 +331,8 @@ class OpenAIExtractor(LLMExtractor):
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]],
         max_triples: int,
+        *,
+        domain: Optional[str] = None,
     ) -> Sequence[RawLLMTriple]:
         """Invoke the OpenAI API and parse triples from the response."""
 
@@ -818,22 +824,102 @@ class OpenAIExtractor(LLMExtractor):
             return str(error["message"])
         return json.dumps(payload)
 
+
+class DomainLLMExtractor(LLMExtractor):
+    """LLM extractor that routes requests to domain-specific OpenAI prompts."""
+
+    def __init__(
+        self,
+        *,
+        config: AppConfig,
+        api_key: str,
+        token_budget_per_triple: int,
+        allowed_relations: Sequence[str],
+        max_prompt_entities: int,
+        response_cache: Optional["LLMResponseCache"] = None,
+        token_cache: Optional["TokenBudgetCache"] = None,
+    ) -> None:
+        self._default_domain = config.extraction.default_domain
+        self._extractors: Dict[str, OpenAIExtractor] = {}
+        base_settings = config.extraction.openai
+        for domain in config.extraction.domains:
+            settings = base_settings.model_copy(
+                update={"prompt_version": domain.prompt_version or base_settings.prompt_version}
+            )
+            entity_types = (
+                domain.normalized_entity_types or tuple(config.extraction.entity_types)
+            )
+            extractor = OpenAIExtractor(
+                settings=settings,
+                api_key=api_key,
+                token_budget_per_triple=token_budget_per_triple,
+                allowed_relations=allowed_relations,
+                entity_types=entity_types,
+                max_prompt_entities=max_prompt_entities,
+                response_cache=response_cache,
+                token_cache=token_cache,
+            )
+            self._extractors[domain.name] = extractor
+        if self._default_domain not in self._extractors:
+            fallback = OpenAIExtractor(
+                settings=base_settings,
+                api_key=api_key,
+                token_budget_per_triple=token_budget_per_triple,
+                allowed_relations=allowed_relations,
+                entity_types=config.extraction.entity_types,
+                max_prompt_entities=max_prompt_entities,
+                response_cache=response_cache,
+                token_cache=token_cache,
+            )
+            self._extractors[self._default_domain] = fallback
+
+    def extract_triples(
+        self,
+        element: ParsedElement,
+        candidate_entities: Optional[Sequence[str]],
+        max_triples: int,
+        *,
+        domain: Optional[str] = None,
+    ) -> Sequence[RawLLMTriple]:
+        extractor = self._extractors.get(domain or self._default_domain)
+        if extractor is None:
+            extractor = self._extractors[self._default_domain]
+        return extractor.extract_triples(
+            element,
+            candidate_entities,
+            max_triples,
+        )
+
+    def close(self) -> None:
+        """Close underlying HTTP resources for all managed extractors."""
+
+        for extractor in self._extractors.values():
+            extractor.close()
+
+
 class TwoPassTripletExtractor:
     """Perform two-pass extraction with deterministic span linking."""
 
-    def __init__(self, config: AppConfig, llm_extractor: LLMExtractor) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        llm_extractor: LLMExtractor,
+        domain_router: Optional[DomainRouter] = None,
+    ) -> None:
         """Create a new extraction pipeline.
 
         Args:
             config: Parsed application configuration.
             llm_extractor: Adapter responsible for producing raw triples.
+            domain_router: Optional resolver for domain-specific overrides.
         """
 
         self._config = config
         self._llm_extractor = llm_extractor
-        self._threshold = config.extraction.fuzzy_match_threshold
+        self._domain_router = domain_router or DomainRouter(config.extraction)
+        self._default_threshold = config.extraction.fuzzy_match_threshold
         normalized_types: Dict[str, str] = {}
-        for entity_type in config.extraction.entity_types:
+        for entity_type in config.extraction.all_entity_types():
             cleaned = entity_type.strip()
             if not cleaned:
                 continue
@@ -849,29 +935,45 @@ class TwoPassTripletExtractor:
         self,
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]],
+        *,
+        metadata: Optional[PaperMetadata] = None,
+        domain: Optional[ExtractionDomain] = None,
     ) -> List[Triplet]:
         """Extract validated triples from the provided element.
 
         Args:
             element: Parsed element to extract triples from.
             candidate_entities: Optional ordered list of suggested entity mentions.
+            metadata: Optional paper metadata influencing domain routing.
+            domain: Optional pre-resolved extraction domain.
 
         Returns:
             List[Triplet]: Triples that passed span validation and normalization.
         """
 
-        triplets, _, _, _ = self._extract_internal(element, candidate_entities)
+        triplets, _, _, _ = self._extract_internal(
+            element,
+            candidate_entities,
+            metadata=metadata,
+            domain=domain,
+        )
         return triplets
 
     def extract_with_metadata(
         self,
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]],
+        *,
+        metadata: Optional[PaperMetadata] = None,
+        domain: Optional[ExtractionDomain] = None,
     ) -> "ExtractionResult":
         """Extract triples and section distribution metadata for canonicalization."""
 
         triplets, section_distribution, verbatims, type_votes = self._extract_internal(
-            element, candidate_entities
+            element,
+            candidate_entities,
+            metadata=metadata,
+            domain=domain,
         )
         return ExtractionResult(
             triplets=triplets,
@@ -884,6 +986,9 @@ class TwoPassTripletExtractor:
         self,
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]],
+        *,
+        metadata: Optional[PaperMetadata],
+        domain: Optional[ExtractionDomain],
     ) -> Tuple[
         List[Triplet],
         Dict[str, Dict[str, int]],
@@ -898,11 +1003,18 @@ class TwoPassTripletExtractor:
                 aggregated entity type votes derived from the LLM output.
         """
 
+        context = domain or self._resolve_domain(metadata, element)
+        domain_name = context.name if context is not None else None
+        threshold_value = (
+            context.fuzzy_match_threshold if context is not None else self._default_threshold
+        )
+        active_threshold = max(0.0, min(1.0, threshold_value))
         max_triples = self._compute_max_triples(element.content)
         raw_triples = self._llm_extractor.extract_triples(
             element=element,
             candidate_entities=candidate_entities,
             max_triples=max_triples,
+            domain=domain_name,
         )
         accepted: List[Triplet] = []
         section_counts: Dict[str, Dict[str, int]] = {}
@@ -945,9 +1057,21 @@ class TwoPassTripletExtractor:
             if subject_text.casefold() == object_text.casefold():
                 LOGGER.info("Dropping triple; subject and object identical: %s", subject_text)
                 continue
-            subject_span = self._find_span(element.content, subject_text)
-            object_span = self._find_span(element.content, object_text)
-            sentence_span = self._find_span(element.content, sentence_text)
+            subject_span = self._find_span(
+                element.content,
+                subject_text,
+                threshold=active_threshold,
+            )
+            object_span = self._find_span(
+                element.content,
+                object_text,
+                threshold=active_threshold,
+            )
+            sentence_span = self._find_span(
+                element.content,
+                sentence_text,
+                threshold=active_threshold,
+            )
             if not subject_span:
                 LOGGER.info("Dropping triple; subject span not found: %s", subject_text)
                 continue
@@ -1002,6 +1126,19 @@ class TwoPassTripletExtractor:
         section_distribution = {entity: dict(counts) for entity, counts in section_counts.items()}
         entity_type_votes = {entity: dict(counts) for entity, counts in type_votes.items()}
         return accepted, section_distribution, relation_verbatims, entity_type_votes
+
+    def _resolve_domain(
+        self,
+        metadata: Optional[PaperMetadata],
+        element: ParsedElement,
+    ) -> Optional[ExtractionDomain]:
+        """Determine the extraction domain for the provided context."""
+
+        try:
+            return self._domain_router.resolve(metadata=metadata, element=element)
+        except Exception:  # noqa: BLE001 - fail soft while recording context
+            LOGGER.exception("Domain resolution failed for %s", element.element_id)
+            return None
 
     def _resolve_supportive_sentence(
         self,
@@ -1138,12 +1275,19 @@ class TwoPassTripletExtractor:
         )
         return min(self._config.extraction.max_triples_per_chunk_base, estimate, budget_cap)
 
-    def _find_span(self, text: str, target: str) -> Optional[Tuple[int, int]]:
+    def _find_span(
+        self,
+        text: str,
+        target: str,
+        *,
+        threshold: Optional[float] = None,
+    ) -> Optional[Tuple[int, int]]:
         """Locate the character span of the target text within the source.
 
         Args:
             text: Source text to search within.
             target: Target substring to locate.
+            threshold: Optional fuzzy matching threshold override.
 
         Returns:
             Optional[Tuple[int, int]]: Inclusive-exclusive span if found, otherwise None.
@@ -1157,20 +1301,28 @@ class TwoPassTripletExtractor:
         lower_index = text.lower().find(target.lower())
         if lower_index != -1:
             return lower_index, lower_index + len(target)
-        return self._fuzzy_find_span(text, target)
+        effective_threshold = (
+            self._default_threshold if threshold is None else max(0.0, min(1.0, threshold))
+        )
+        return self._fuzzy_find_span(text, target, effective_threshold)
 
-    def _fuzzy_find_span(self, text: str, target: str) -> Optional[Tuple[int, int]]:
+    def _fuzzy_find_span(
+        self,
+        text: str,
+        target: str,
+        threshold: float,
+    ) -> Optional[Tuple[int, int]]:
         """Perform fuzzy matching to locate a target span.
 
         Args:
             text: Source text to search within.
             target: Target substring to locate approximately.
+            threshold: Similarity ratio required to accept a match.
 
         Returns:
             Optional[Tuple[int, int]]: Inclusive-exclusive span if a close match is found.
         """
 
-        threshold = self._threshold
         if threshold <= 0:
             return None
         normalized_target = target.strip()

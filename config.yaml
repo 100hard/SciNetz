@@ -89,6 +89,106 @@ extraction:
   - Task
   - Material
   - Other
+  - BiologicalProcess
+  - Gene
+  - Protein
+  - CellLine
+  - Assay
+  - Phenomenon
+  - Instrument
+  - Observation
+  - Measurement
+  default_domain: ml
+  domains:
+  - name: ml
+    prompt_version: phase3-v4
+    entity_types:
+    - Method
+    - Dataset
+    - Metric
+    - Task
+    - Material
+    - Other
+    fuzzy_match_threshold: 0.9
+    inventory_model: en_core_web_sm
+    vocabulary:
+    - Reinforcement Learning agent
+    - transformer encoder
+    - benchmark dataset
+    match:
+      title_keywords:
+      - neural
+      - transformer
+      - attention
+      venue_keywords:
+      - neurips
+      - icml
+      - iclr
+      content_keywords:
+      - gradient
+      - transformer
+      - dataset
+  - name: biology
+    prompt_version: phase3-bio
+    entity_types:
+    - Method
+    - Dataset
+    - Metric
+    - Task
+    - Material
+    - BiologicalProcess
+    - Gene
+    - Protein
+    - CellLine
+    - Assay
+    fuzzy_match_threshold: 0.88
+    inventory_model: en_core_sci_md
+    vocabulary:
+    - Cas9 nuclease
+    - guide RNA
+    - BRCA1 expression
+    - CRISPR-Cas9 complex
+    match:
+      title_keywords:
+      - crispr
+      - genome
+      - rna
+      venue_keywords:
+      - cell
+      - nature biotechnology
+      content_keywords:
+      - gene
+      - protein
+      - rna
+  - name: physics
+    prompt_version: phase3-physics
+    entity_types:
+    - Method
+    - Dataset
+    - Metric
+    - Task
+    - Material
+    - Phenomenon
+    - Instrument
+    - Observation
+    - Measurement
+    fuzzy_match_threshold: 0.87
+    inventory_model: en_core_web_sm
+    vocabulary:
+    - interferometer
+    - gravitational waves
+    - strain signals
+    match:
+      title_keywords:
+      - gravitational wave
+      - interferometer
+      venue_keywords:
+      - physical review letters
+      - nature physics
+      content_keywords:
+      - detector
+      - observatory
+      - interferometer
 canonicalization:
   base_threshold: 0.88
   polysemy_threshold: 0.92

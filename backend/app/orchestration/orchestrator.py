@@ -12,7 +12,12 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from backend.app.canonicalization import CanonicalizationPipeline
 from backend.app.config import AppConfig
 from backend.app.contracts import Evidence, PaperMetadata, ParsedElement, TextSpan, Triplet
-from backend.app.extraction import EntityInventoryBuilder, ExtractionResult, TwoPassTripletExtractor
+from backend.app.extraction import (
+    DomainRouter,
+    EntityInventoryBuilder,
+    ExtractionResult,
+    TwoPassTripletExtractor,
+)
 from backend.app.graph import GraphWriter
 from backend.app.parsing import ParsingPipeline
 
@@ -193,10 +198,11 @@ class CoMentionAccumulator:
         self,
         element: ParsedElement,
         candidate_entities: Optional[Sequence[str]] = None,
+        domain: Optional[str] = None,
     ) -> None:
         """Register a chunk for co-mention analysis."""
 
-        entities = self._prepare_candidates(candidate_entities, element)
+        entities = self._prepare_candidates(candidate_entities, element, domain)
         if not entities:
             return
         chunk_pairs: Dict[Tuple[str, str], List[_CoMentionOccurrence]] = {}
@@ -279,12 +285,18 @@ class CoMentionAccumulator:
         return results
 
     def _prepare_candidates(
-        self, candidate_entities: Optional[Sequence[str]], element: ParsedElement
+        self,
+        candidate_entities: Optional[Sequence[str]],
+        element: ParsedElement,
+        domain: Optional[str],
     ) -> List[str]:
         if candidate_entities is not None:
             raw = list(candidate_entities)
         else:
-            raw = self._inventory_builder.build_inventory(element)
+            raw = self._inventory_builder.build_inventory(
+                element,
+                domain=domain,
+            )
         seen: set[str] = set()
         candidates: List[str] = []
         for value in raw:
@@ -355,6 +367,7 @@ class ExtractionOrchestrator:
         parsing_pipeline: ParsingPipeline,
         inventory_builder: EntityInventoryBuilder,
         triplet_extractor: TwoPassTripletExtractor,
+        domain_router: Optional[DomainRouter] = None,
         canonicalization: CanonicalizationPipeline,
         graph_writer: GraphWriter,
         chunk_store: ProcessedChunkStore,
@@ -363,6 +376,7 @@ class ExtractionOrchestrator:
         self._parsing = parsing_pipeline
         self._inventory_builder = inventory_builder
         self._triplet_extractor = triplet_extractor
+        self._domain_router = domain_router or DomainRouter(config.extraction)
         self._canonicalization = canonicalization
         self._graph_writer = graph_writer
         self._chunk_store = chunk_store
@@ -397,12 +411,23 @@ class ExtractionOrchestrator:
                 continue
             if previous_version is not None and previous_version != pipeline_version:
                 state.requires_deprecation = True
+            domain_context = self._domain_router.resolve(
+                metadata=state.metadata,
+                element=element,
+            )
+            domain_name = domain_context.name
             candidate_entities: Optional[List[str]] = None
             if self._config.extraction.use_entity_inventory:
-                candidate_entities = self._inventory_builder.build_inventory(element)
+                candidate_entities = self._inventory_builder.build_inventory(
+                    element,
+                    domain=domain_name,
+                )
             try:
                 extraction = self._triplet_extractor.extract_with_metadata(
-                    element, candidate_entities
+                    element,
+                    candidate_entities,
+                    metadata=state.metadata,
+                    domain=domain_context,
                 )
             except Exception as exc:  # noqa: BLE001 - third-party errors bubble up
                 LOGGER.exception("Triplet extraction failed for %s", element.element_id)
@@ -410,8 +435,11 @@ class ExtractionOrchestrator:
                 if co_mention_accumulator is not None:
                     fallback_candidates = candidate_entities
                     if fallback_candidates is None:
-                        fallback_candidates = self._inventory_builder.build_inventory(element)
-                    co_mention_accumulator.record(element, fallback_candidates)
+                        fallback_candidates = self._inventory_builder.build_inventory(
+                            element,
+                            domain=domain_name,
+                        )
+                    co_mention_accumulator.record(element, fallback_candidates, domain=domain_name)
                     state.processed_chunks += 1
                     self._chunk_store.mark_processed(
                         element.doc_id, element.content_hash, pipeline_version

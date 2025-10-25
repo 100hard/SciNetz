@@ -30,6 +30,17 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert settings.max_output_tokens == 3200
     assert settings.initial_output_multiplier == 2
     assert 429 in settings.retry_statuses
+    assert config.extraction.default_domain == "ml"
+    domains = {domain.name: domain for domain in config.extraction.domains}
+    assert {"ml", "biology", "physics"} <= set(domains)
+    biology = domains["biology"]
+    assert "Protein" in biology.entity_types
+    assert biology.inventory_model == "en_core_sci_md"
+    assert biology.fuzzy_match_threshold < config.extraction.fuzzy_match_threshold
+    assert any("Cas9" in term for term in biology.vocabulary)
+    physics = domains["physics"]
+    assert "Phenomenon" in physics.entity_types
+    assert physics.prompt_version.startswith("phase3-")
     assert config.canonicalization.base_threshold == 0.88
     assert config.canonicalization.polysemy_section_diversity == 3
     assert config.canonicalization.lexical_similarity_floor == 0.55
@@ -84,6 +95,8 @@ def test_config_strict_fields_match_yaml() -> None:
 
 def test_google_client_ids_override_from_env(monkeypatch) -> None:
     load_config.cache_clear()
+    monkeypatch.setenv("SCINETS_SKIP_ENV_FILE", "1")
+    monkeypatch.delenv("NEXT_PUBLIC_GOOGLE_CLIENT_ID", raising=False)
     monkeypatch.setenv(
         "SCINETS_AUTH_GOOGLE_CLIENT_IDS",
         "client-one.apps.googleusercontent.com, client-two.apps.googleusercontent.com",
@@ -100,6 +113,7 @@ def test_google_client_ids_override_from_env(monkeypatch) -> None:
 
 def test_google_client_ids_fallbacks_to_frontend_env(monkeypatch) -> None:
     load_config.cache_clear()
+    monkeypatch.setenv("SCINETS_SKIP_ENV_FILE", "1")
     monkeypatch.setenv(
         "NEXT_PUBLIC_GOOGLE_CLIENT_ID",
         "client-only.apps.googleusercontent.com",
@@ -115,6 +129,7 @@ def test_google_client_ids_fallbacks_to_frontend_env(monkeypatch) -> None:
 
 def test_google_client_ids_append_frontend_id_when_overridden(monkeypatch) -> None:
     load_config.cache_clear()
+    monkeypatch.setenv("SCINETS_SKIP_ENV_FILE", "1")
     monkeypatch.setenv(
         "SCINETS_AUTH_GOOGLE_CLIENT_IDS",
         "client-one.apps.googleusercontent.com",
@@ -147,6 +162,7 @@ def test_google_client_ids_loaded_from_env_file(monkeypatch, tmp_path) -> None:
         "NEXT_PUBLIC_GOOGLE_CLIENT_ID",
     ):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("SCINETS_SKIP_ENV_FILE", raising=False)
     monkeypatch.setenv("SCINETS_ENV_FILE", str(env_file))
     try:
         config = load_config()

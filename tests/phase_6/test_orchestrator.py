@@ -61,13 +61,20 @@ class StubTripletExtractor:
         self._outputs = outputs
         self._failures = set(failures or [])
         self.calls: List[str] = []
+        self.metadata_calls: Dict[str, Optional[PaperMetadata]] = {}
+        self.domain_calls: Dict[str, Optional[object]] = {}
 
     def extract_with_metadata(
         self,
         element: ParsedElement,
         candidate_entities: Optional[Iterable[str]],
+        *,
+        metadata: Optional[PaperMetadata] = None,
+        domain: Optional[object] = None,
     ) -> ExtractionResult:
         self.calls.append(element.element_id)
+        self.metadata_calls[element.element_id] = metadata
+        self.domain_calls[element.element_id] = domain
         if element.element_id in self._failures:
             raise RuntimeError(f"LLM failure for {element.element_id}")
         return self._outputs[element.element_id]
@@ -79,9 +86,11 @@ class StubInventoryBuilder:
     def __init__(self, outputs: Dict[str, List[str]]) -> None:
         self._outputs = outputs
         self.calls: List[str] = []
+        self.domains: Dict[str, Optional[str]] = {}
 
-    def build_inventory(self, element: ParsedElement) -> List[str]:
+    def build_inventory(self, element: ParsedElement, domain: Optional[str] = None) -> List[str]:
         self.calls.append(element.element_id)
+        self.domains[element.element_id] = domain
         return list(self._outputs.get(element.element_id, []))
 
 
@@ -229,6 +238,70 @@ def test_orchestrator_runs_end_to_end(config: AppConfig, tmp_path: Path) -> None
     assert len(graph_writer.nodes) == 3  # Model A, data set X, Model B
     assert len(graph_writer.edges) == 2
     assert chunk_store.should_process(doc_id, element_a.content_hash, config.pipeline.version) is False
+
+
+def test_orchestrator_routes_biology_domain(config: AppConfig, tmp_path: Path) -> None:
+    config = config.model_copy(
+        update={
+            "extraction": config.extraction.model_copy(update={"use_entity_inventory": True})
+        }
+    )
+    doc_id = "bio-paper"
+    element = _parsed_element(
+        doc_id,
+        f"{doc_id}:0",
+        "Results",
+        "Cas9 nuclease binds to the guide RNA scaffold in human cells.",
+    )
+    metadata = PaperMetadata(
+        doc_id=doc_id,
+        title="Programmable RNA editing with CRISPR-Cas9",
+        venue="Cell",
+    )
+    parse_result = ParseResult(doc_id=doc_id, metadata=metadata, elements=[element], errors=[])
+    parsing = StubParsingPipeline(parse_result)
+
+    triplet = _triplet("Cas9 nuclease", "binds-to", "the guide RNA scaffold", element)
+    extraction = ExtractionResult(
+        triplets=[triplet],
+        section_distribution={
+            "Cas9 nuclease": {"Results": 1},
+            "the guide RNA scaffold": {"Results": 1},
+        },
+        relation_verbatims=["binds to"],
+    )
+    extractor = StubTripletExtractor({element.element_id: extraction})
+    inventory = StubInventoryBuilder({element.element_id: ["Cas9 nuclease", "guide RNA scaffold"]})
+    graph_writer = StubGraphWriter()
+
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=HashingEmbeddingBackend(),
+        embedding_dir=tmp_path / "embeddings",
+        report_dir=tmp_path / "reports",
+    )
+    canonicalization = CanonicalizationPipeline(config=config, canonicalizer=canonicalizer)
+    chunk_store = ProcessedChunkStore(tmp_path / "processed.json")
+    orchestrator = ExtractionOrchestrator(
+        config=config,
+        parsing_pipeline=parsing,
+        inventory_builder=inventory,
+        triplet_extractor=extractor,
+        canonicalization=canonicalization,
+        graph_writer=graph_writer,
+        chunk_store=chunk_store,
+    )
+
+    pdf_path = tmp_path / "bio-paper.pdf"
+    pdf_path.write_text("placeholder")
+
+    result = orchestrator.run(paper_id=doc_id, pdf_path=pdf_path)
+
+    assert result.processed_chunks == 1
+    assert inventory.domains[element.element_id] == "biology"
+    assert extractor.metadata_calls[element.element_id] == metadata
+    assert len(graph_writer.edges) == 1
+    assert graph_writer.edges[0]["relation_norm"] == "binds-to"
 
 
 def test_orchestrator_is_idempotent(config: AppConfig, tmp_path: Path) -> None:
