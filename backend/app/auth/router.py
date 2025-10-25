@@ -13,6 +13,7 @@ from backend.app.auth.schemas import (
     GoogleConfigResponse,
     GoogleLoginRequest,
     LoginResponse,
+    SessionStatusResponse,
     LogoutRequest,
     LogoutResponse,
     RefreshRequest,
@@ -28,6 +29,9 @@ from backend.app.config import AuthConfig
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/google")
+oauth2_optional_scheme = OAuth2PasswordBearer(
+    tokenUrl="/api/auth/google", auto_error=False
+)
 
 
 def _status_from_reason(reason: str) -> int:
@@ -109,6 +113,22 @@ async def get_current_user(
         raise HTTPException(status_code=_status_from_reason(exc.reason), detail=str(exc)) from exc
 
 
+async def get_optional_user(
+    token: str | None = Depends(oauth2_optional_scheme),
+    service: AuthService = Depends(get_auth_service),
+) -> Optional[AuthUser]:
+    """Attempt to authenticate bearer token, returning None when absent or invalid."""
+
+    if not token:
+        return None
+    try:
+        return await service.authenticate(token)
+    except AuthServiceError as exc:
+        if exc.reason in {"unauthorized", "forbidden"}:
+            return None
+        raise HTTPException(status_code=_status_from_reason(exc.reason), detail=str(exc)) from exc
+
+
 @router.post("/register", response_model=RegistrationResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     payload: RegisterRequest,
@@ -181,16 +201,19 @@ async def verify(token: str = Query(..., min_length=1), service: AuthService = D
         raise HTTPException(status_code=_status_from_reason(exc.reason), detail=str(exc)) from exc
 
 
-@router.get("/me", response_model=AuthUser)
-async def me(current_user: AuthUser = Depends(get_current_user)) -> AuthUser:
-    """Return the current authenticated user."""
+@router.get("/me", response_model=SessionStatusResponse)
+async def me(current_user: Optional[AuthUser] = Depends(get_optional_user)) -> SessionStatusResponse:
+    """Return authentication status for the current session."""
 
-    return current_user
+    if current_user is None:
+        return SessionStatusResponse(authenticated=False, user=None)
+    return SessionStatusResponse(authenticated=True, user=current_user)
 
 
 __all__ = [
     "router",
     "get_current_user",
+    "get_optional_user",
     "get_auth_service",
     "get_auth_session",
     "get_auth_config",

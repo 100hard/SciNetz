@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -201,7 +202,9 @@ def test_extraction_endpoint_runs_pipeline_end_to_end(tmp_path: Path) -> None:
         pdf_a.write_text("dummy")
         pdf_b.write_text("dummy")
 
-        app = create_app(config=config, orchestrator=orchestrator)
+        with patch("backend.app.main.GoogleTokenVerifier") as verifier_ctor:
+            verifier_ctor.return_value = object()
+            app = create_app(config=config, orchestrator=orchestrator)
 
         with TestClient(app) as client:
             response_a = client.post(

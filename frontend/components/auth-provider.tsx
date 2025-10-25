@@ -11,7 +11,13 @@ import {
 } from "react";
 
 import apiClient from "@/lib/http";
-import type { AuthUser, LoginResponse, TokenPair, TokenRefreshResponse } from "../types/auth";
+import type {
+  AuthUser,
+  LoginResponse,
+  SessionStatusResponse,
+  TokenPair,
+  TokenRefreshResponse,
+} from "../types/auth";
 
 const AUTH_STORAGE_KEY = "scinets.auth.session";
 
@@ -179,16 +185,22 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
         }
 
         try {
-          const { data: user } = await apiClient.get<AuthUser>("/api/auth/me");
+          const { data } = await apiClient.get<SessionStatusResponse>("/api/auth/me");
           if (!isMounted) {
             return;
           }
-          persistSession(user, {
+          if (!data.authenticated || !data.user) {
+            clearSession();
+            return;
+          }
+          const remaining = Math.max(Math.floor((expiresAt - Date.now()) / 1000), 1);
+          const sessionTokens: TokenPair = {
             access_token: accessToken,
             refresh_token: refreshToken,
             token_type: "bearer",
-            expires_in: Math.max(Math.floor((expiresAt - Date.now()) / 1000), 1),
-          });
+            expires_in: remaining,
+          };
+          persistSession(data.user, sessionTokens);
         } catch (error) {
           if (!isMounted) {
             return;

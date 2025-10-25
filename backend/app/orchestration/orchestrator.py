@@ -7,6 +7,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import perf_counter
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from backend.app.canonicalization import CanonicalizationPipeline
@@ -109,6 +110,17 @@ class _CoMentionProduct:
 
 
 @dataclass
+class _ProcessingTimers:
+    """Aggregate of elapsed seconds for key processing phases."""
+
+    parse_seconds: float = 0.0
+    domain_seconds: float = 0.0
+    inventory_seconds: float = 0.0
+    extraction_seconds: float = 0.0
+    co_mention_seconds: float = 0.0
+
+
+@dataclass
 class _DocumentProcessingState:
     """Mutable accumulator capturing per-document processing data."""
 
@@ -121,6 +133,7 @@ class _DocumentProcessingState:
     extractions: List[ExtractionResult] = field(default_factory=list)
     edge_records: List[_EdgeRecord] = field(default_factory=list)
     requires_deprecation: bool = False
+    timings: _ProcessingTimers = field(default_factory=_ProcessingTimers)
 
 
 class ProcessedChunkStore:
@@ -387,11 +400,15 @@ class ExtractionOrchestrator:
         if request.force:
             self._chunk_store.reset_document(request.paper_id)
 
+        parse_start = perf_counter()
         parse_result = self._parsing.parse_document(doc_id=request.paper_id, pdf_path=request.pdf_path)
+        parse_elapsed = perf_counter() - parse_start
         state = _DocumentProcessingState(doc_id=request.paper_id, metadata=parse_result.metadata)
+        state.timings.parse_seconds = parse_elapsed
         if parse_result.errors:
             LOGGER.error("Parsing failed for %s: %s", request.paper_id, parse_result.errors)
             state.errors.extend(str(error) for error in parse_result.errors)
+            self._log_document_timings(state)
             return state
 
         pipeline_version = self._config.pipeline.version
@@ -411,17 +428,23 @@ class ExtractionOrchestrator:
                 continue
             if previous_version is not None and previous_version != pipeline_version:
                 state.requires_deprecation = True
+
+            domain_start = perf_counter()
             domain_context = self._domain_router.resolve(
                 metadata=state.metadata,
                 element=element,
             )
+            state.timings.domain_seconds += perf_counter() - domain_start
             domain_name = domain_context.name
             candidate_entities: Optional[List[str]] = None
             if self._config.extraction.use_entity_inventory:
+                inventory_start = perf_counter()
                 candidate_entities = self._inventory_builder.build_inventory(
                     element,
                     domain=domain_name,
                 )
+                state.timings.inventory_seconds += perf_counter() - inventory_start
+            extract_start = perf_counter()
             try:
                 extraction = self._triplet_extractor.extract_with_metadata(
                     element,
@@ -430,15 +453,18 @@ class ExtractionOrchestrator:
                     domain=domain_context,
                 )
             except Exception as exc:  # noqa: BLE001 - third-party errors bubble up
+                state.timings.extraction_seconds += perf_counter() - extract_start
                 LOGGER.exception("Triplet extraction failed for %s", element.element_id)
                 state.errors.append(str(exc))
                 if co_mention_accumulator is not None:
                     fallback_candidates = candidate_entities
                     if fallback_candidates is None:
+                        inventory_start = perf_counter()
                         fallback_candidates = self._inventory_builder.build_inventory(
                             element,
                             domain=domain_name,
                         )
+                        state.timings.inventory_seconds += perf_counter() - inventory_start
                     co_mention_accumulator.record(element, fallback_candidates, domain=domain_name)
                     state.processed_chunks += 1
                     self._chunk_store.mark_processed(
@@ -446,6 +472,7 @@ class ExtractionOrchestrator:
                     )
                 continue
 
+            state.timings.extraction_seconds += perf_counter() - extract_start
             state.extractions.append(extraction)
             state.processed_chunks += 1
             self._chunk_store.mark_processed(element.doc_id, element.content_hash, pipeline_version)
@@ -465,12 +492,15 @@ class ExtractionOrchestrator:
                 )
 
         if co_mention_accumulator is not None:
+            co_start = perf_counter()
             products = co_mention_accumulator.finalize()
+            state.timings.co_mention_seconds += perf_counter() - co_start
             state.co_mention_edges += len(products)
             for product in products:
                 state.extractions.append(product.extraction)
                 state.edge_records.append(product.edge)
 
+        self._log_document_timings(state)
         return state
 
     def run(self, *, paper_id: str, pdf_path: Path, force: bool = False) -> OrchestrationResult:
@@ -502,69 +532,106 @@ class ExtractionOrchestrator:
         doc_node_map: Dict[str, Set[str]] = {}
         doc_edge_counts: Dict[str, int] = {}
         batch_errors: List[str] = []
+        canonical_start = perf_counter()
         try:
             canonical_result = self._canonicalization.run(extraction_results)
-            alias_lookup = self._build_alias_lookup(
-                canonical_result.nodes, canonical_result.merge_map
-            )
-            for node in canonical_result.nodes:
-                self._graph_writer.upsert_entity(node)
-                nodes_written += 1
-                for doc_id in node.source_document_ids:
-                    if not doc_id:
-                        continue
-                    doc_node_map.setdefault(doc_id, set()).add(node.node_id)
-            for state in states:
-                if not state.requires_deprecation:
-                    continue
-                try:
-                    deprecated_count = self._graph_writer.deprecate_edges(state.doc_id)
-                    if deprecated_count:
-                        LOGGER.info(
-                            "Marked %s edges as deprecated for %s",
-                            deprecated_count,
-                            state.doc_id,
-                        )
-                except Exception as exc:  # noqa: BLE001 - surfaced to result payload
-                    message = f"Failed to deprecate edges for {state.doc_id}: {exc}"
-                    LOGGER.exception(message)
-                    batch_errors.append(message)
-                    state.errors.append(message)
-            for record in edge_records:
-                src_id = self._resolve_node(alias_lookup, record.triplet.subject)
-                dst_id = self._resolve_node(alias_lookup, record.triplet.object)
-                if not src_id or not dst_id:
-                    LOGGER.warning(
-                        "Skipping edge; missing canonical nodes for %s -> %s",
-                        record.triplet.subject,
-                        record.triplet.object,
-                    )
-                    continue
-                relation_verbatim = record.relation_verbatim or record.triplet.predicate
-                self._graph_writer.upsert_edge(
-                    src_id=src_id,
-                    dst_id=dst_id,
-                    relation_norm=record.triplet.predicate,
-                    relation_verbatim=relation_verbatim,
-                    evidence=record.triplet.evidence,
-                    confidence=record.triplet.confidence,
-                    attributes=record.attributes,
-                    times_seen=record.times_seen,
-                )
-                edges_written += 1
-                doc_id = record.triplet.evidence.doc_id
-                if doc_id:
-                    doc_edge_counts[doc_id] = doc_edge_counts.get(doc_id, 0) + 1
-            self._graph_writer.flush()
         except Exception as exc:  # noqa: BLE001 - protective barrier around persistence
-            LOGGER.exception("Failed to persist extraction results for batch")
+            canonical_elapsed = perf_counter() - canonical_start
+            LOGGER.exception(
+                "Failed to canonicalize extraction batch after %.2fs", canonical_elapsed
+            )
             message = str(exc)
             batch_errors.append(message)
             for state in states:
                 state.errors.append(message)
             nodes_written = 0
             edges_written = 0
+        else:
+            canonical_elapsed = perf_counter() - canonical_start
+            LOGGER.info(
+                "Canonicalization completed for %d documents in %.2fs",
+                len(states),
+                canonical_elapsed,
+            )
+            alias_lookup = self._build_alias_lookup(
+                canonical_result.nodes, canonical_result.merge_map
+            )
+            graph_write_start = perf_counter()
+            graph_persistence_failed = False
+            try:
+                for node in canonical_result.nodes:
+                    self._graph_writer.upsert_entity(node)
+                    nodes_written += 1
+                    for doc_id in node.source_document_ids:
+                        if not doc_id:
+                            continue
+                        doc_node_map.setdefault(doc_id, set()).add(node.node_id)
+                for state in states:
+                    if not state.requires_deprecation:
+                        continue
+                    try:
+                        deprecated_count = self._graph_writer.deprecate_edges(state.doc_id)
+                        if deprecated_count:
+                            LOGGER.info(
+                                "Marked %s edges as deprecated for %s",
+                                deprecated_count,
+                                state.doc_id,
+                            )
+                    except Exception as exc:  # noqa: BLE001 - surfaced to result payload
+                        message = f"Failed to deprecate edges for {state.doc_id}: {exc}"
+                        LOGGER.exception(message)
+                        batch_errors.append(message)
+                        state.errors.append(message)
+                for record in edge_records:
+                    src_id = self._resolve_node(alias_lookup, record.triplet.subject)
+                    dst_id = self._resolve_node(alias_lookup, record.triplet.object)
+                    if not src_id or not dst_id:
+                        LOGGER.warning(
+                            "Skipping edge; missing canonical nodes for %s -> %s",
+                            record.triplet.subject,
+                            record.triplet.object,
+                        )
+                        continue
+                    relation_verbatim = record.relation_verbatim or record.triplet.predicate
+                    self._graph_writer.upsert_edge(
+                        src_id=src_id,
+                        dst_id=dst_id,
+                        relation_norm=record.triplet.predicate,
+                        relation_verbatim=relation_verbatim,
+                        evidence=record.triplet.evidence,
+                        confidence=record.triplet.confidence,
+                        attributes=record.attributes,
+                        times_seen=record.times_seen,
+                    )
+                    edges_written += 1
+                    doc_id = record.triplet.evidence.doc_id
+                    if doc_id:
+                        doc_edge_counts[doc_id] = doc_edge_counts.get(doc_id, 0) + 1
+                self._graph_writer.flush()
+            except Exception as exc:  # noqa: BLE001 - protective barrier around persistence
+                graph_persistence_failed = True
+                graph_elapsed = perf_counter() - graph_write_start
+                LOGGER.exception(
+                    "Failed to persist extraction results for batch after %.2fs",
+                    graph_elapsed,
+                )
+                message = str(exc)
+                batch_errors.append(message)
+                for state in states:
+                    state.errors.append(message)
+                nodes_written = 0
+                edges_written = 0
+            finally:
+                graph_elapsed = perf_counter() - graph_write_start
+                if not graph_persistence_failed:
+                    LOGGER.info(
+                        "Graph persistence completed (nodes=%d edges=%d) in %.2fs",
+                        nodes_written,
+                        edges_written,
+                        graph_elapsed,
+                    )
 
+        chunk_flush_start = perf_counter()
         try:
             self._chunk_store.flush()
         except OSError as exc:
@@ -573,6 +640,9 @@ class ExtractionOrchestrator:
             batch_errors.append(message)
             for state in states:
                 state.errors.append(message)
+        else:
+            chunk_elapsed = perf_counter() - chunk_flush_start
+            LOGGER.info("Processed chunk registry flush completed in %.2fs", chunk_elapsed)
 
         documents: Dict[str, OrchestrationResult] = {}
         for state in states:
@@ -606,6 +676,25 @@ class ExtractionOrchestrator:
             total_edges_written=edges_written,
             total_co_mention_edges=total_co_mentions,
             errors=aggregated_errors,
+        )
+
+    @staticmethod
+    def _log_document_timings(state: _DocumentProcessingState) -> None:
+        timings = state.timings
+        LOGGER.info(
+            (
+                "Document %s timings | parse=%.2fs domain=%.2fs inventory=%.2fs "
+                "extraction=%.2fs co_mentions=%.2fs | processed=%d skipped=%d errors=%d"
+            ),
+            state.doc_id,
+            timings.parse_seconds,
+            timings.domain_seconds,
+            timings.inventory_seconds,
+            timings.extraction_seconds,
+            timings.co_mention_seconds,
+            state.processed_chunks,
+            state.skipped_chunks,
+            len(state.errors),
         )
 
     @staticmethod

@@ -87,6 +87,45 @@ class Neo4jQARepository(QARepositoryProtocol):
         records = self._run_read(query, {"mention": mention})
         return [self._record_to_candidate(record) for record in records]
 
+    def fetch_candidates_for_mention(
+        self,
+        mention: str,
+        limit: int,
+        *,
+        tokens: Sequence[str] | None = None,
+    ) -> Sequence[CandidateNode]:
+        lowered_tokens = [token.lower() for token in tokens or [] if token]
+        params = {
+            "mention": mention,
+            "tokens": lowered_tokens,
+            "limit": limit,
+        }
+        query = """
+        MATCH (n:Entity)
+        WHERE toLower(n.name) CONTAINS toLower($mention)
+           OR any(alias IN coalesce(n.aliases, []) WHERE toLower(alias) CONTAINS toLower($mention))
+           OR ($tokens <> [] AND (
+                any(token IN $tokens WHERE toLower(n.name) CONTAINS token) OR
+                any(alias IN coalesce(n.aliases, []) WHERE any(token IN $tokens WHERE toLower(alias) CONTAINS token))
+           ))
+        RETURN n.node_id AS node_id,
+               n.name AS name,
+               coalesce(n.aliases, []) AS aliases,
+               coalesce(n.times_seen, 0) AS times_seen,
+               coalesce(properties(n)['section_distribution'], {}) AS section_distribution,
+               coalesce(n.section_distribution_keys, []) AS section_distribution_keys,
+               coalesce(n.section_distribution_values, []) AS section_distribution_values,
+               CASE
+                   WHEN toLower(n.name) = toLower($mention) THEN 0
+                   WHEN any(alias IN coalesce(n.aliases, []) WHERE toLower(alias) = toLower($mention)) THEN 0
+                   ELSE 1
+               END AS match_priority
+        ORDER BY match_priority ASC, times_seen DESC, name ASC
+        LIMIT $limit
+        """
+        records = self._run_read(query, params)
+        return [self._record_to_candidate(record) for record in records]
+
     def fetch_candidate_nodes(self, limit: int) -> Sequence[CandidateNode]:
         query = """
         MATCH (n:Entity)

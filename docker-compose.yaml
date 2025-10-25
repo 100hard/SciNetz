@@ -22,6 +22,7 @@ services:
       - "8000:8000"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - scinets_api_data:/app/data
     depends_on:
       neo4j:
         condition: service_healthy
@@ -93,3 +94,4 @@ volumes:
   neo4j_data:
   frontend_node_modules:
   minio_data:
+  scinets_api_data:

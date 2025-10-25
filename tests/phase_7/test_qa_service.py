@@ -57,6 +57,25 @@ class _StubRepository(QARepositoryProtocol):
     def fetch_candidate_nodes(self, limit: int) -> Sequence[CandidateNode]:
         return self._candidates[:limit]
 
+    def fetch_candidates_for_mention(
+        self,
+        mention: str,
+        limit: int,
+        *,
+        tokens: Sequence[str] | None = None,
+    ) -> Sequence[CandidateNode]:
+        del tokens
+        mention_lower = mention.lower()
+        matches = [
+            node
+            for node in self._candidates
+            if mention_lower in node.name.lower()
+            or any(mention_lower in alias.lower() for alias in node.aliases)
+        ]
+        if matches:
+            return matches[:limit]
+        return self._candidates[:limit]
+
     def fetch_paths(
         self,
         *,
@@ -226,6 +245,26 @@ def test_qa_service_returns_related_findings_when_no_paths() -> None:
     assert "Related findings:" in response.summary
     assert "doc-omega" in response.summary
     assert "0.80" in response.summary
+    assert response.llm_answer is None
+
+
+def test_qa_service_surfaces_entity_profiles_when_no_neighbors() -> None:
+    config = load_config()
+    candidates = [_make_candidate("sigma", "Cell Sigma")]
+    repository = _StubRepository(candidates, neighbors={})
+    extractor = _StubExtractor(["Cell Sigma"])
+    qa_service = QAService(
+        config=config,
+        repository=repository,
+        embedding_backend=HashingEmbeddingBackend(),
+        extractor=extractor,  # type: ignore[arg-type]
+    )
+
+    response = qa_service.answer("What is Cell Sigma?")
+
+    assert response.summary.startswith("Insufficient evidence from graph relations.")
+    assert "Cell Sigma" in response.summary
+    assert response.fallback_edges == []
     assert response.llm_answer is None
 
 

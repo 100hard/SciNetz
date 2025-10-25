@@ -60,11 +60,13 @@ class QuestionEntityExtractor:
         doc = self._nlp(question)
         results: List[str] = []
         seen: set[str] = set()
+        stopwords = {"what", "which", "who", "whom", "whose", "where", "when", "why", "how"}
         for span in self._iter_spans(doc):
             text = span.text.strip()
-            if not text or text.lower() in seen:
+            lowered = text.lower()
+            if not text or lowered in seen or lowered in stopwords:
                 continue
-            seen.add(text.lower())
+            seen.add(lowered)
             results.append(text)
         return results
 
@@ -154,7 +156,14 @@ class EntityResolver:
             ]
             return ResolvedEntity(mention=mention, candidates=candidates)
 
-        approximate = self._repository.fetch_candidate_nodes(self._candidate_limit)
+        tokens = [token for token in _tokenize(normalized) if token]
+        approximate = self._repository.fetch_candidates_for_mention(
+            normalized,
+            self._candidate_limit,
+            tokens=tokens,
+        )
+        if not approximate:
+            approximate = self._repository.fetch_candidate_nodes(self._candidate_limit)
         scored = self._score_candidates(normalized, approximate)
         scored.sort(key=lambda candidate: (-candidate.similarity, -candidate.times_seen, candidate.name))
         filtered = [candidate for candidate in scored if candidate.similarity >= self._threshold]
@@ -200,6 +209,15 @@ class EntityResolver:
         return embedding
 
 
+def _tokenize(text: str) -> List[str]:
+    tokens = []
+    for raw in text.split():
+        cleaned = "".join(ch for ch in raw if ch.isalnum())
+        if cleaned and len(cleaned) > 2:
+            tokens.append(cleaned.lower())
+    return tokens
+
+
 @lru_cache(maxsize=1024)
 def _normalize_text(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text)
@@ -213,6 +231,11 @@ class QARepositoryProtocol:
     """Protocol describing required repository operations."""
 
     def fetch_nodes_by_exact_match(self, mention: str) -> Sequence[CandidateNode]:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def fetch_candidates_for_mention(
+        self, mention: str, limit: int, *, tokens: Sequence[str] | None = None
+    ) -> Sequence[CandidateNode]:  # pragma: no cover - interface
         raise NotImplementedError
 
     def fetch_candidate_nodes(self, limit: int) -> Sequence[CandidateNode]:  # pragma: no cover - interface

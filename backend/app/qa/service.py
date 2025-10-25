@@ -212,7 +212,7 @@ class QAService:
         if fallback_edges:
             summary = self._summarize_neighbors(fallback_edges)
         else:
-            summary = "Insufficient evidence to answer the question."
+            summary = self._summarize_entity_profiles(resolved_entities)
         llm_answer = self._synthesize_answer(
             question_text,
             mode,
@@ -279,16 +279,31 @@ class QAService:
             return []
 
         edges: List[PathEdgeModel] = []
-        for candidate in unique_candidates.values():
-            neighbor_records = self._repository.fetch_neighbors(
-                candidate.node_id,
-                min_confidence=self._config.qa.neighbor_confidence_threshold,
-                limit=self._max_neighbor_results,
-                allowed_relations=self._allowed_relations,
-            )
-            for record in neighbor_records:
-                edge = self._neighbor_to_edge(record)
-                edges.append(edge)
+        thresholds: List[float] = [self._config.qa.neighbor_confidence_threshold]
+        secondary_threshold = max(0.35, thresholds[0] - 0.25)
+        if secondary_threshold < thresholds[0] - 1e-6:
+            thresholds.append(secondary_threshold)
+
+        for threshold in thresholds:
+            edges.clear()
+            for candidate in unique_candidates.values():
+                neighbor_records = self._repository.fetch_neighbors(
+                    candidate.node_id,
+                    min_confidence=threshold,
+                    limit=self._max_neighbor_results,
+                    allowed_relations=self._allowed_relations,
+                )
+                for record in neighbor_records:
+                    edge = self._neighbor_to_edge(record)
+                    edges.append(edge)
+            if edges:
+                if threshold != thresholds[0]:
+                    LOGGER.debug(
+                        "Expanded QA neighbor search using relaxed confidence %.2f (initial %.2f)",
+                        threshold,
+                        thresholds[0],
+                    )
+                break
         unique: Dict[Tuple[str, str, str], PathEdgeModel] = {}
         for edge in edges:
             key = (edge.src_id, edge.dst_id, edge.relation)
@@ -337,6 +352,21 @@ class QAService:
             return None
         answer = result.answer.strip()
         return answer or None
+
+    def _summarize_entity_profiles(self, entities: Sequence[ResolvedEntity]) -> str:
+        lines: List[str] = []
+        for entity in entities:
+            if not entity.candidates:
+                continue
+            top = max(entity.candidates, key=lambda candidate: candidate.similarity)
+            sections = ", ".join(sorted(section for section in top.section_distribution.keys())) or "unknown sections"
+            lines.append(
+                f"{top.name} (similarity {top.similarity:.2f}, seen {top.times_seen}×, sections: {sections})"
+            )
+        if not lines:
+            return "Insufficient evidence to answer the question."
+        joined = "; ".join(lines)
+        return f"Insufficient evidence from graph relations. Known entity profiles: {joined}."
 
     def _build_path_context(self, paths: Sequence[PathModel]) -> List[List[AnswerContextEdge]]:
         context: List[List[AnswerContextEdge]] = []

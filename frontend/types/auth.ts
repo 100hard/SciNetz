@@ -2,6 +2,7 @@ export interface AuthUser {
   id: string;
   email: string;
   is_verified: boolean;
+  role: "user";
   created_at: string;
   updated_at: string;
 }
@@ -23,6 +24,11 @@ export interface LoginResponse {
   message: string;
   user: AuthUser;
   tokens: TokenPair;
+}
+
+export interface SessionStatusResponse {
+  authenticated: boolean;
+  user: AuthUser | null;
 }
 
 export interface TokenRefreshResponse {

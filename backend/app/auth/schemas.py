@@ -26,6 +26,13 @@ class AuthUser(_FrozenModel):
     updated_at: datetime
 
 
+class SessionStatusResponse(_FrozenModel):
+    """Response payload describing authentication state."""
+
+    authenticated: bool
+    user: Optional[AuthUser] = None
+
+
 class TokenPair(_FrozenModel):
     """Access and refresh tokens returned after authentication."""
 
@@ -116,6 +123,7 @@ __all__ = [
     "TokenPair",
     "RegistrationResponse",
     "LoginResponse",
+    "SessionStatusResponse",
     "GoogleConfigResponse",
     "TokenRefreshResponse",
     "LogoutResponse",

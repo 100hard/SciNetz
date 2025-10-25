@@ -48,6 +48,24 @@ class _StubRepo(QARepositoryProtocol):
                 results.append(node)
         return results
 
+    def fetch_candidates_for_mention(
+        self,
+        mention: str,
+        limit: int,
+        *,
+        tokens: Sequence[str] | None = None,
+    ) -> Sequence[CandidateNode]:
+        del tokens
+        lowered = mention.lower()
+        filtered = [
+            node
+            for node in self.nodes
+            if lowered in node.name.lower() or any(lowered in alias.lower() for alias in node.aliases)
+        ]
+        if filtered:
+            return filtered[:limit]
+        return list(self.nodes)[:limit]
+
     def fetch_candidate_nodes(self, limit: int) -> Sequence[CandidateNode]:
         return list(self.nodes)[:limit]
 
