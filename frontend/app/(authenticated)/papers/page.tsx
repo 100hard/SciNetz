@@ -37,10 +37,13 @@ type PaperSummary = {
 };
 
 type ExtractionResponse = {
-  doc_id: string;
-  nodes_written: number;
-  edges_written: number;
-  co_mention_edges: number;
+  paper_id?: string;
+  status?: string;
+  queued?: boolean;
+  doc_id?: string;
+  nodes_written?: number;
+  edges_written?: number;
+  co_mention_edges?: number;
   errors?: string[];
   metadata?: PaperMetadata;
   processed_chunks?: number;
@@ -234,9 +237,24 @@ export default function PapersPage() {
         const response = await apiClient.post<ExtractionResponse>(
           `/api/ui/papers/${encodeURIComponent(paperId)}/extract`,
         );
-        toast.success("Extraction complete", {
-          description: `${paper.filename} processed (${response.data.nodes_written ?? 0} nodes, ${response.data.edges_written ?? 0} edges).`,
-        });
+        const data = response.data;
+        const hasSnapshot =
+          typeof data.processed_chunks === "number" ||
+          typeof data.nodes_written === "number" ||
+          typeof data.edges_written === "number";
+
+        if (hasSnapshot) {
+          toast.success("Extraction complete", {
+            description: `${paper.filename} processed (${data.nodes_written ?? 0} nodes, ${data.edges_written ?? 0} edges).`,
+          });
+        } else {
+          const statusLabel = (data.status ?? "processing").toLowerCase();
+          const description =
+            statusLabel === "processing"
+              ? `${paper.filename} is processing. Refresh shortly to monitor progress.`
+              : `${paper.filename} queued (${statusLabel}). Refresh to monitor progress.`;
+          toast.success("Extraction started", { description });
+        }
         await fetchPapers("refresh");
       } catch (err) {
         const message = extractErrorMessage(err, "Extraction request failed.");

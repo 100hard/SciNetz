@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from itertools import combinations
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -30,6 +30,7 @@ from backend.app.qa.entity_resolution import (
     ResolvedCandidate,
     ResolvedEntity,
 )
+from backend.app.qa.intent import IntentClassification, QAIntent, QueryIntentClassifier
 from backend.app.qa.repository import NeighborRecord, PathRecord
 
 LOGGER = logging.getLogger(__name__)
@@ -119,6 +120,14 @@ class _PathScore:
     conflicting: bool
 
 
+@dataclass(frozen=True)
+class QAStreamEvent:
+    """Event emitted during streaming QA responses."""
+
+    type: str
+    payload: object
+
+
 class QAService:
     """High-level QA service responsible for resolving and answering questions."""
 
@@ -131,6 +140,7 @@ class QAService:
         extractor: Optional[QuestionEntityExtractor] = None,
         max_neighbor_results: int = 10,
         answer_synthesizer: Optional[LLMAnswerSynthesizer] = None,
+        intent_classifier: Optional[QueryIntentClassifier] = None,
     ) -> None:
         self._config = config
         self._repository = repository
@@ -148,31 +158,107 @@ class QAService:
         )
         self._synthesizer = answer_synthesizer
         self._pipeline_version = self._config.pipeline.version
+        self._intent_classifier = intent_classifier or QueryIntentClassifier(self._config.qa.intent)
+        self._summary_edge_limit = max(1, self._config.qa.intent.max_summary_edges)
+        self._allow_llm_without_evidence = self._config.qa.llm.allow_fallback_without_evidence
 
     def answer(self, question: str) -> QAResponse:
         """Answer the supplied question using the knowledge graph."""
 
+        final_response: Optional[QAResponse] = None
+        for event in self._iter_events(question):
+            if event.type == "final":
+                payload = event.payload
+                if isinstance(payload, QAResponse):
+                    final_response = payload
+                else:
+                    serialized = self._serialize_payload(payload)
+                    final_response = QAResponse(**serialized)  # type: ignore[arg-type]
+                break
+        if final_response is None:
+            msg = "QAService failed to produce a final response"
+            raise RuntimeError(msg)
+        return final_response
+
+    def stream_answer(self, question: str) -> Iterator[bytes]:
+        """Return a byte iterator producing SSE-formatted QA events."""
+
+        return (self._format_stream_event(event) for event in self._iter_events(question))
+
+    def _empty_response(self) -> QAResponse:
+        return QAResponse(
+            mode=AnswerMode.INSUFFICIENT,
+            summary="Insufficient evidence to answer the question.",
+            resolved_entities=[],
+            paths=[],
+            fallback_edges=[],
+            llm_answer=None,
+        )
+
+    def _classify(self, question: str) -> IntentClassification:
+        classifier = getattr(self, "_intent_classifier", None)
+        if classifier is None:
+            return IntentClassification(intent=QAIntent.FACTOID)
+        try:
+            return classifier.classify(question)
+        except Exception:  # noqa: BLE001 - intent detection must fail softly
+            LOGGER.exception("QA intent classification failed; defaulting to factoid mode")
+            return IntentClassification(intent=QAIntent.FACTOID)
+
+    def _iter_events(self, question: str) -> Iterator[QAStreamEvent]:
         question_text = question.strip()
         if not question_text:
-            return QAResponse(
-                mode=AnswerMode.INSUFFICIENT,
-                summary="Insufficient evidence to answer the question.",
-                resolved_entities=[],
-                paths=[],
-                fallback_edges=[],
-                llm_answer=None,
-            )
+            yield QAStreamEvent("final", self._empty_response())
+            return
+
+        classification = self._classify(question_text)
+        yield QAStreamEvent("classification", classification)
 
         mentions = self._extractor.extract(question_text)
         resolved_entities = [self._resolver.resolve(mention) for mention in mentions]
         resolved_models = [self._to_model(entity) for entity in resolved_entities]
+        yield QAStreamEvent("entities", resolved_models)
+
+        if classification.intent == QAIntent.PAPER_SUMMARY:
+            yield from self._answer_paper_summary_stream(
+                question_text,
+                classification,
+                resolved_entities,
+                resolved_models,
+            )
+            return
+        if classification.intent == QAIntent.CLUSTER_SUMMARY:
+            yield from self._answer_cluster_summary_stream(
+                question_text,
+                resolved_entities,
+                resolved_models,
+            )
+            return
+        if classification.intent == QAIntent.ENTITY_SUMMARY:
+            yield from self._answer_entity_summary_stream(
+                question_text,
+                resolved_entities,
+                resolved_models,
+            )
+            return
+        yield from self._answer_factoid_stream(
+            question_text,
+            resolved_entities,
+            resolved_models,
+        )
+
+    def _answer_factoid_stream(
+        self,
+        question_text: str,
+        resolved_entities: Sequence[ResolvedEntity],
+        resolved_models: Sequence[ResolvedEntityModel],
+    ) -> Iterator[QAStreamEvent]:
         primary_candidates = [
             entity.candidates[0] for entity in resolved_entities if entity.candidates
         ]
-
         if not primary_candidates:
             summary = "Unable to resolve any entities for the question."
-            return QAResponse(
+            response = QAResponse(
                 mode=AnswerMode.INSUFFICIENT,
                 summary=summary,
                 resolved_entities=resolved_models,
@@ -180,25 +266,31 @@ class QAService:
                 fallback_edges=[],
                 llm_answer=None,
             )
+            yield QAStreamEvent("final", response)
+            return
 
         path_scores = self._discover_paths(resolved_entities)
         top_scores = path_scores[: self._config.qa.max_results]
         paths = [score.path for score in top_scores]
         has_conflict = any(score.conflicting for score in top_scores)
 
-        llm_answer: Optional[str] = None
-
         if paths:
-            summary = self._summarize_path(paths[0])
+            yield QAStreamEvent("paths", paths)
             mode = AnswerMode.CONFLICTING if has_conflict else AnswerMode.DIRECT
-            llm_answer = self._synthesize_answer(
+            summary = self._summarize_path(paths[0])
+            llm_answer = None
+            llm_generator = self._stream_llm_answer(
                 question_text,
                 mode,
                 paths,
                 [],
                 resolved_entities,
             )
-            return QAResponse(
+            if llm_generator is not None:
+                llm_answer = yield from llm_generator
+            if llm_answer:
+                yield QAStreamEvent("llm_answer", llm_answer)
+            response = QAResponse(
                 mode=mode,
                 summary=summary,
                 resolved_entities=resolved_models,
@@ -206,28 +298,236 @@ class QAService:
                 fallback_edges=[],
                 llm_answer=llm_answer,
             )
+            yield QAStreamEvent("final", response)
+            return
 
-        mode = AnswerMode.INSUFFICIENT
         fallback_edges = self._collect_neighbors(resolved_entities)
         if fallback_edges:
+            yield QAStreamEvent("fallback", fallback_edges)
             summary = self._summarize_neighbors(fallback_edges)
         else:
             summary = self._summarize_entity_profiles(resolved_entities)
-        llm_answer = self._synthesize_answer(
+        llm_answer = None
+        llm_generator = self._stream_llm_answer(
             question_text,
-            mode,
+            AnswerMode.INSUFFICIENT,
             [],
             fallback_edges,
             resolved_entities,
         )
-        return QAResponse(
-            mode=mode,
+        if llm_generator is not None:
+            llm_answer = yield from llm_generator
+        llm_answer = self._maybe_suppress_insufficient(llm_answer, fallback_edges)
+        if llm_answer:
+            yield QAStreamEvent("llm_answer", llm_answer)
+        response = QAResponse(
+            mode=AnswerMode.INSUFFICIENT,
             summary=summary,
             resolved_entities=resolved_models,
             paths=[],
             fallback_edges=fallback_edges,
             llm_answer=llm_answer,
         )
+        yield QAStreamEvent("final", response)
+
+    def _answer_entity_summary_stream(
+        self,
+        question_text: str,
+        resolved_entities: Sequence[ResolvedEntity],
+        resolved_models: Sequence[ResolvedEntityModel],
+    ) -> Iterator[QAStreamEvent]:
+        primary = self._select_primary_candidate(resolved_entities)
+        if primary is None:
+            yield from self._answer_factoid_stream(question_text, resolved_entities, resolved_models)
+            return
+        edges = self._collect_summary_neighbors([primary])
+        if not edges:
+            summary = self._summarize_entity_profiles(resolved_entities)
+            llm_answer = None
+            if self._allow_llm_without_evidence:
+                generator = self._stream_llm_answer(
+                    question_text,
+                    AnswerMode.INSUFFICIENT,
+                    [],
+                    [],
+                    resolved_entities,
+                )
+                if generator is not None:
+                    llm_answer = yield from generator
+            response = QAResponse(
+                mode=AnswerMode.INSUFFICIENT,
+                summary=summary,
+                resolved_entities=resolved_models,
+                paths=[],
+                fallback_edges=[],
+                llm_answer=llm_answer,
+            )
+            if llm_answer:
+                yield QAStreamEvent("llm_answer", llm_answer)
+            yield QAStreamEvent("final", response)
+            return
+        yield QAStreamEvent("fallback", edges)
+        summary = f"Summary for {primary.name} derived from {len(edges)} graph findings."
+        llm_answer = None
+        generator = self._stream_llm_answer(
+            question_text,
+            AnswerMode.DIRECT,
+            [],
+            edges,
+            resolved_entities,
+        )
+        if generator is not None:
+            llm_answer = yield from generator
+        llm_answer = self._maybe_suppress_insufficient(llm_answer, edges)
+        if llm_answer:
+            yield QAStreamEvent("llm_answer", llm_answer)
+        response = QAResponse(
+            mode=AnswerMode.DIRECT,
+            summary=summary,
+            resolved_entities=resolved_models,
+            paths=[],
+            fallback_edges=edges,
+            llm_answer=llm_answer,
+        )
+        yield QAStreamEvent("final", response)
+        return
+
+    def _answer_cluster_summary_stream(
+        self,
+        question_text: str,
+        resolved_entities: Sequence[ResolvedEntity],
+        resolved_models: Sequence[ResolvedEntityModel],
+    ) -> Iterator[QAStreamEvent]:
+        candidates = self._unique_candidates(resolved_entities)
+        if not candidates:
+            yield from self._answer_factoid_stream(question_text, resolved_entities, resolved_models)
+            return
+        edges = self._collect_summary_neighbors(candidates)
+        if not edges:
+            summary = self._summarize_entity_profiles(resolved_entities)
+            llm_answer = None
+            if self._allow_llm_without_evidence:
+                generator = self._stream_llm_answer(
+                    question_text,
+                    AnswerMode.INSUFFICIENT,
+                    [],
+                    [],
+                    resolved_entities,
+                )
+                if generator is not None:
+                    llm_answer = yield from generator
+            response = QAResponse(
+                mode=AnswerMode.INSUFFICIENT,
+                summary=summary,
+                resolved_entities=resolved_models,
+                paths=[],
+                fallback_edges=[],
+                llm_answer=llm_answer,
+            )
+            if llm_answer:
+                yield QAStreamEvent("llm_answer", llm_answer)
+            yield QAStreamEvent("final", response)
+            return
+        yield QAStreamEvent("fallback", edges)
+        cluster_names = ", ".join(candidate.name for candidate in candidates[:3])
+        summary = (
+            f"Cluster summary for {cluster_names} derived from {len(edges)} graph findings."
+        )
+        llm_answer = None
+        generator = self._stream_llm_answer(
+            question_text,
+            AnswerMode.DIRECT,
+            [],
+            edges,
+            resolved_entities,
+        )
+        if generator is not None:
+            llm_answer = yield from generator
+        llm_answer = self._maybe_suppress_insufficient(llm_answer, edges)
+        if llm_answer:
+            yield QAStreamEvent("llm_answer", llm_answer)
+        response = QAResponse(
+            mode=AnswerMode.DIRECT,
+            summary=summary,
+            resolved_entities=resolved_models,
+            paths=[],
+            fallback_edges=edges,
+            llm_answer=llm_answer,
+        )
+        yield QAStreamEvent("final", response)
+
+    def _answer_paper_summary_stream(
+        self,
+        question_text: str,
+        classification: IntentClassification,
+        resolved_entities: Sequence[ResolvedEntity],
+        resolved_models: Sequence[ResolvedEntityModel],
+    ) -> Iterator[QAStreamEvent]:
+        document_ids = classification.document_ids
+        if not document_ids:
+            summary = "Unable to identify which document to summarize."
+            response = QAResponse(
+                mode=AnswerMode.INSUFFICIENT,
+                summary=summary,
+                resolved_entities=resolved_models,
+                paths=[],
+                fallback_edges=[],
+                llm_answer=None,
+            )
+            yield QAStreamEvent("final", response)
+            return
+        edges = self._collect_document_edges(document_ids)
+        if not edges:
+            joined = ", ".join(document_ids)
+            summary = f"No extracted findings available for documents: {joined}."
+            llm_answer = None
+            if self._allow_llm_without_evidence:
+                generator = self._stream_llm_answer(
+                    question_text,
+                    AnswerMode.INSUFFICIENT,
+                    [],
+                    [],
+                    resolved_entities,
+                )
+                if generator is not None:
+                    llm_answer = yield from generator
+            response = QAResponse(
+                mode=AnswerMode.INSUFFICIENT,
+                summary=summary,
+                resolved_entities=resolved_models,
+                paths=[],
+                fallback_edges=[],
+                llm_answer=llm_answer,
+            )
+            if llm_answer:
+                yield QAStreamEvent("llm_answer", llm_answer)
+            yield QAStreamEvent("final", response)
+            return
+        yield QAStreamEvent("fallback", edges)
+        joined = ", ".join(document_ids)
+        summary = f"Summary for documents {joined} derived from {len(edges)} graph findings."
+        llm_answer = None
+        generator = self._stream_llm_answer(
+            question_text,
+            AnswerMode.DIRECT,
+            [],
+            edges,
+            resolved_entities,
+        )
+        if generator is not None:
+            llm_answer = yield from generator
+        llm_answer = self._maybe_suppress_insufficient(llm_answer, edges)
+        if llm_answer:
+            yield QAStreamEvent("llm_answer", llm_answer)
+        response = QAResponse(
+            mode=AnswerMode.DIRECT,
+            summary=summary,
+            resolved_entities=resolved_models,
+            paths=[],
+            fallback_edges=edges,
+            llm_answer=llm_answer,
+        )
+        yield QAStreamEvent("final", response)
 
     def _discover_paths(self, entities: Sequence[ResolvedEntity]) -> List[_PathScore]:
         results: List[_PathScore] = []
@@ -268,12 +568,7 @@ class QAService:
                 "QA expand_neighbors disabled in config; still collecting 1-hop neighbors"
             )
 
-        unique_candidates: Dict[str, ResolvedCandidate] = {}
-        for entity in entities:
-            for candidate in entity.candidates:
-                existing = unique_candidates.get(candidate.node_id)
-                if existing is None or candidate.similarity > existing.similarity:
-                    unique_candidates[candidate.node_id] = candidate
+        unique_candidates = self._unique_candidates(entities)
 
         if not unique_candidates:
             return []
@@ -286,7 +581,7 @@ class QAService:
 
         for threshold in thresholds:
             edges.clear()
-            for candidate in unique_candidates.values():
+            for candidate in unique_candidates:
                 neighbor_records = self._repository.fetch_neighbors(
                     candidate.node_id,
                     min_confidence=threshold,
@@ -315,6 +610,112 @@ class QAService:
         )
         return sorted_edges[: self._config.qa.max_results]
 
+    def _collect_summary_neighbors(
+        self,
+        candidates: Sequence[ResolvedCandidate],
+    ) -> List[PathEdgeModel]:
+        if not candidates:
+            return []
+        limit = self._summary_edge_limit
+        candidate_count = len(candidates)
+        per_candidate_limit = max(1, (limit + candidate_count - 1) // candidate_count)
+        unique: Dict[Tuple[str, str, str, str, str], PathEdgeModel] = {}
+        for candidate in candidates:
+            neighbor_records = self._repository.fetch_neighbors(
+                candidate.node_id,
+                min_confidence=self._config.qa.neighbor_confidence_threshold,
+                limit=per_candidate_limit,
+                allowed_relations=(),
+            )
+            for record in neighbor_records:
+                edge = self._neighbor_to_edge(record)
+                key = (
+                    edge.src_id,
+                    edge.dst_id,
+                    edge.relation,
+                    edge.evidence.doc_id,
+                    edge.evidence.element_id,
+                )
+                existing = unique.get(key)
+                if existing is None or edge.confidence > existing.confidence:
+                    unique[key] = edge
+        edges = sorted(
+            unique.values(),
+            key=lambda edge: (-edge.confidence, -edge.created_at.timestamp()),
+        )
+        return edges[:limit]
+
+    def _prepare_synthesis_request(
+        self,
+        question: str,
+        mode: AnswerMode,
+        paths: Sequence[PathModel],
+        fallback_edges: Sequence[PathEdgeModel],
+        resolved_entities: Sequence[ResolvedEntity],
+    ) -> Optional[Tuple[AnswerSynthesisRequest, LLMAnswerSynthesizer]]:
+        synthesizer = self._synthesizer
+        if synthesizer is None or not getattr(synthesizer, "enabled", False):
+            return None
+        question_text = question.strip()
+        if not question_text:
+            return None
+        edge_count = sum(len(path.edges) for path in paths) + len(fallback_edges)
+        if edge_count == 0 and not self._allow_llm_without_evidence:
+            return None
+
+        path_context = self._build_path_context(paths)
+        neighbor_context = [self._edge_to_context(edge) for edge in fallback_edges]
+
+        has_graph_evidence = bool(path_context or neighbor_context)
+        if not has_graph_evidence and not self._allow_llm_without_evidence:
+            return None
+
+        scope_documents = self._collect_scope_documents(path_context, neighbor_context, resolved_entities)
+        request = AnswerSynthesisRequest(
+            question=question_text,
+            mode=mode.value,
+            graph_paths=path_context,
+            neighbor_edges=neighbor_context,
+            scope_documents=scope_documents,
+            pipeline_version=self._pipeline_version,
+            has_graph_evidence=has_graph_evidence,
+            allow_off_graph_answer=self._allow_llm_without_evidence,
+        )
+        return request, synthesizer
+
+    def _collect_document_edges(self, document_ids: Sequence[str]) -> List[PathEdgeModel]:
+        if not document_ids:
+            return []
+        limit = self._summary_edge_limit
+        doc_count = len(document_ids)
+        per_doc_limit = max(1, (limit + doc_count - 1) // doc_count)
+        unique: Dict[Tuple[str, str, str, str, str], PathEdgeModel] = {}
+        for doc_id in document_ids:
+            if not doc_id:
+                continue
+            neighbor_records = self._repository.fetch_document_edges(
+                doc_id,
+                min_confidence=self._config.qa.neighbor_confidence_threshold,
+                limit=per_doc_limit,
+                allowed_relations=(),
+            )
+            for record in neighbor_records:
+                edge = self._neighbor_to_edge(record)
+                key = (
+                    edge.src_id,
+                    edge.dst_id,
+                    edge.relation,
+                    edge.evidence.doc_id,
+                    edge.evidence.element_id,
+                )
+                if key not in unique:
+                    unique[key] = edge
+        edges = sorted(
+            unique.values(),
+            key=lambda edge: (-edge.confidence, -edge.created_at.timestamp()),
+        )
+        return edges[:limit]
+
     def _synthesize_answer(
         self,
         question: str,
@@ -323,35 +724,55 @@ class QAService:
         fallback_edges: Sequence[PathEdgeModel],
         resolved_entities: Sequence[ResolvedEntity],
     ) -> Optional[str]:
-        synthesizer = self._synthesizer
-        if synthesizer is None or not getattr(synthesizer, "enabled", False):
-            return None
-        if not question.strip():
-            return None
-        edge_count = sum(len(path.edges) for path in paths) + len(fallback_edges)
-        if edge_count == 0:
-            return None
-
-        path_context = self._build_path_context(paths)
-        neighbor_context = [self._edge_to_context(edge) for edge in fallback_edges]
-
-        if not path_context and not neighbor_context:
-            return None
-
-        scope_documents = self._collect_scope_documents(path_context, neighbor_context, resolved_entities)
-        request = AnswerSynthesisRequest(
-            question=question,
-            mode=mode.value,
-            graph_paths=path_context,
-            neighbor_edges=neighbor_context,
-            scope_documents=scope_documents,
-            pipeline_version=self._pipeline_version,
+        prepared = self._prepare_synthesis_request(
+            question, mode, paths, fallback_edges, resolved_entities
         )
+        if prepared is None:
+            return None
+        request, synthesizer = prepared
         result = synthesizer.synthesize(request)
         if result is None:
             return None
         answer = result.answer.strip()
         return answer or None
+
+    def _stream_llm_answer(
+        self,
+        question: str,
+        mode: AnswerMode,
+        paths: Sequence[PathModel],
+        fallback_edges: Sequence[PathEdgeModel],
+        resolved_entities: Sequence[ResolvedEntity],
+    ) -> Optional[Iterator[QAStreamEvent]]:
+        prepared = self._prepare_synthesis_request(
+            question, mode, paths, fallback_edges, resolved_entities
+        )
+        if prepared is None:
+            return None
+        request, synthesizer = prepared
+
+        def _generator() -> Iterator[QAStreamEvent]:
+            stream_iter = synthesizer.stream(request)
+            if stream_iter is None:
+                result = synthesizer.synthesize(request)
+                if result is None:
+                    return None
+                answer_text = result.answer.strip()
+                return answer_text or None
+            chunks: List[str] = []
+            try:
+                for chunk in stream_iter:
+                    if not chunk:
+                        continue
+                    chunks.append(chunk)
+                    yield QAStreamEvent("llm_delta", chunk)
+            except Exception:  # noqa: BLE001 - streaming failures should not break QA
+                LOGGER.exception("QA LLM stream generator failed; falling back to None")
+                return None
+            final_answer = "".join(chunks).strip()
+            return final_answer or None
+
+        return _generator()
 
     def _summarize_entity_profiles(self, entities: Sequence[ResolvedEntity]) -> str:
         lines: List[str] = []
@@ -361,7 +782,7 @@ class QAService:
             top = max(entity.candidates, key=lambda candidate: candidate.similarity)
             sections = ", ".join(sorted(section for section in top.section_distribution.keys())) or "unknown sections"
             lines.append(
-                f"{top.name} (similarity {top.similarity:.2f}, seen {top.times_seen}×, sections: {sections})"
+                f"{top.name} (similarity {top.similarity:.2f}, seen {top.times_seen}x, sections: {sections})"
             )
         if not lines:
             return "Insufficient evidence to answer the question."
@@ -419,6 +840,60 @@ class QAService:
             return "Insufficient evidence to answer the question."
         details = "; ".join(segments)
         return f"Insufficient evidence to answer. Related findings: {details}"
+
+    def _unique_candidates(self, entities: Sequence[ResolvedEntity]) -> List[ResolvedCandidate]:
+        unique: Dict[str, ResolvedCandidate] = {}
+        for entity in entities:
+            for candidate in entity.candidates:
+                existing = unique.get(candidate.node_id)
+                if existing is None or candidate.similarity > existing.similarity:
+                    unique[candidate.node_id] = candidate
+        return list(unique.values())
+
+    def _select_primary_candidate(
+        self, entities: Sequence[ResolvedEntity]
+    ) -> Optional[ResolvedCandidate]:
+        best: Optional[ResolvedCandidate] = None
+        best_score = -1.0
+        for entity in entities:
+            for candidate in entity.candidates:
+                if candidate.similarity > best_score:
+                    best = candidate
+                    best_score = candidate.similarity
+        return best
+
+    @staticmethod
+    def _maybe_suppress_insufficient(
+        answer: Optional[str],
+        fallback_edges: Sequence[PathEdgeModel],
+    ) -> Optional[str]:
+        if not answer:
+            return None
+        if not fallback_edges:
+            return answer
+        normalized = answer.strip().lower()
+        if normalized == "insufficient evidence to answer.":
+            return None
+        return answer
+
+    def _serialize_payload(self, payload: object) -> object:
+        if isinstance(payload, BaseModel):
+            return payload.model_dump(mode="json")
+        if isinstance(payload, IntentClassification):
+            return {
+                "intent": payload.intent.value,
+                "document_ids": list(payload.document_ids),
+            }
+        if isinstance(payload, (list, tuple)):
+            return [self._serialize_payload(item) for item in payload]
+        if isinstance(payload, Mapping):
+            return {str(key): self._serialize_payload(value) for key, value in payload.items()}
+        return payload
+
+    def _format_stream_event(self, event: QAStreamEvent) -> bytes:
+        payload = self._serialize_payload(event.payload)
+        body = json.dumps({"type": event.type, "payload": payload}, ensure_ascii=False)
+        return f"event: {event.type}\ndata: {body}\n\n".encode("utf-8")
 
     def _build_path(self, record: PathRecord) -> PathModel:
         node_lookup = [self._normalize_node(node) for node in record.nodes]

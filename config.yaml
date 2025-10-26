@@ -610,6 +610,32 @@ qa:
     - 502
     - 503
     - 504
+    allow_fallback_without_evidence: true
+  intent:
+    enabled: true
+    max_summary_edges: 12
+    entity_summary:
+      keywords:
+      - what is
+      - describe
+      - define
+      - explain
+      min_score: 0.25
+    cluster_summary:
+      keywords:
+      - summarize
+      - cluster
+      min_score: 0.5
+    paper_summary:
+      keywords:
+      - summarize
+      - paper
+      - overview
+      min_score: 0.33
+      document_prefixes:
+      - paper
+      - doc
+      - document
 export:
   max_bundle_mb: 5
   warn_bundle_mb: 3
@@ -624,6 +650,7 @@ export:
 ui:
   upload_dir: data/uploads
   paper_registry_path: data/ui/papers.json
+  extraction_worker_count: 1
   allowed_origins:
   - http://localhost:3000
   - http://127.0.0.1:3000

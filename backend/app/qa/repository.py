@@ -152,14 +152,21 @@ class Neo4jQARepository(QARepositoryProtocol):
         limit: int,
         allowed_relations: Optional[Sequence[str]] = None,
     ) -> Sequence[PathRecord]:
-        relation_filter = tuple(allowed_relations) if allowed_relations else self._allowed_relations
+        if allowed_relations is not None:
+            relation_filter: Optional[Tuple[str, ...]] = tuple(allowed_relations)
+        else:
+            relation_filter = self._allowed_relations
         # Neo4j does not allow parameterizing the variable length in relationship patterns.
         # Clamp hops to a safe integer and embed as a literal in the pattern; still filter by confidence and relation set.
         hops_upper = max(1, int(max_hops))
+        relation_clause = ""
+        if relation_filter:
+            relation_clause = " AND r.relation_norm IN $allowed"
         query = (
             "\n        MATCH path = (start:Entity {node_id: $start_id})-\n            "
             f"[rel:RELATION*1..{hops_upper}]->(end:Entity {{node_id: $end_id}})\n"
-            "        WHERE ALL(r IN rel WHERE r.confidence >= $min_confidence AND r.relation_norm IN $allowed)\n"
+            "        WHERE ALL(r IN rel WHERE r.confidence >= $min_confidence"
+            f"{relation_clause})\n"
             "        RETURN [node IN nodes(path) | node] AS nodes,\n"
             "               [relationship IN rel | relationship] AS relationships\n"
             "        LIMIT $limit\n        "
@@ -168,9 +175,10 @@ class Neo4jQARepository(QARepositoryProtocol):
             "start_id": start_id,
             "end_id": end_id,
             "min_confidence": min_confidence,
-            "allowed": list(relation_filter),
             "limit": limit,
         }
+        if relation_filter:
+            params["allowed"] = list(relation_filter)
         records = self._run_read(query, params)
         return [self._record_to_path(record) for record in records]
 
@@ -182,20 +190,58 @@ class Neo4jQARepository(QARepositoryProtocol):
         limit: int,
         allowed_relations: Optional[Sequence[str]] = None,
     ) -> Sequence[NeighborRecord]:
-        relation_filter = tuple(allowed_relations) if allowed_relations else self._allowed_relations
-        query = """
-        MATCH (source:Entity {node_id: $node_id})-[rel:RELATION]->(target:Entity)
-        WHERE rel.confidence >= $min_confidence AND rel.relation_norm IN $allowed
-        RETURN source AS source, target AS target, rel AS relationship
-        ORDER BY rel.confidence DESC, rel.created_at DESC
-        LIMIT $limit
-        """
+        if allowed_relations is not None:
+            relation_filter: Optional[Tuple[str, ...]] = tuple(allowed_relations)
+        else:
+            relation_filter = self._allowed_relations
+        relation_clause = " AND rel.relation_norm IN $allowed" if relation_filter else ""
+        query = (
+            "        MATCH (source:Entity {node_id: $node_id})-[rel:RELATION]-(target:Entity)\n"
+            "        WHERE rel.confidence >= $min_confidence"
+            f"{relation_clause}\n"
+            "        RETURN source AS source, target AS target, rel AS relationship\n"
+            "        ORDER BY rel.confidence DESC, rel.created_at DESC\n"
+            "        LIMIT $limit\n        "
+        )
         params = {
             "node_id": node_id,
             "min_confidence": min_confidence,
-            "allowed": list(relation_filter),
             "limit": limit,
         }
+        if relation_filter:
+            params["allowed"] = list(relation_filter)
+        records = self._run_read(query, params)
+        return [self._record_to_neighbor(record) for record in records]
+
+    def fetch_document_edges(
+        self,
+        doc_id: str,
+        *,
+        min_confidence: float,
+        limit: int,
+        allowed_relations: Optional[Sequence[str]] = None,
+    ) -> Sequence[NeighborRecord]:
+        if allowed_relations is not None:
+            relation_filter: Optional[Tuple[str, ...]] = tuple(allowed_relations)
+        else:
+            relation_filter = self._allowed_relations
+        relation_clause = " AND rel.relation_norm IN $allowed" if relation_filter else ""
+        query = (
+            "        MATCH (source:Entity)-[rel:RELATION]-(target:Entity)\n"
+            "        WHERE rel.confidence >= $min_confidence\n"
+            f"{relation_clause}\n"
+            "          AND toLower(rel.doc_id) = toLower($doc_id)\n"
+            "        RETURN source AS source, target AS target, rel AS relationship\n"
+            "        ORDER BY rel.confidence DESC, rel.created_at DESC\n"
+            "        LIMIT $limit\n        "
+        )
+        params = {
+            "doc_id": doc_id,
+            "min_confidence": min_confidence,
+            "limit": limit,
+        }
+        if relation_filter:
+            params["allowed"] = list(relation_filter)
         records = self._run_read(query, params)
         return [self._record_to_neighbor(record) for record in records]
 

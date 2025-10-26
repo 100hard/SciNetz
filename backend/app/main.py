@@ -10,15 +10,17 @@ import logging
 import os
 import re
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from time import perf_counter
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
@@ -281,6 +283,16 @@ def create_app(
     app.state.paper_registry = paper_registry
     app.state.upload_dir = upload_dir
     app.state.ui_config = resolved_config.ui
+    extraction_executor: Optional[ThreadPoolExecutor]
+    try:
+        extraction_executor = ThreadPoolExecutor(
+            max_workers=resolved_config.ui.extraction_worker_count,
+            thread_name_prefix="extraction-worker",
+        )
+    except Exception:  # noqa: BLE001 - fallback to synchronous execution
+        LOGGER.exception("Failed to initialize extraction executor; extraction will run synchronously")
+        extraction_executor = None
+    app.state.extraction_executor = extraction_executor
     graph_view_service = _build_graph_view_service(neo4j_driver)
     app.state.graph_view_service = graph_view_service
     (
@@ -618,43 +630,108 @@ def create_app(
         orchestrator_obj = getattr(app.state, "orchestrator", None)
         if orchestrator_obj is None:
             raise HTTPException(status_code=503, detail="Extraction orchestrator unavailable")
+        pdf_path = record.pdf_path
         registry.mark_processing(paper_id)
+        LOGGER.info(
+            "Queued extraction for paper %s (force_reprocess=%s)", paper_id, force_reprocess
+        )
+
+        def _finalize(result: OrchestrationResult) -> dict[str, object]:
+            if result.errors:
+                registry.mark_complete(
+                    paper_id,
+                    metadata=result.metadata,
+                    nodes_written=result.nodes_written,
+                    edges_written=result.edges_written,
+                    co_mention_edges=result.co_mention_edges,
+                    errors=result.errors,
+                )
+            else:
+                registry.mark_complete(
+                    paper_id,
+                    metadata=result.metadata,
+                    nodes_written=result.nodes_written,
+                    edges_written=result.edges_written,
+                    co_mention_edges=result.co_mention_edges,
+                )
+            return {
+                "doc_id": result.doc_id,
+                "metadata": result.metadata.model_dump(),
+                "processed_chunks": result.processed_chunks,
+                "skipped_chunks": result.skipped_chunks,
+                "nodes_written": result.nodes_written,
+                "edges_written": result.edges_written,
+                "co_mention_edges": result.co_mention_edges,
+                "errors": result.errors,
+            }
+
+        def _run_background() -> None:
+            start_time = perf_counter()
+            try:
+                result = orchestrator_obj.run(
+                    paper_id=paper_id,
+                    pdf_path=pdf_path,
+                    force=force_reprocess,
+                )
+            except Exception as exc:  # noqa: BLE001 - background failure is logged
+                duration = perf_counter() - start_time
+                LOGGER.exception(
+                    "Extraction failed for paper %s after %.2fs", paper_id, duration
+                )
+                registry.mark_failed(paper_id, [str(exc)])
+                return
+            duration = perf_counter() - start_time
+            _finalize(result)
+            LOGGER.info(
+                "Extraction completed for paper %s in %.2fs "
+                "(processed=%d, skipped=%d, nodes=%d, edges=%d, errors=%d)",
+                paper_id,
+                duration,
+                result.processed_chunks,
+                result.skipped_chunks,
+                result.nodes_written,
+                result.edges_written,
+                len(result.errors),
+            )
+
+        if _submit_extraction_task(app, _run_background):
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={
+                    "paper_id": paper_id,
+                    "status": PaperStatus.PROCESSING.value,
+                    "queued": True,
+                },
+            )
+
+        LOGGER.warning("Extraction executor unavailable; running synchronously for %s", paper_id)
+        start_time = perf_counter()
         try:
-            result: OrchestrationResult = orchestrator_obj.run(
+            result = orchestrator_obj.run(
                 paper_id=paper_id,
-                pdf_path=record.pdf_path,
+                pdf_path=pdf_path,
                 force=force_reprocess,
             )
         except Exception as exc:  # noqa: BLE001 - propagate failure to caller
+            duration = perf_counter() - start_time
+            LOGGER.exception(
+                "Extraction failed for paper %s after %.2fs", paper_id, duration
+            )
             registry.mark_failed(paper_id, [str(exc)])
             raise HTTPException(status_code=500, detail="Extraction failed") from exc
-        if result.errors:
-            registry.mark_complete(
-                paper_id,
-                metadata=result.metadata,
-                nodes_written=result.nodes_written,
-                edges_written=result.edges_written,
-                co_mention_edges=result.co_mention_edges,
-                errors=result.errors,
-            )
-        else:
-            registry.mark_complete(
-                paper_id,
-                metadata=result.metadata,
-                nodes_written=result.nodes_written,
-                edges_written=result.edges_written,
-                co_mention_edges=result.co_mention_edges,
-            )
-        response = {
-            "doc_id": result.doc_id,
-            "metadata": result.metadata.model_dump(),
-            "processed_chunks": result.processed_chunks,
-            "skipped_chunks": result.skipped_chunks,
-            "nodes_written": result.nodes_written,
-            "edges_written": result.edges_written,
-            "co_mention_edges": result.co_mention_edges,
-            "errors": result.errors,
-        }
+        duration = perf_counter() - start_time
+        response = _finalize(result)
+        LOGGER.info(
+            "Extraction completed synchronously for paper %s in %.2fs "
+            "(processed=%d, skipped=%d, nodes=%d, edges=%d, errors=%d)",
+            paper_id,
+            duration,
+            result.processed_chunks,
+            result.skipped_chunks,
+            result.nodes_written,
+            result.edges_written,
+            len(result.errors),
+        )
         return response
 
     @app.post(
@@ -748,12 +825,18 @@ def create_app(
         return {"status": "cleared"}
 
     @app.post("/api/qa/ask", tags=["qa"], summary="Answer question using the knowledge graph")
-    def ask(request: QARequest) -> dict[str, object]:
+    def ask(request: QARequest, stream: bool = Query(False)) -> object:
         """Answer a user question using the graph-first QA pipeline."""
 
         qa_service = getattr(app.state, "qa_service", None)
         if qa_service is None:
             raise HTTPException(status_code=503, detail="QA service unavailable")
+        if stream:
+            events = qa_service.stream_answer(request.question)
+            headers = {
+                "Cache-Control": "no-cache",
+            }
+            return StreamingResponse(events, media_type="text/event-stream", headers=headers)
         result = qa_service.answer(request.question)
         return result.model_dump()
 
@@ -765,6 +848,12 @@ def create_app(
                 driver.close()
             except Exception:  # noqa: BLE001 - defensive close
                 LOGGER.exception("Failed to close Neo4j driver")
+        executor = getattr(app.state, "extraction_executor", None)
+        if executor is not None:
+            try:
+                executor.shutdown(wait=True, cancel_futures=False)
+            except Exception:  # noqa: BLE001 - defensive close
+                LOGGER.exception("Failed to shut down extraction executor")
 
     app.include_router(auth_router)
 
@@ -981,6 +1070,18 @@ def _build_graph_view_service(driver: Optional[object]) -> Optional[GraphViewSer
     except Exception:  # noqa: BLE001 - view service is optional
         LOGGER.exception("Failed to initialize graph view service")
         return None
+
+
+def _submit_extraction_task(app: FastAPI, task: Callable[[], None]) -> bool:
+    executor = getattr(app.state, "extraction_executor", None)
+    if executor is None:
+        return False
+    try:
+        executor.submit(task)
+        return True
+    except Exception:  # noqa: BLE001 - background submission failures fall back to sync
+        LOGGER.exception("Failed to submit extraction task to executor")
+        return False
 
 
 def _require_registry(app: FastAPI) -> PaperRegistry:

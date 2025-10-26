@@ -263,3 +263,13 @@ class QARepositoryProtocol:
         allowed_relations: Optional[Sequence[str]] = None,
     ) -> Sequence[Mapping[str, object]]:  # pragma: no cover - interface
         raise NotImplementedError
+
+    def fetch_document_edges(
+        self,
+        doc_id: str,
+        *,
+        min_confidence: float,
+        limit: int,
+        allowed_relations: Optional[Sequence[str]] = None,
+    ) -> Sequence[Mapping[str, object]]:  # pragma: no cover - interface
+        raise NotImplementedError

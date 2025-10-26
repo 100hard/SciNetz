@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, HelpCircle, Loader2, MessageSquare } from "lucide-react";
 
-import apiClient, { extractErrorMessage } from "@/lib/http";
+import apiClient, { buildApiUrl, extractErrorMessage } from "@/lib/http";
 
 type EvidenceModel = {
   doc_id: string;
@@ -58,11 +58,23 @@ type QAResponse = {
   llm_answer?: string | null;
 };
 
+type QAStreamEvent =
+  | { type: "classification"; payload: { intent: string; document_ids: string[] } }
+  | { type: "entities"; payload: ResolvedEntityModel[] }
+  | { type: "paths"; payload: PathModel[] }
+  | { type: "fallback"; payload: PathEdgeModel[] }
+  | { type: "llm_delta"; payload: string }
+  | { type: "llm_answer"; payload: string | null }
+  | { type: "final"; payload: QAResponse }
+  | { type: string; payload: unknown };
+
 type ChatTurn = {
   id: string;
   question: string;
   response: QAResponse;
   createdAt: string;
+  pending?: boolean;
+  classification?: { intent: string; document_ids: string[] } | null;
 };
 
 type UiSettingsResponse = {
@@ -120,10 +132,137 @@ const parseStoredHistory = (raw: string | null): ChatTurn[] => {
   }
 };
 
+const createInitialResponse = (): QAResponse => ({
+  mode: "insufficient",
+  summary: "Processing answer...",
+  resolved_entities: [],
+  paths: [],
+  fallback_edges: [],
+  llm_answer: null,
+});
+
+const normalizeClassification = (payload: unknown): { intent: string; document_ids: string[] } | null => {
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const intent = typeof payload.intent === "string" ? payload.intent : "factoid";
+  const documentIds = Array.isArray(payload.document_ids)
+    ? payload.document_ids.map((value) => String(value))
+    : [];
+  return { intent, document_ids: documentIds };
+};
+
+const coerceResolvedEntities = (payload: unknown): ResolvedEntityModel[] => {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+  return payload as ResolvedEntityModel[];
+};
+
+const coercePaths = (payload: unknown): PathModel[] => {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+  return payload as PathModel[];
+};
+
+const coerceEdges = (payload: unknown): PathEdgeModel[] => {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+  return payload as PathEdgeModel[];
+};
+
+const coerceResponse = (payload: unknown, fallback: QAResponse): QAResponse => {
+  if (!isRecord(payload)) {
+    return fallback;
+  }
+  try {
+    const response = payload as QAResponse;
+    return {
+      mode: response.mode,
+      summary: response.summary,
+      resolved_entities: response.resolved_entities ?? [],
+      paths: response.paths ?? [],
+      fallback_edges: response.fallback_edges ?? [],
+      llm_answer: response.llm_answer ?? null,
+    };
+  } catch (err) {
+    console.warn("Failed to coerce QA response from stream event", err);
+    return fallback;
+  }
+};
+
+const displayAnswerText = (response: QAResponse): string => {
+  const trimmed = response.llm_answer?.trim();
+  if (!trimmed) {
+    return response.summary;
+  }
+  const normalized = trimmed.toLowerCase();
+  if (normalized === "insufficient evidence to answer." && response.fallback_edges.length > 0) {
+    return response.summary;
+  }
+  return trimmed;
+};
+
+const applyStreamEventToTurn = (turn: ChatTurn, event: QAStreamEvent): ChatTurn => {
+  const response: QAResponse = { ...turn.response };
+  const updated: ChatTurn = { ...turn, response };
+
+  switch (event.type) {
+    case "classification": {
+      updated.classification = normalizeClassification(event.payload);
+      updated.pending = true;
+      break;
+    }
+    case "entities": {
+      response.resolved_entities = coerceResolvedEntities(event.payload);
+      updated.pending = true;
+      break;
+    }
+    case "paths": {
+      response.paths = coercePaths(event.payload);
+      updated.pending = true;
+      break;
+    }
+    case "fallback": {
+      response.fallback_edges = coerceEdges(event.payload);
+      updated.pending = true;
+      break;
+    }
+    case "llm_delta": {
+      if (typeof event.payload === "string") {
+        response.llm_answer = (response.llm_answer ?? "") + event.payload;
+      } else if (event.payload !== null && event.payload !== undefined) {
+        response.llm_answer = (response.llm_answer ?? "") + String(event.payload);
+      }
+      updated.pending = true;
+      break;
+    }
+    case "llm_answer": {
+      response.llm_answer =
+        typeof event.payload === "string" || event.payload === null ? event.payload : String(event.payload);
+      updated.pending = true;
+      break;
+    }
+    case "final": {
+      const finalResponse = coerceResponse(event.payload, response);
+      updated.response = finalResponse;
+      updated.pending = false;
+      break;
+    }
+    default: {
+      break;
+    }
+  }
+
+  return updated;
+};
+
 const formatTimestamp = (value: string) => {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
-    return "—";
+    return "--";
   }
   return parsed.toLocaleString();
 };
@@ -192,15 +331,18 @@ const EdgeList = ({ edges, title }: { edges: PathEdgeModel[]; title: string }) =
           <li key={`${edge.src_id}-${edge.dst_id}-${index}`} className="rounded-md border border-border bg-background p-3">
             <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
               <span>
-                {edge.src_name} → {edge.dst_name}
+                {edge.src_name} {"->"} {edge.dst_name}
               </span>
               <span>
-                {edge.relation_verbatim} · {confidenceToPercent(edge.confidence)} · {formatTimestamp(edge.created_at)}
+                {edge.relation_verbatim} {" | "} {confidenceToPercent(edge.confidence)} {" | "} {formatTimestamp(edge.created_at)}
               </span>
             </div>
             <p className="mt-2 text-sm text-foreground">{edge.evidence.full_sentence ?? "Evidence excerpt unavailable."}</p>
             <p className="mt-2 text-[11px] text-muted-foreground">
-              Doc: {edge.evidence.doc_id} · Element: {edge.evidence.element_id} · Offsets {edge.evidence.text_span.start}–
+              Doc: {edge.evidence.doc_id}
+              {" | "}Element: {edge.evidence.element_id}
+              {" | "}Offsets {edge.evidence.text_span.start}
+              {"-"}
               {edge.evidence.text_span.end}
             </p>
             {edge.conflicting ? (
@@ -228,8 +370,9 @@ const PathList = ({ paths }: { paths: PathModel[] }) => {
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>Path #{index + 1}</span>
             <span>
-              Score {confidenceToPercent(path.score)} · Confidence product {confidenceToPercent(path.confidence_product)} ·
-              Latest {formatTimestamp(path.latest_timestamp)}
+              Score {confidenceToPercent(path.score)}
+              {" | "}Confidence product {confidenceToPercent(path.confidence_product)}
+              {" | "}Latest {formatTimestamp(path.latest_timestamp)}
             </span>
           </div>
           <EdgeList edges={path.edges} title="Reasoning steps" />
@@ -251,6 +394,111 @@ const QaPanel = () => {
     provider: null,
   });
   const [settingsError, setSettingsError] = useState<string | null>(null);
+
+  const applyStreamEvent = useCallback(
+    (turnId: string, event: QAStreamEvent) => {
+      setHistory((prev) => prev.map((turn) => (turn.id === turnId ? applyStreamEventToTurn(turn, event) : turn)));
+    },
+    [],
+  );
+
+  const streamAnswer = useCallback(
+    async (prompt: string, turnId: string) => {
+      const response = await fetch(buildApiUrl("/api/qa/ask?stream=1"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        credentials: "include",
+        body: JSON.stringify({ question: prompt }),
+      });
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `Streaming request failed with status ${response.status}`);
+      }
+      const body = response.body;
+      if (!body) {
+        throw new Error("Streaming response missing body.");
+      }
+      const reader = body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let completed = false;
+      let readerCancelled = false;
+
+      const processBuffer = () => {
+        let finalReceived = false;
+        while (true) {
+          const boundary = buffer.indexOf("\n\n");
+          if (boundary === -1) {
+            break;
+          }
+          const raw = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          if (!raw.trim()) {
+            continue;
+          }
+          let eventType = "message";
+          const dataLines: string[] = [];
+          for (const line of raw.split("\n")) {
+            if (line.startsWith("event:")) {
+              eventType = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trim());
+            }
+          }
+          if (dataLines.length === 0) {
+            continue;
+          }
+          const dataText = dataLines.join("");
+          try {
+            const parsed = JSON.parse(dataText);
+            const type = typeof parsed.type === "string" ? parsed.type : eventType;
+            const payload = Object.prototype.hasOwnProperty.call(parsed, "payload") ? parsed.payload : parsed;
+            const evt: QAStreamEvent = { type, payload };
+            applyStreamEvent(turnId, evt);
+            if (type === "final") {
+              finalReceived = true;
+              setPendingQuestion(null);
+            }
+          } catch (err) {
+            console.warn("Failed to parse QA stream event", err, raw);
+          }
+        }
+        return finalReceived;
+      };
+
+      try {
+        while (!completed) {
+          const { value, done } = await reader.read();
+          if (value) {
+            buffer += decoder.decode(value, { stream: !done });
+            if (processBuffer()) {
+              completed = true;
+              await reader.cancel().catch(() => undefined);
+              readerCancelled = true;
+              break;
+            }
+          }
+          if (done) {
+            buffer += decoder.decode(new Uint8Array(), { stream: false });
+            completed = processBuffer() || completed;
+            break;
+          }
+        }
+      } finally {
+        if (!readerCancelled) {
+          await reader.cancel().catch(() => undefined);
+        }
+      }
+
+      if (!completed) {
+        throw new Error("Stream ended before completion.");
+      }
+    },
+    [applyStreamEvent, setPendingQuestion],
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -292,12 +540,13 @@ const QaPanel = () => {
     if (typeof window === "undefined") {
       return;
     }
-    if (history.length === 0) {
+    const completed = history.filter((turn) => !turn.pending);
+    if (completed.length === 0) {
       window.localStorage.removeItem(HISTORY_STORAGE_KEY);
       return;
     }
     try {
-      window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
+      window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(completed));
     } catch (err) {
       console.warn("Failed to persist QA history", err);
     }
@@ -323,6 +572,9 @@ const QaPanel = () => {
       return null;
     }
     const latest = history[history.length - 1];
+    if (latest?.pending) {
+      return `Streaming answer for "${latest.question}"...`;
+    }
     return `Latest results for "${latest.question}".`;
   }, [error, history, isLlmEnabled, isLoading, pendingQuestion, settingsLoaded]);
 
@@ -340,32 +592,47 @@ const QaPanel = () => {
         return;
       }
 
+      const id =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `turn-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const skeleton: ChatTurn = {
+        id,
+        question: trimmed,
+        response: createInitialResponse(),
+        createdAt: new Date().toISOString(),
+        pending: true,
+        classification: null,
+      };
+
       setPendingQuestion(trimmed);
       setIsLoading(true);
       setError(null);
+      setHistory((prev) => [...prev, skeleton]);
+      setSelectedTurnId(id);
+      setQuestion("");
+
       try {
-        const { data } = await apiClient.post<QAResponse>("/api/qa/ask", { question: trimmed });
-        const id =
-          typeof crypto !== "undefined" && "randomUUID" in crypto
-            ? crypto.randomUUID()
-            : `turn-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const turn: ChatTurn = {
-          id,
-          question: trimmed,
-          response: data,
-          createdAt: new Date().toISOString(),
-        };
-        setHistory((prev) => [...prev, turn]);
-        setSelectedTurnId(turn.id);
-        setQuestion("");
-      } catch (err) {
-        const message = extractErrorMessage(err, "Unable to answer the question right now.");
-        setError(message);
+        await streamAnswer(trimmed, id);
+      } catch (streamErr) {
+        console.warn("QA streaming failed; attempting fallback request", streamErr);
+        try {
+          const { data } = await apiClient.post<QAResponse>("/api/qa/ask", { question: trimmed });
+          setHistory((prev) =>
+            prev.map((turn) => (turn.id === id ? { ...turn, response: data, pending: false } : turn)),
+          );
+        } catch (err) {
+          const message = extractErrorMessage(err, "Unable to answer the question right now.");
+          setError(message);
+          setHistory((prev) => prev.filter((turn) => turn.id !== id));
+        }
       } finally {
         setPendingQuestion(null);
         setIsLoading(false);
       }
-  }, [question, settingsLoaded]);
+    },
+    [question, settingsLoaded, streamAnswer],
+  );
 
   const handleClear = () => {
     setQuestion("");
@@ -479,11 +746,13 @@ const QaPanel = () => {
                   .slice()
                   .reverse()
                   .map((turn) => {
-                    const answerPreview = (turn.response.llm_answer?.trim() || turn.response.summary).replace(/\s+/g, " ");
+                    const basePreview = displayAnswerText(turn.response);
+                    const answerPreview = (turn.pending ? "Processing answer..." : basePreview).replace(/\s+/g, " ");
                     const snippet =
-                      answerPreview.length > 140 ? `${answerPreview.slice(0, 137).trimEnd()}…` : answerPreview;
+                      answerPreview.length > 140 ? `${answerPreview.slice(0, 137).trimEnd()}...` : answerPreview;
                     const activeId = selectedTurn?.id ?? null;
                     const isActive = activeId === turn.id;
+                    const statusLabel = turn.pending ? "Processing" : MODE_LABELS[turn.response.mode];
                     return (
                       <li key={turn.id}>
                         <button
@@ -497,7 +766,7 @@ const QaPanel = () => {
                         >
                           <p className="font-semibold">{turn.question}</p>
                           <p className="mt-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-                            {MODE_LABELS[turn.response.mode]} · {formatTimestamp(turn.createdAt)}
+                            {statusLabel} | {formatTimestamp(turn.createdAt)}{turn.classification?.intent ? ` | ${turn.classification.intent}` : ""}
                           </p>
                           <p className="mt-1 text-xs text-muted-foreground">{snippet}</p>
                         </button>
@@ -520,13 +789,27 @@ const QaPanel = () => {
 
                   <div className="rounded-md border border-primary/30 bg-primary/5 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs uppercase tracking-wide text-muted-foreground">
-                      <span className="font-semibold text-foreground">{MODE_LABELS[selectedTurn.response.mode]}</span>
+                      <span className="font-semibold text-foreground">
+                        {selectedTurn.pending ? "Processing" : MODE_LABELS[selectedTurn.response.mode]}
+                      </span>
                       <span>{selectedTurn.response.paths.length} reasoning paths</span>
                     </div>
+                    {selectedTurn.classification?.intent ? (
+                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        Intent: {selectedTurn.classification.intent}
+                      </p>
+                    ) : null}
                     <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-foreground">
-                      {selectedTurn.response.llm_answer?.trim() || selectedTurn.response.summary}
+                      {selectedTurn.pending
+                        ? "Processing answer..."
+                        : displayAnswerText(selectedTurn.response)}
                     </p>
-                    {selectedTurn.response.llm_answer ? (
+                    {selectedTurn.pending ? (
+                      <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Streaming graph evidence...
+                      </div>
+                    ) : selectedTurn.response.llm_answer ? (
                       <p className="mt-3 text-xs text-muted-foreground">
                         Graph summary: {selectedTurn.response.summary}
                       </p>

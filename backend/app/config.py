@@ -233,6 +233,7 @@ class QALLMConfig(_FrozenModel):
     openai_backoff_initial_seconds: float = Field(..., gt=0)
     openai_backoff_max_seconds: float = Field(..., gt=0)
     openai_retry_statuses: List[int] = Field(default_factory=list)
+    allow_fallback_without_evidence: bool
 
     @field_validator("provider")
     @classmethod
@@ -373,6 +374,39 @@ class CoMentionConfig(_FrozenModel):
     max_distance_chars: int = Field(..., ge=1)
 
 
+class IntentRuleConfig(_FrozenModel):
+    """Keyword-based rule definition for QA intent classification."""
+
+    keywords: List[str] = Field(default_factory=list)
+    min_score: float = Field(..., ge=0.0, le=1.0)
+    document_prefixes: List[str] = Field(default_factory=list)
+
+    @staticmethod
+    def _normalize(values: Sequence[str]) -> List[str]:
+        normalized: List[str] = []
+        for value in values:
+            cleaned = value.strip().lower()
+            if cleaned and cleaned not in normalized:
+                normalized.append(cleaned)
+        return normalized
+
+    @model_validator(mode="after")
+    def _normalize_lists(self) -> "IntentRuleConfig":
+        object.__setattr__(self, "keywords", self._normalize(self.keywords))
+        object.__setattr__(self, "document_prefixes", self._normalize(self.document_prefixes))
+        return self
+
+
+class QAIntentConfig(_FrozenModel):
+    """Configuration governing QA intent detection and summarization."""
+
+    enabled: bool
+    max_summary_edges: int = Field(..., ge=1)
+    entity_summary: IntentRuleConfig
+    cluster_summary: IntentRuleConfig
+    paper_summary: IntentRuleConfig
+
+
 class QAConfig(_FrozenModel):
     """Question answering configuration."""
 
@@ -382,6 +416,7 @@ class QAConfig(_FrozenModel):
     max_hops: int = Field(..., ge=0)
     max_results: int = Field(..., ge=1)
     llm: QALLMConfig
+    intent: QAIntentConfig
 
 
 class ExportStorageConfig(_FrozenModel):
@@ -428,6 +463,7 @@ class UIConfig(_FrozenModel):
     paper_registry_path: str = Field(..., min_length=1)
     graph_defaults: UIGraphDefaultsConfig
     allowed_origins: List[str] = Field(default_factory=list)
+    extraction_worker_count: int = Field(..., ge=1)
 
 
 class AuthJWTConfig(_FrozenModel):
