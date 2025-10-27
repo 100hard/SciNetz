@@ -24,9 +24,19 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 COPY pyproject.toml ./
 COPY backend ./backend
-COPY tests ./tests
 COPY config.yaml ./config.yaml
 COPY docker-compose.yaml ./docker-compose.yaml
+
+RUN --mount=type=cache,target=/root/.cache/huggingface \
+    SCINETS_SKIP_ENV_FILE=1 python - <<'PY'
+from backend.app.config import load_config
+from backend.app.parsing.pipeline import ParsingPipeline
+
+config = load_config()
+ParsingPipeline(config=config)
+PY
+
+COPY tests ./tests
 
 EXPOSE 8000
 

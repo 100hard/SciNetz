@@ -24,6 +24,10 @@ type GraphDefaults = {
 
 type UiSettingsResponse = {
   graph_defaults: GraphDefaults;
+  polling?: {
+    active_interval_seconds?: number;
+    idle_interval_seconds?: number;
+  };
 };
 
 type LoadingMode = "initial" | "refresh";

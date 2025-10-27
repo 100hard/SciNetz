@@ -82,6 +82,10 @@ type UiSettingsResponse = {
     llm_enabled: boolean;
     llm_provider?: string | null;
   };
+  polling?: {
+    active_interval_seconds?: number;
+    idle_interval_seconds?: number;
+  };
 };
 
 const MODE_LABELS: Record<QAResponse["mode"], string> = {

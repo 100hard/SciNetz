@@ -50,7 +50,17 @@ type ExtractionResponse = {
   skipped_chunks?: number;
 };
 
-const POLL_INTERVAL_MS = 12000;
+type UiSettingsResponse = {
+  polling?: {
+    active_interval_seconds?: number;
+    idle_interval_seconds?: number;
+  };
+};
+
+const DEFAULT_ACTIVE_INTERVAL_SECONDS = 12;
+const DEFAULT_IDLE_INTERVAL_SECONDS = 60;
+const DEFAULT_ACTIVE_INTERVAL_MS = DEFAULT_ACTIVE_INTERVAL_SECONDS * 1000;
+const DEFAULT_IDLE_INTERVAL_MS = DEFAULT_IDLE_INTERVAL_SECONDS * 1000;
 const ACTIVE_STATUSES = new Set(["uploaded", "processing"]);
 
 const STATUS_STYLES: Record<string, string> = {
@@ -118,6 +128,10 @@ export default function PapersPage() {
   const [authorQuery, setAuthorQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [pollingIntervals, setPollingIntervals] = useState<{ active: number; idle: number }>({
+    active: DEFAULT_ACTIVE_INTERVAL_MS,
+    idle: DEFAULT_IDLE_INTERVAL_MS,
+  });
 
   const fetchPapers = useCallback(
     async (mode: "loading" | "refresh" = "refresh") => {
@@ -147,25 +161,57 @@ export default function PapersPage() {
   );
 
   useEffect(() => {
+    let cancelled = false;
+
+    const loadPollingIntervals = async () => {
+      try {
+        const { data } = await apiClient.get<UiSettingsResponse>("/api/ui/settings");
+        if (cancelled) {
+          return;
+        }
+        const activeSeconds =
+          data.polling?.active_interval_seconds ?? DEFAULT_ACTIVE_INTERVAL_SECONDS;
+        const idleSeconds =
+          data.polling?.idle_interval_seconds ?? DEFAULT_IDLE_INTERVAL_SECONDS;
+        const nextActive = Math.max(1000, Math.round(activeSeconds * 1000));
+        const nextIdle = Math.max(5000, Math.round(idleSeconds * 1000));
+        setPollingIntervals({ active: nextActive, idle: nextIdle });
+      } catch (_error) {
+        // Defaults remain in place when settings cannot be loaded.
+      }
+    };
+
+    void loadPollingIntervals();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     void fetchPapers("loading");
   }, [fetchPapers]);
 
-  const shouldPoll = useMemo(
-    () => papers.some((paper) => ACTIVE_STATUSES.has(paper.status.toLowerCase())),
-    [papers],
-  );
+  const hasActivePapers = useMemo(() => {
+    const activeInRegistry = papers.some((paper) =>
+      ACTIVE_STATUSES.has(paper.status.toLowerCase()),
+    );
+    if (activeInRegistry) {
+      return true;
+    }
+    return Object.values(pendingExtraction).some(Boolean);
+  }, [papers, pendingExtraction]);
+
+  const pollIntervalMs = hasActivePapers ? pollingIntervals.active : pollingIntervals.idle;
 
   useEffect(() => {
-    if (!shouldPoll) {
-      return undefined;
-    }
-
-    const interval = window.setInterval(() => {
+    const intervalMs = Math.max(1000, pollIntervalMs);
+    const timer = window.setInterval(() => {
       void fetchPapers("refresh");
-    }, POLL_INTERVAL_MS);
+    }, intervalMs);
 
-    return () => window.clearInterval(interval);
-  }, [fetchPapers, shouldPoll]);
+    return () => window.clearInterval(timer);
+  }, [fetchPapers, pollIntervalMs]);
 
   useEffect(() => {
     const handleFocus = () => {
@@ -507,7 +553,7 @@ export default function PapersPage() {
             Showing <span className="font-semibold text-foreground">{filteredPapers.length}</span> of
             <span className="font-semibold text-foreground"> {papers.length}</span> papers
           </p>
-          <p>Polling every {Math.round(POLL_INTERVAL_MS / 1000)}s for status updates</p>
+          <p>Polling every {Math.round(pollIntervalMs / 1000)}s for status updates</p>
         </div>
       </section>
     </div>

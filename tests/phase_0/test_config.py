@@ -11,6 +11,22 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.pipeline.version == "1.0.0"
     assert config.parsing.section_fuzzy_threshold == 0.85
     assert "Nature" in config.parsing.metadata_known_venues
+    assert config.parsing.docling_artifacts_path == "data/cache/docling"
+    assert config.parsing.accelerator.device == "auto"
+    assert config.parsing.accelerator.num_threads == 4
+    assert config.parsing.rapidocr.backend == "torch"
+    assert config.parsing.rapidocr.text_score == 0.5
+    assert config.parsing.rapidocr.use_det is True
+    assert config.parsing.rapidocr.use_cls is True
+    assert config.parsing.rapidocr.use_rec is True
+    assert config.parsing.rapidocr.model_cache_dir == "data/cache/rapidocr"
+    assert config.parsing.rapidocr.warmup_on_startup is True
+    assert config.parsing.threaded_pdf.enabled is True
+    assert config.parsing.threaded_pdf.ocr_batch_size == 4
+    assert config.parsing.threaded_pdf.layout_batch_size == 4
+    assert config.parsing.threaded_pdf.table_batch_size == 2
+    assert config.parsing.threaded_pdf.batch_timeout_seconds == 2.0
+    assert config.parsing.threaded_pdf.queue_max_size == 32
     assert config.extraction.max_triples_per_chunk_base == 15
     assert config.extraction.max_prompt_entities == 12
     assert config.extraction.llm_provider == "openai"
@@ -66,6 +82,8 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert graph_defaults.relations[:2] == ["defined-as", "uses"]
     assert graph_defaults.sections == ["Results", "Methods"]
     assert graph_defaults.show_co_mentions is False
+    assert config.ui.polling.active_interval_seconds == 12
+    assert config.ui.polling.idle_interval_seconds == 60
     assert config.qa.llm.enabled is True
     assert config.qa.llm.provider == "openai"
     qa_openai = config.qa.llm.openai
@@ -87,10 +105,14 @@ def test_config_strict_fields_match_yaml() -> None:
     assert raw["pipeline"]["version"] == config.pipeline.version
     assert raw["co_mention"]["confidence"] == config.co_mention.confidence
     assert raw["parsing"]["metadata_max_pages"] == config.parsing.metadata_max_pages
+    assert raw["parsing"]["docling_artifacts_path"] == config.parsing.docling_artifacts_path
+    assert raw["parsing"]["rapidocr"]["backend"] == config.parsing.rapidocr.backend
+    assert raw["parsing"]["threaded_pdf"]["enabled"] == config.parsing.threaded_pdf.enabled
     assert (
         raw["ui"]["graph_defaults"]["min_confidence"]
         == config.ui.graph_defaults.min_confidence
     )
+    assert raw["ui"]["polling"]["active_interval_seconds"] == config.ui.polling.active_interval_seconds
 
 
 def test_google_client_ids_override_from_env(monkeypatch) -> None:
@@ -199,4 +221,5 @@ def test_env_file_overrides_blank_environment_value(monkeypatch, tmp_path) -> No
         load_config.cache_clear()
         monkeypatch.delenv("SCINETS_ENV_FILE", raising=False)
         monkeypatch.delenv("NEXT_PUBLIC_GOOGLE_CLIENT_ID", raising=False)
+
 

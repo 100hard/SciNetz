@@ -43,6 +43,40 @@ class PipelineConfig(_FrozenModel):
     version: str = Field(..., min_length=1)
 
 
+class ParsingAcceleratorConfig(_FrozenModel):
+    """Accelerator configuration for Docling pipelines."""
+
+    device: str = Field(..., min_length=1)
+    num_threads: int = Field(..., ge=1)
+
+
+class RapidOCRConfig(_FrozenModel):
+    """RapidOCR model configuration."""
+
+    backend: Literal["onnxruntime", "openvino", "paddle", "torch"] = Field(..., min_length=1)
+    text_score: float = Field(..., ge=0.0, le=1.0)
+    use_det: Optional[bool] = None
+    use_cls: Optional[bool] = None
+    use_rec: Optional[bool] = None
+    det_model_path: Optional[str] = None
+    cls_model_path: Optional[str] = None
+    rec_model_path: Optional[str] = None
+    font_path: Optional[str] = None
+    model_cache_dir: Optional[str] = None
+    warmup_on_startup: bool = False
+
+
+class ThreadedPDFConfig(_FrozenModel):
+    """Threaded Docling PDF pipeline settings."""
+
+    enabled: bool = False
+    ocr_batch_size: int = Field(4, ge=1)
+    layout_batch_size: int = Field(4, ge=1)
+    table_batch_size: int = Field(4, ge=1)
+    batch_timeout_seconds: float = Field(2.0, gt=0.0)
+    queue_max_size: int = Field(32, ge=1)
+
+
 class ParsingConfig(_FrozenModel):
     """Parsing and metadata extraction configuration."""
 
@@ -50,6 +84,10 @@ class ParsingConfig(_FrozenModel):
     metadata_max_pages: int = Field(..., ge=1)
     metadata_known_venues: List[str] = Field(default_factory=list)
     section_aliases: Dict[str, List[str]] = Field(default_factory=dict)
+    docling_artifacts_path: str = Field(..., min_length=1)
+    accelerator: ParsingAcceleratorConfig
+    rapidocr: RapidOCRConfig
+    threaded_pdf: ThreadedPDFConfig
 
 
 
@@ -456,12 +494,20 @@ class UIGraphDefaultsConfig(_FrozenModel):
     layout: Literal["fcose", "cose-bilkent"] = Field("fcose")
 
 
+class UIPollingConfig(_FrozenModel):
+    """Polling cadence for UI data refresh."""
+
+    active_interval_seconds: float = Field(..., gt=0.0)
+    idle_interval_seconds: float = Field(..., gt=0.0)
+
+
 class UIConfig(_FrozenModel):
     """UI-specific configuration values."""
 
     upload_dir: str = Field(..., min_length=1)
     paper_registry_path: str = Field(..., min_length=1)
     graph_defaults: UIGraphDefaultsConfig
+    polling: UIPollingConfig
     allowed_origins: List[str] = Field(default_factory=list)
     extraction_worker_count: int = Field(..., ge=1)
 

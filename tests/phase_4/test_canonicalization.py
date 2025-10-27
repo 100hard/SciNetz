@@ -80,7 +80,41 @@ def test_e5_backend_formats_queries_and_caches(monkeypatch) -> None:
     np.testing.assert_allclose(vector, cached)
 
 
+
+
+def test_e5_embedding_backend_reuses_global_model(monkeypatch) -> None:
+    class DummyModel:
+        instances = 0
+
+        def __init__(self, model_name: str, device: str | None = None) -> None:
+            DummyModel.instances += 1
+            self.model_name = model_name
+            self.device = device
+
+        def encode(self, sentences, **_kwargs):
+            return np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+
+    monkeypatch.setattr(canonicalizer_module, "SentenceTransformer", DummyModel)
+    E5EmbeddingBackend._GLOBAL_MODELS.clear()
+
+    try:
+        backend_one = E5EmbeddingBackend(model_name="intfloat/e5-base", device="cpu")
+        backend_two = E5EmbeddingBackend(model_name="intfloat/e5-base", device="cpu")
+
+        vec_one = backend_one.embed("alpha")
+        vec_two = backend_two.embed("beta")
+
+        assert DummyModel.instances == 1
+        assert backend_one._get_model() is backend_two._get_model()
+        assert np.isclose(np.linalg.norm(vec_one), 1.0)
+        assert np.isclose(np.linalg.norm(vec_two), 1.0)
+    finally:
+        E5EmbeddingBackend._GLOBAL_MODELS.clear()
+
+
 def test_canonicalizer_prefers_e5_backend_by_default(monkeypatch, config, storage_dirs) -> None:
+
+
     class DummyBackend(canonicalizer_module.EmbeddingBackend):
         instances = 0
 

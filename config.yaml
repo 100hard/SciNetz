@@ -54,6 +54,25 @@ parsing:
     - Conclusion
     Conclusion:
     - Conclusion
+  docling_artifacts_path: data/cache/docling
+  accelerator:
+    device: auto
+    num_threads: 4
+  rapidocr:
+    backend: torch
+    text_score: 0.5
+    use_det: true
+    use_cls: true
+    use_rec: true
+    model_cache_dir: data/cache/rapidocr
+    warmup_on_startup: true
+  threaded_pdf:
+    enabled: true
+    ocr_batch_size: 4
+    layout_batch_size: 4
+    table_batch_size: 2
+    batch_timeout_seconds: 2.0
+    queue_max_size: 32
 extraction:
   max_triples_per_chunk_base: 15
   tokens_per_triple: 60
@@ -711,6 +730,9 @@ ui:
     - Methods
     show_co_mentions: false
     layout: fcose
+  polling:
+    active_interval_seconds: 12
+    idle_interval_seconds: 60
   lexical_similarity_threshold: 0.9
   lexical_similarity_bonus: 0.04
   type_match_bonus: 0.03

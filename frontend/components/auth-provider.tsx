@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -64,22 +65,7 @@ type AuthState = typeof initialState;
 
 const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [state, setState] = useState<AuthState>(initialState);
-
-  useEffect(() => {
-    const interceptorId = apiClient.interceptors.request.use((config) => {
-      if (state.tokens.accessToken) {
-        config.headers = config.headers ?? {};
-        config.headers.Authorization = `Bearer ${state.tokens.accessToken}`;
-      } else if (config.headers?.Authorization) {
-        delete config.headers.Authorization;
-      }
-      return config;
-    });
-
-    return () => {
-      apiClient.interceptors.request.eject(interceptorId);
-    };
-  }, [state.tokens.accessToken]);
+  const refreshInFlight = useRef<Promise<TokenPair> | null>(null);
 
   const persistSession = useCallback((user: AuthUser, tokens: TokenPair) => {
     const expiresAt = Date.now() + tokens.expires_in * 1000;
@@ -117,6 +103,128 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
       window.localStorage.removeItem(AUTH_STORAGE_KEY);
     }
   }, []);
+
+  const refresh = useCallback(async () => {
+    const currentUser = state.user;
+    const currentRefreshToken = state.tokens.refreshToken;
+
+    if (!currentUser || !currentRefreshToken) {
+      throw new Error("No session available to refresh");
+    }
+
+    const { data } = await apiClient.post<TokenRefreshResponse>("/api/auth/token/refresh", {
+      refresh_token: currentRefreshToken,
+      user_agent: readUserAgent(),
+    });
+
+    persistSession(currentUser, data.tokens);
+    return data.tokens;
+  }, [persistSession, state.tokens.refreshToken, state.user]);
+
+  const ensureRefresh = useCallback(() => {
+    if (!refreshInFlight.current) {
+      refreshInFlight.current = refresh()
+        .then((tokens) => {
+          return tokens;
+        })
+        .finally(() => {
+          refreshInFlight.current = null;
+        });
+    }
+    return refreshInFlight.current;
+  }, [refresh]);
+
+  useEffect(() => {
+    const interceptorId = apiClient.interceptors.request.use((config) => {
+      if (state.tokens.accessToken) {
+        config.headers = config.headers ?? {};
+        config.headers.Authorization = `Bearer ${state.tokens.accessToken}`;
+      } else if (config.headers?.Authorization) {
+        delete config.headers.Authorization;
+      }
+      return config;
+    });
+
+    return () => {
+      apiClient.interceptors.request.eject(interceptorId);
+    };
+  }, [state.tokens.accessToken]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const responseInterceptorId = apiClient.interceptors.response.use(
+      (response) => response,
+      async (error) => {
+        if (!isMounted) {
+          return Promise.reject(error);
+        }
+
+        const status = error?.response?.status;
+        if (status !== 401) {
+          return Promise.reject(error);
+        }
+
+        const originalRequest = (error.config ?? {}) as typeof error.config & { _retry?: boolean };
+        const requestUrl = originalRequest?.url ?? "";
+
+        if (typeof requestUrl === "string" && requestUrl.includes("/api/auth/token/refresh")) {
+          clearSession();
+          return Promise.reject(error);
+        }
+
+        if (originalRequest._retry) {
+          clearSession();
+          return Promise.reject(error);
+        }
+        if (!state.tokens.refreshToken) {
+          clearSession();
+          return Promise.reject(error);
+        }
+
+        originalRequest._retry = true;
+
+        try {
+          const tokens = await ensureRefresh();
+          originalRequest.headers = originalRequest.headers ?? {};
+          originalRequest.headers.Authorization = `Bearer ${tokens.access_token}`;
+          return apiClient(originalRequest);
+        } catch (refreshError) {
+          clearSession();
+          return Promise.reject(refreshError);
+        }
+      },
+    );
+
+    return () => {
+      isMounted = false;
+      apiClient.interceptors.response.eject(responseInterceptorId);
+    };
+  }, [clearSession, ensureRefresh, state.tokens.refreshToken]);
+
+  useEffect(() => {
+    if (
+      typeof window === "undefined" ||
+      state.status !== "authenticated" ||
+      !state.tokens.expiresAt ||
+      !state.tokens.refreshToken
+    ) {
+      return;
+    }
+
+    const LEAD_MS = 60_000;
+    const delay = Math.max(state.tokens.expiresAt - LEAD_MS - Date.now(), 0);
+    const timeoutId = window.setTimeout(() => {
+      const pending = ensureRefresh();
+      pending?.catch(() => {
+        clearSession();
+      });
+    }, delay);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [clearSession, ensureRefresh, state.status, state.tokens.expiresAt, state.tokens.refreshToken]);
 
   useEffect(() => {
     let isMounted = true;
@@ -252,23 +360,6 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
       throw capturedError;
     }
   }, [clearSession, state.tokens.refreshToken]);
-
-  const refresh = useCallback(async () => {
-    const currentUser = state.user;
-    const currentRefreshToken = state.tokens.refreshToken;
-
-    if (!currentUser || !currentRefreshToken) {
-      throw new Error("No session available to refresh");
-    }
-
-    const { data } = await apiClient.post<TokenRefreshResponse>("/api/auth/token/refresh", {
-      refresh_token: currentRefreshToken,
-      user_agent: readUserAgent(),
-    });
-
-    persistSession(currentUser, data.tokens);
-    return data.tokens;
-  }, [persistSession, state.tokens.refreshToken, state.user]);
 
   const value = useMemo<AuthContextValue>(
     () => ({

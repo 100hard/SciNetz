@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
-from typing import AbstractSet, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set
+from typing import AbstractSet, Callable, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from uuid import UUID, uuid5
 
 import numpy as np
@@ -96,6 +96,9 @@ class HashingEmbeddingBackend(EmbeddingBackend):
 class E5EmbeddingBackend(EmbeddingBackend):
     """Embedding backend powered by the intfloat/e5-base model."""
 
+    _GLOBAL_MODELS: Dict[Tuple[str, Optional[str]], "SentenceTransformer"] = {}
+    _GLOBAL_LOCK: Lock = Lock()
+
     def __init__(
         self,
         model_name: str = "intfloat/e5-base",
@@ -173,15 +176,26 @@ class E5EmbeddingBackend(EmbeddingBackend):
         if SentenceTransformer is None:  # pragma: no cover - dependency guard
             msg = "sentence-transformers must be installed to use the E5 embedding backend"
             raise RuntimeError(msg)
-        if self._model is None:
-            with self._lock:
-                if self._model is None:
-                    try:
-                        self._model = SentenceTransformer(self._model_name, device=self._device)
-                    except Exception as exc:  # noqa: BLE001
-                        LOGGER.exception("Failed to load SentenceTransformer model '%s'", self._model_name)
-                        raise RuntimeError("sentence-transformer model unavailable") from exc
-        return self._model
+        if self._model is not None:
+            return self._model
+        cache_key = (self._model_name, self._device)
+        with self._lock:
+            if self._model is not None:
+                return self._model
+            with self._GLOBAL_LOCK:
+                cached = self._GLOBAL_MODELS.get(cache_key)
+            if cached is not None:
+                self._model = cached
+                return cached
+            try:
+                model = SentenceTransformer(self._model_name, device=self._device)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Failed to load SentenceTransformer model '%s'", self._model_name)
+                raise RuntimeError("sentence-transformer model unavailable") from exc
+            with self._GLOBAL_LOCK:
+                self._GLOBAL_MODELS[cache_key] = model
+            self._model = model
+            return model
 
 def _normalize_name(name: str) -> str:
     normalized = unicodedata.normalize("NFKC", name)

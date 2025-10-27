@@ -191,6 +191,7 @@ class UISettingsResponse(BaseModel):
 
     graph_defaults: Dict[str, object]
     qa: Dict[str, object]
+    polling: Dict[str, object]
 
 
 def create_app(
@@ -331,7 +332,16 @@ def create_app(
             "llm_enabled": bool(getattr(qa_llm, "enabled", False)),
             "llm_provider": getattr(qa_llm, "provider", None),
         }
-        return UISettingsResponse(graph_defaults=payload, qa=qa_settings)
+        polling_cfg = resolved_config.ui.polling
+        polling_settings = {
+            "active_interval_seconds": polling_cfg.active_interval_seconds,
+            "idle_interval_seconds": polling_cfg.idle_interval_seconds,
+        }
+        return UISettingsResponse(
+            graph_defaults=payload,
+            qa=qa_settings,
+            polling=polling_settings,
+        )
 
     @app.post(
         "/api/export/share",
