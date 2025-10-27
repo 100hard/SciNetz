@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from backend.app.canonicalization import CanonicalizationPipeline
 from backend.app.config import AppConfig
@@ -530,6 +530,7 @@ class ExtractionOrchestrator:
         nodes_written = 0
         edges_written = 0
         doc_node_map: Dict[str, Set[str]] = {}
+        node_sources: Dict[str, FrozenSet[str]] = {}
         doc_edge_counts: Dict[str, int] = {}
         batch_errors: List[str] = []
         canonical_start = perf_counter()
@@ -562,6 +563,12 @@ class ExtractionOrchestrator:
                 for node in canonical_result.nodes:
                     self._graph_writer.upsert_entity(node)
                     nodes_written += 1
+                    docs = {
+                        str(doc_id).strip()
+                        for doc_id in getattr(node, "source_document_ids", []) or []
+                        if str(doc_id).strip()
+                    }
+                    node_sources[node.node_id] = frozenset(docs)
                     for doc_id in node.source_document_ids:
                         if not doc_id:
                             continue
@@ -593,6 +600,10 @@ class ExtractionOrchestrator:
                         )
                         continue
                     relation_verbatim = record.relation_verbatim or record.triplet.predicate
+                    attributes: Dict[str, str] = dict(record.attributes or {})
+                    if self._is_cross_paper_edge(node_sources, src_id, dst_id):
+                        attributes["cross_paper"] = "true"
+                    final_attributes = attributes or None
                     self._graph_writer.upsert_edge(
                         src_id=src_id,
                         dst_id=dst_id,
@@ -600,7 +611,7 @@ class ExtractionOrchestrator:
                         relation_verbatim=relation_verbatim,
                         evidence=record.triplet.evidence,
                         confidence=record.triplet.confidence,
-                        attributes=record.attributes,
+                        attributes=final_attributes,
                         times_seen=record.times_seen,
                     )
                     edges_written += 1
@@ -718,4 +729,15 @@ class ExtractionOrchestrator:
     @staticmethod
     def _resolve_node(lookup: Mapping[str, str], name: str) -> Optional[str]:
         return lookup.get(name.lower())
+
+    @staticmethod
+    def _is_cross_paper_edge(
+        node_sources: Mapping[str, FrozenSet[str]], src_id: str, dst_id: str
+    ) -> bool:
+        src_docs = node_sources.get(src_id, frozenset())
+        dst_docs = node_sources.get(dst_id, frozenset())
+        if not src_docs or not dst_docs:
+            return False
+        combined = src_docs | dst_docs
+        return len(combined) > 1
 

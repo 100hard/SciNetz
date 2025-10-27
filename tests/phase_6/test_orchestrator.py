@@ -237,6 +237,7 @@ def test_orchestrator_runs_end_to_end(config: AppConfig, tmp_path: Path) -> None
     assert result.errors == []
     assert len(graph_writer.nodes) == 3  # Model A, data set X, Model B
     assert len(graph_writer.edges) == 2
+    assert all("cross_paper" not in edge["attributes"] for edge in graph_writer.edges)
     assert chunk_store.should_process(doc_id, element_a.content_hash, config.pipeline.version) is False
 
 
@@ -572,6 +573,8 @@ def test_run_batch_merges_cross_papers(config: AppConfig, tmp_path: Path) -> Non
     model_nodes = [node for node in graph_writer.nodes if node.name == "Model A"]
     assert len(model_nodes) == 1
     assert set(model_nodes[0].source_document_ids) == {doc_a, doc_b}
+    for edge in graph_writer.edges:
+        assert edge["attributes"].get("cross_paper") == "true"
 
 
 def test_co_mention_fallback_creates_hidden_edges(

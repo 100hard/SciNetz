@@ -106,6 +106,8 @@ const RELATION_COLOR_MAP: Record<string, string> = {
   predicts: "#f97316",
   extends: "#db2777",
 };
+const EDGE_CROSS_PAPER_COLOR = "#fbbf24";
+const CROSS_PAPER_ATTRIBUTE_KEYS = ["cross_paper", "cross-paper", "crossPaper"];
 
 const hashColor = (value: string | null | undefined): string => {
   if (!value) {
@@ -819,6 +821,23 @@ const getEdgeLabelColor = (strokeColor: string): string => {
   return blendColors(strokeColor, EDGE_LABEL_LIGHTEN_TARGET, 0.32) ?? strokeColor;
 };
 
+const isCrossPaperEdge = (attributes?: Record<string, string> | null): boolean => {
+  if (!attributes) {
+    return false;
+  }
+  for (const key of CROSS_PAPER_ATTRIBUTE_KEYS) {
+    const raw = attributes[key];
+    if (!raw) {
+      continue;
+    }
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === "true" || normalized === "1" || normalized === "yes") {
+      return true;
+    }
+  }
+  return false;
+};
+
 const DIMENSION_UPDATE_EPSILON = 0.5;
 const LAYOUT_DIMENSION_RECOMPUTE_THRESHOLD = 120;
 
@@ -1099,13 +1118,20 @@ const GraphVisualization = ({
       if (!source || !target) {
         throw new Error("Graph layout attempted to render an edge without positioned nodes");
       }
-      const baseStroke = getRelationColor(edge.relation);
+      const crossPaper = isCrossPaperEdge(edge.attributes);
+      const baseStroke = crossPaper ? EDGE_CROSS_PAPER_COLOR : getRelationColor(edge.relation);
       const stroke = getEdgeStrokeColor(baseStroke, edge.confidence);
-      const strokeWidth = getEdgeStrokeWidth(edge.confidence);
-      const strokeOpacity = getEdgeStrokeOpacity(edge.confidence);
-      const markerOpacity = getEdgeMarkerOpacity(edge.confidence);
+      const baseStrokeWidth = getEdgeStrokeWidth(edge.confidence);
+      const strokeWidth = crossPaper
+        ? Math.max(baseStrokeWidth, EDGE_MIN_STROKE_WIDTH + 0.9)
+        : baseStrokeWidth;
+      const baseStrokeOpacity = getEdgeStrokeOpacity(edge.confidence);
+      const strokeOpacity = crossPaper ? Math.max(baseStrokeOpacity, 0.9) : baseStrokeOpacity;
+      const baseMarkerOpacity = getEdgeMarkerOpacity(edge.confidence);
+      const markerOpacity = crossPaper ? Math.max(baseMarkerOpacity, 0.88) : baseMarkerOpacity;
       const labelColor = getEdgeLabelColor(stroke);
-      const markerKey = `${stroke}-${markerOpacity.toFixed(2)}`;
+      const markerColor = stroke;
+      const markerKey = `${stroke}-${markerOpacity.toFixed(2)}${crossPaper ? "-cross" : ""}`;
       return {
         id: edge.id,
         source,
@@ -1114,7 +1140,7 @@ const GraphVisualization = ({
         confidence: edge.confidence,
         stroke,
         markerKey,
-        markerColor: stroke,
+        markerColor,
         markerOpacity,
         labelColor,
         strokeOpacity,
