@@ -118,6 +118,11 @@ def test_normalize_relation_rejects_unknown_relation() -> None:
         ("The pipeline depends on high-quality pretraining data.", "depends-on"),
         ("The hypothesis was validated by a double-blind study.", "validated-by"),
         ("Our system achieves state of the art on ImageNet.", "achieves-state-of-the-art-on"),
+        ("The model was fine-tuned on MNLI.", "trained-on"),
+        ("Our procedure was applied on the validation set.", "trained-on"),
+        ("The generator won the ImageNet challenge.", "achieves-state-of-the-art-on"),
+        ("The decoder generates high-resolution samples.", "results-in"),
+        ("The updated architecture refines the baseline.", "builds-upon"),
         ("The algorithm is implemented in PyTorch.", "implemented-in"),
         ("This procedure requires sterile equipment.", "requires"),
         ("ATP is required for the contraction response.", "requires-for"),
@@ -148,6 +153,22 @@ def test_normalize_relation_accepts_new_relations(config, phrase: str, expected:
 
     canonical, _ = normalize_relation(phrase, config=config)
     assert canonical == expected
+
+
+def test_normalize_relation_handles_implements_swap(config) -> None:
+    """Implements phrasing should flip to the canonical implemented-in relation."""
+
+    canonical, swap = normalize_relation("implements", config=config)
+    assert canonical == "implemented-in"
+    assert swap is True
+
+
+def test_normalize_relation_has_maps_to_component(config) -> None:
+    """Has relations should map to component-of with subject/object swap."""
+
+    canonical, swap = normalize_relation("has", config=config)
+    assert canonical == "component-of"
+    assert swap is True
 
 
 def test_triplet_with_missing_span_is_rejected(config) -> None:
@@ -218,7 +239,7 @@ def test_triplet_with_self_reference_is_rejected(config) -> None:
 def test_triplet_with_ambiguous_type_is_rejected(config) -> None:
     """Triples should be skipped when an entity is reported with an ambiguous type."""
 
-    content = "The MNIST dataset is evaluated using accuracy."
+    content = "The mystery concept is evaluated using accuracy."
     element = ParsedElement(
         doc_id="doc-3",
         element_id="doc-3:0",
@@ -231,7 +252,7 @@ def test_triplet_with_ambiguous_type_is_rejected(config) -> None:
     extractor = _StubExtractor(
         triples=[
             RawLLMTriple(
-                subject_text="MNIST dataset",
+                subject_text="mystery concept",
                 subject_type="Other",
                 relation_verbatim="evaluated on",
                 object_text="accuracy",
@@ -350,6 +371,42 @@ def test_passive_voice_flips_subject_and_object(config) -> None:
     assert triple.subject == "the model"
     assert triple.object == "The dataset"
     assert triple.predicate == "uses"
+
+
+def test_type_hints_resolve_ambiguous_method(config) -> None:
+    """Entity type hints should rescue triples labeled as Other by the LLM."""
+
+    content = "The ResNet model was evaluated on the ImageNet dataset."
+    element = ParsedElement(
+        doc_id="doc-type-hints",
+        element_id="doc-type-hints:0",
+        section="Results",
+        content=content,
+        content_hash="0" * 64,
+        start_char=0,
+        end_char=len(content),
+    )
+    extractor = _StubExtractor(
+        triples=[
+            RawLLMTriple(
+                subject_text="ResNet model",
+                subject_type="Other",
+                relation_verbatim="evaluated on",
+                object_text="ImageNet dataset",
+                object_type="Dataset",
+                supportive_sentence=content,
+                confidence=0.82,
+            )
+        ]
+    )
+    pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
+
+    result = pipeline.extract_with_metadata(element, candidate_entities=None)
+
+    assert len(result.triplets) == 1
+    votes = result.entity_type_votes.get("ResNet model", {})
+    assert votes.get("Method") == 1
+    assert "subject_type_ambiguous" not in result.rejection_reasons
 
 
 def test_golden_triplet_extraction_matches_fixture(config) -> None:

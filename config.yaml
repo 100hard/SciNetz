@@ -82,7 +82,7 @@ extraction:
   concurrent_workers: 3
   use_entity_inventory: false
   llm_provider: openai
-  fuzzy_match_threshold: 0.9
+  fuzzy_match_threshold: 0.88
   openai_model: gpt-4o-mini
   openai_base_url: https://api.openai.com/v1
   openai_timeout_seconds: 60
@@ -118,6 +118,42 @@ extraction:
   - Instrument
   - Observation
   - Measurement
+  entity_type_hints:
+    Method:
+    - model
+    - network
+    - architecture
+    - algorithm
+    - framework
+    - approach
+    - technique
+    Dataset:
+    - dataset
+    - corpus
+    - benchmark
+    - data set
+    - collection
+    Metric:
+    - accuracy
+    - score
+    - error
+    - f1
+    - precision
+    - recall
+    - perplexity
+    Task:
+    - classification
+    - detection
+    - segmentation
+    - translation
+    - prediction
+    - recognition
+    Material:
+    - material
+    - compound
+    - molecule
+    - polymer
+    - alloy
   default_domain: ml
   domains:
   - name: ml
@@ -259,6 +295,10 @@ relations:
     - was trained on
     - applied to
     - is applied to
+    - applied on
+    - fine tuned on
+    - fine tuned to
+    - fine tuned for
   - canonical: evaluated-on
     swap: false
     phrases:
@@ -292,6 +332,8 @@ relations:
     - achieves state of the art on
     - achieves state-of-the-art on
     - achieves sota on
+    - wins
+    - won
   - canonical: improves
     swap: false
     phrases:
@@ -314,6 +356,8 @@ relations:
     - builds upon
     - builds on
     - built upon
+    - updates
+    - refines
   - canonical: extends-architecture-of
     swap: false
     phrases:
@@ -362,6 +406,11 @@ relations:
     - implemented in
     - implemented with
     - implemented using
+  - canonical: implemented-in
+    swap: true
+    phrases:
+    - implements
+    - implementing
   - canonical: requires
     swap: false
     phrases:
@@ -408,6 +457,8 @@ relations:
     - gives rise to
     - produces
     - emits
+    - generates
+    - yields
   - canonical: correlates-with
     swap: false
     phrases:
@@ -432,6 +483,14 @@ relations:
     - component of
     - module of
     - subcomponent of
+  - canonical: component-of
+    swap: true
+    phrases:
+    - has
+    - has component
+    - has module
+    - has part
+    - has layer
   - canonical: belongs-to
     swap: false
     phrases:
@@ -755,5 +814,9 @@ observability:
     noise_control_warning: 0.9
     duplicate_rate_target: 0.1
     duplicate_rate_warning: 0.05
+    acceptance_rate_target: 0.6
+    acceptance_rate_warning: 0.7
+    pipeline_success_target: 0.95
+    pipeline_success_warning: 0.97
     semantic_drift_drop_threshold: 0.25
     semantic_drift_relation_threshold: 3

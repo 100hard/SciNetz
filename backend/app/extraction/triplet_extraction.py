@@ -17,8 +17,10 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Mapping,
     List,
     Optional,
+    Pattern,
     Protocol,
     Sequence,
     Tuple,
@@ -933,6 +935,10 @@ class TwoPassTripletExtractor:
             raise ValueError("config.extraction.entity_types must include at least one valid entry")
         self._entity_types = tuple(normalized_types.values())
         self._entity_type_lookup = normalized_types
+        self._entity_type_hint_patterns = self._prepare_type_hints(
+            config.extraction.entity_type_hints
+        )
+        self._builtin_type_hint_patterns = self._build_builtin_type_hints()
 
     def extract_from_element(
         self,
@@ -1051,6 +1057,8 @@ class TwoPassTripletExtractor:
             object_text = raw.object_text.strip()
             subject_type = self._normalize_entity_type(raw.subject_type)
             object_type = self._normalize_entity_type(raw.object_type)
+            subject_type = self._resolve_entity_type(subject_text, subject_type, type_votes)
+            object_type = self._resolve_entity_type(object_text, object_type, type_votes)
             if not subject_text or not object_text:
                 LOGGER.info("Dropping triple with empty subject/object: %s", raw)
                 _record_rejection("empty_entity")
@@ -1279,6 +1287,100 @@ class TwoPassTripletExtractor:
         if not cleaned:
             return None
         return self._entity_type_lookup.get(cleaned)
+
+    def _resolve_entity_type(
+        self,
+        entity_text: str,
+        normalized_type: Optional[str],
+        type_votes: Mapping[str, Dict[str, int]],
+    ) -> Optional[str]:
+        """Resolve ambiguous entity types using prior votes and configured hints."""
+
+        if normalized_type and not self._is_ambiguous_type(normalized_type):
+            return normalized_type
+        votes = type_votes.get(entity_text)
+        if votes:
+            winner, count = max(votes.items(), key=lambda item: item[1])
+            if count > 0 and not self._is_ambiguous_type(winner):
+                return winner
+        inferred = self._infer_entity_type(entity_text)
+        if inferred and not self._is_ambiguous_type(inferred):
+            return inferred
+        return normalized_type
+
+    def _infer_entity_type(self, entity_text: str) -> Optional[str]:
+        """Infer the entity type from configured hints and built-in heuristics."""
+
+        if not entity_text:
+            return None
+        for entity_type, patterns in self._entity_type_hint_patterns.items():
+            if any(pattern.search(entity_text) for pattern in patterns):
+                return entity_type
+        for pattern, entity_type in self._builtin_type_hint_patterns:
+            if pattern.search(entity_text):
+                return entity_type
+        return None
+
+    def _prepare_type_hints(
+        self, hints: Mapping[str, Sequence[str]]
+    ) -> Dict[str, List[Pattern[str]]]:
+        prepared: Dict[str, List[Pattern[str]]] = {}
+        for raw_type, keywords in (hints or {}).items():
+            canonical = self._entity_type_lookup.get(str(raw_type).strip().lower())
+            if canonical is None or not keywords:
+                continue
+            patterns: List[Pattern[str]] = []
+            for keyword in keywords:
+                normalized_keyword = str(keyword).strip().lower()
+                if not normalized_keyword:
+                    continue
+                patterns.append(self._keyword_to_pattern(normalized_keyword))
+            if patterns:
+                prepared[canonical] = patterns
+        return prepared
+
+    def _build_builtin_type_hints(self) -> List[Tuple[Pattern[str], str]]:
+        """Return fallback hint patterns for common scientific entity types."""
+
+        patterns: List[Tuple[Pattern[str], str]] = []
+
+        def add(pattern: str, type_key: str) -> None:
+            canonical = self._entity_type_lookup.get(type_key)
+            if canonical:
+                patterns.append((re.compile(pattern, re.IGNORECASE), canonical))
+
+        add(
+            r"\b(model|network|architecture|algorithm|approach|framework|technique|pipeline)\b",
+            "method",
+        )
+        add(
+            r"\b(dataset|corpus|benchmark|collection|corpora|data\s+set)\b",
+            "dataset",
+        )
+        add(
+            r"\b(accuracy|f1|precision|recall|bleu|rouge|perplexity|score|error|loss|metric)\b",
+            "metric",
+        )
+        add(
+            r"\b(classification|detection|segmentation|translation|prediction|recognition|generation|analysis|retrieval|synthesis)\b",
+            "task",
+        )
+        add(
+            r"\b(material|compound|molecule|polymer|alloy|nanotube|crystal)\b",
+            "material",
+        )
+        add(r"\b(process|pathway|cycle|response)\b", "biologicalprocess")
+        add(r"\b(gene|genes)\b", "gene")
+        add(r"\b(protein|proteins)\b", "protein")
+        add(r"\b(cell\s+line|cell\s+lines)\b", "cellline")
+        add(r"\b(assay|assays)\b", "assay")
+        return patterns
+
+    @staticmethod
+    def _keyword_to_pattern(keyword: str) -> Pattern[str]:
+        tokens = [re.escape(token) for token in keyword.split() if token]
+        pattern_body = r"\s+".join(tokens) if tokens else re.escape(keyword)
+        return re.compile(rf"(?<![a-z0-9]){pattern_body}(?![a-z0-9])", flags=re.IGNORECASE)
 
     @staticmethod
     def _is_ambiguous_type(normalized: Optional[str]) -> bool:

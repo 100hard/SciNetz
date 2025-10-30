@@ -367,11 +367,81 @@ class ObservabilityService:
         self._write_json_line(self._quality_alerts_path, payload)
 
     def _finalize_run_manifest(self, payload: Mapping[str, object]) -> None:
+        self._record_run_kpis(payload)
         self._spot_semantic_drift(payload)
         self._append_run_manifest(payload)
 
     def _append_run_manifest(self, payload: Mapping[str, object]) -> None:
         self._write_json_line(self._run_manifests_path, payload)
+
+    def _record_run_kpis(self, payload: Mapping[str, object]) -> None:
+        documents = payload.get("documents")
+        if not isinstance(documents, Mapping):
+            return
+
+        attempted_total = 0.0
+        accepted_total = 0.0
+        processed_total = 0.0
+        skipped_total = 0.0
+        doc_ids: set[str] = set()
+
+        for doc_id, document in documents.items():
+            if not isinstance(document, Mapping):
+                continue
+            doc_ids.add(str(doc_id))
+            metrics = document.get("metrics")
+            if not isinstance(metrics, Mapping):
+                continue
+            attempted_total += self._coerce_float(metrics.get("attempted_triples"))
+            accepted_total += self._coerce_float(metrics.get("accepted_triples"))
+            processed_total += self._coerce_float(metrics.get("processed_chunks"))
+            skipped_total += self._coerce_float(metrics.get("skipped_chunks"))
+
+        context = {
+            "run_id": payload.get("run_id"),
+            "pipeline_version": payload.get("pipeline_version"),
+            "documents": sorted(doc_ids),
+            "source": "run_manifest",
+        }
+
+        if attempted_total > 0:
+            acceptance_ratio = self._safe_ratio(accepted_total, attempted_total)
+            acceptance_status = self._quality_status(
+                acceptance_ratio,
+                warning=self._quality.acceptance_rate_warning,
+                target=self._quality.acceptance_rate_target,
+                higher_is_better=True,
+            )
+            self.persist_kpi_snapshot(
+                {
+                    "metric": "extraction_acceptance_rate",
+                    "value": acceptance_ratio,
+                    "status": acceptance_status,
+                    "attempted_triples": attempted_total,
+                    "accepted_triples": accepted_total,
+                    **context,
+                }
+            )
+
+        total_chunks = processed_total + skipped_total
+        if total_chunks > 0:
+            success_ratio = self._safe_ratio(processed_total, total_chunks)
+            success_status = self._quality_status(
+                success_ratio,
+                warning=self._quality.pipeline_success_warning,
+                target=self._quality.pipeline_success_target,
+                higher_is_better=True,
+            )
+            self.persist_kpi_snapshot(
+                {
+                    "metric": "pipeline_success_rate",
+                    "value": success_ratio,
+                    "status": success_status,
+                    "processed_chunks": processed_total,
+                    "skipped_chunks": skipped_total,
+                    **context,
+                }
+            )
 
     def _write_json_line(self, path: Path, payload: Mapping[str, object]) -> None:
         normalised = _normalise_payload(dict(payload))

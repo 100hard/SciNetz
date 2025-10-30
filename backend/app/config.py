@@ -191,8 +191,34 @@ class ExtractionConfig(_FrozenModel):
     response_cache_filename: str = Field(..., min_length=1)
     token_cache_filename: str = Field(..., min_length=1)
     entity_types: List[str] = Field(..., min_length=1)
+    entity_type_hints: Dict[str, List[str]] = Field(default_factory=dict)
     default_domain: str = Field(..., min_length=1)
     domains: List[ExtractionDomainConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_entity_type_hints(self) -> "ExtractionConfig":
+        allowed: set[str] = set()
+        for entity_type in self.entity_types:
+            cleaned = entity_type.strip().lower()
+            if cleaned:
+                allowed.add(cleaned)
+        for domain in self.domains:
+            for entity_type in domain.normalized_entity_types:
+                cleaned = entity_type.strip().lower()
+                if cleaned:
+                    allowed.add(cleaned)
+        for raw_type, hints in self.entity_type_hints.items():
+            key = str(raw_type).strip().lower()
+            if key not in allowed:
+                msg = f"entity_type_hints references unknown entity type '{raw_type}'"
+                raise ValueError(msg)
+            if hints is None:
+                continue
+            for hint in hints:
+                if not str(hint).strip():
+                    msg = f"entity_type_hints for '{raw_type}' includes an empty hint"
+                    raise ValueError(msg)
+        return self
 
     @property
     def openai(self) -> OpenAIConfig:
@@ -524,6 +550,10 @@ class ObservabilityQualityConfig(_FrozenModel):
     noise_control_warning: float = Field(..., ge=0.0, le=1.0)
     duplicate_rate_target: float = Field(..., ge=0.0, le=1.0)
     duplicate_rate_warning: float = Field(..., ge=0.0, le=1.0)
+    acceptance_rate_target: float = Field(..., ge=0.0, le=1.0)
+    acceptance_rate_warning: float = Field(..., ge=0.0, le=1.0)
+    pipeline_success_target: float = Field(..., ge=0.0, le=1.0)
+    pipeline_success_warning: float = Field(..., ge=0.0, le=1.0)
     semantic_drift_drop_threshold: float = Field(..., ge=0.0, le=1.0)
     semantic_drift_relation_threshold: int = Field(..., ge=0)
 
@@ -534,6 +564,12 @@ class ObservabilityQualityConfig(_FrozenModel):
             raise ValueError(msg)
         if self.duplicate_rate_warning > self.duplicate_rate_target:
             msg = "duplicate_rate_warning must be <= duplicate_rate_target"
+            raise ValueError(msg)
+        if self.acceptance_rate_warning < self.acceptance_rate_target:
+            msg = "acceptance_rate_warning must be >= acceptance_rate_target"
+            raise ValueError(msg)
+        if self.pipeline_success_warning < self.pipeline_success_target:
+            msg = "pipeline_success_warning must be >= pipeline_success_target"
             raise ValueError(msg)
         return self
 

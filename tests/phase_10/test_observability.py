@@ -46,6 +46,10 @@ def _config() -> ObservabilityConfig:
             noise_control_warning=0.9,
             duplicate_rate_target=0.1,
             duplicate_rate_warning=0.05,
+            acceptance_rate_target=0.6,
+            acceptance_rate_warning=0.7,
+            pipeline_success_target=0.95,
+            pipeline_success_warning=0.97,
             semantic_drift_drop_threshold=0.25,
             semantic_drift_relation_threshold=2,
         ),
@@ -82,6 +86,45 @@ def test_observability_run_persists_manifest(tmp_path) -> None:
     assert doc_entry["errors"] == ["parse-error"]
     assert entry["phase_metrics"]["parsing"]["seconds"] == 1.23
     assert entry["total_seconds"] == 2.5
+
+
+def test_run_finalization_generates_kpi_snapshots(tmp_path) -> None:
+    clock_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    service = ObservabilityService(_config(), root_dir=tmp_path, clock=lambda: clock_time)
+
+    run = service.start_run(papers=["paper-1"], pipeline_version="2.0.0")
+    run.record_document(
+        "paper-1",
+        {
+            "attempted_triples": 10,
+            "accepted_triples": 5,
+            "processed_chunks": 8,
+            "skipped_chunks": 2,
+        },
+    )
+    run.finalize()
+
+    kpi_path = tmp_path / "observability" / "kpi.jsonl"
+    lines = kpi_path.read_text(encoding="utf-8").strip().splitlines()
+    metrics = {json.loads(line)["metric"] for line in lines}
+    assert metrics == {"extraction_acceptance_rate", "pipeline_success_rate"}
+
+    records = {entry["metric"]: entry for entry in (json.loads(line) for line in lines)}
+
+    acceptance = records["extraction_acceptance_rate"]
+    assert acceptance["status"] == "red"
+    assert acceptance["run_id"]
+    assert acceptance["pipeline_version"] == "2.0.0"
+    assert acceptance["documents"] == ["paper-1"]
+    assert acceptance["attempted_triples"] == 10.0
+    assert acceptance["accepted_triples"] == 5.0
+    assert abs(acceptance["value"] - 0.5) < 1e-6
+
+    success = records["pipeline_success_rate"]
+    assert success["status"] == "red"
+    assert success["processed_chunks"] == 8.0
+    assert success["skipped_chunks"] == 2.0
+    assert abs(success["value"] - 0.8) < 1e-6
 
 
 def test_observability_event_logs(tmp_path) -> None:
