@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Optional
 from uuid import uuid4
 
 from backend.app.config import ExportConfig
@@ -16,6 +16,7 @@ from backend.app.export.models import (
 )
 from backend.app.export.storage import BundleStorageProtocol
 from backend.app.export.token import ShareTokenManager
+from backend.app.observability import ObservabilityService
 
 LOGGER = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class ShareExportService:
         token_manager: ShareTokenManager,
         config: ExportConfig,
         clock: Callable[[], datetime],
+        observability: Optional[ObservabilityService] = None,
     ) -> None:
         self._bundle_builder = bundle_builder
         self._storage = storage
@@ -43,6 +45,7 @@ class ShareExportService:
         self._token_manager = token_manager
         self._config = config
         self._clock = clock
+        self._observability = observability
 
     def create_share(self, request: ShareExportRequest) -> ShareExportResponse:
         """Create a shareable link for the provided export request."""
@@ -76,12 +79,27 @@ class ShareExportService:
             requested_by=request.requested_by,
             size_bytes=stored.size_bytes,
             warning=warning,
+            run_id=request.run_id,
         )
         try:
             self._metadata_repository.persist(record.as_dict())
         except Exception:  # pragma: no cover - metadata persistence failure logged
             LOGGER.exception("Failed to persist share metadata for %s", metadata_id)
             raise
+
+        if self._observability is not None:
+            event_payload = {
+                "metadata_id": metadata_id,
+                "run_id": request.run_id,
+                "requested_by": request.requested_by,
+                "pipeline_version": record.pipeline_version,
+                "bundle_size_bytes": stored.size_bytes,
+                "warning": warning,
+                "papers": list(request.filters.papers),
+                "allowed_papers": list(request.allowed_papers or ()),
+                "created_at": created_at,
+            }
+            self._observability.record_export_event("create", event_payload)
 
         response = ShareExportResponse(
             token=issued_token.token,
@@ -118,6 +136,16 @@ class ShareExportService:
             "revoked_by": revoked_by,
         }
         self._metadata_repository.update(metadata_id, changes)
+        if self._observability is not None:
+            event_payload = {
+                "metadata_id": metadata_id,
+                "run_id": record.get("run_id"),
+                "revoked_by": revoked_by,
+                "requested_by": record.get("requested_by"),
+                "created_at": record.get("created_at"),
+                "revoked_at": revoked_at,
+            }
+            self._observability.record_export_event("revoke", event_payload)
         return True
 
     @staticmethod

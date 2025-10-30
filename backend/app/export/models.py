@@ -47,6 +47,7 @@ class ShareExportRequest(_FrozenModel):
     pipeline_version: str = Field(..., min_length=1)
     estimated_size_bytes: Optional[int] = Field(default=None, ge=0)
     allowed_papers: Optional[tuple[str, ...]] = Field(default=None)
+    run_id: Optional[str] = Field(default=None, min_length=1)
 
 
 class ShareExportResponse(_FrozenModel):
@@ -95,6 +96,9 @@ class ShareMetadataRecord:
     warning: bool
     revoked_at: Optional[datetime] = None
     revoked_by: Optional[str] = None
+    run_id: Optional[str] = None
+    first_download_at: Optional[datetime] = None
+    first_download_latency_seconds: Optional[float] = None
 
     def as_dict(self) -> Dict[str, object]:
         """Convert record to a dictionary for persistence."""
@@ -112,6 +116,14 @@ class ShareMetadataRecord:
             payload.pop("revoked_at", None)
         if self.revoked_by is None:
             payload.pop("revoked_by", None)
+        if self.run_id is None:
+            payload.pop("run_id", None)
+        if self.first_download_at is not None:
+            payload["first_download_at"] = self.first_download_at.isoformat()
+        else:
+            payload.pop("first_download_at", None)
+        if self.first_download_latency_seconds is None:
+            payload.pop("first_download_latency_seconds", None)
         return payload
 
 

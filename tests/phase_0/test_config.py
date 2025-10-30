@@ -95,6 +95,18 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.graph.relation_semantics["interacts-with"] == "bidirectional"
     assert config.graph.entity_batch_size == 200
     assert config.graph.edge_batch_size == 500
+    assert config.observability.root_dir == "data/observability"
+    assert config.observability.run_manifests_filename == "runs.jsonl"
+    assert config.observability.audit_results_filename == "edge_audits.jsonl"
+    assert config.observability.semantic_drift_filename == "semantic_drift.jsonl"
+    assert config.observability.quality_alerts_filename == "quality_alerts.jsonl"
+    quality = config.observability.quality
+    assert quality.noise_control_target == 0.85
+    assert quality.noise_control_warning == 0.9
+    assert quality.duplicate_rate_target == 0.1
+    assert quality.duplicate_rate_warning == 0.05
+    assert quality.semantic_drift_drop_threshold == 0.25
+    assert quality.semantic_drift_relation_threshold == 3
 
 
 def test_config_strict_fields_match_yaml() -> None:
@@ -113,6 +125,42 @@ def test_config_strict_fields_match_yaml() -> None:
         == config.ui.graph_defaults.min_confidence
     )
     assert raw["ui"]["polling"]["active_interval_seconds"] == config.ui.polling.active_interval_seconds
+    assert (
+        raw["observability"]["audit_results_filename"]
+        == config.observability.audit_results_filename
+    )
+    assert (
+        raw["observability"]["semantic_drift_filename"]
+        == config.observability.semantic_drift_filename
+    )
+    assert (
+        raw["observability"]["quality_alerts_filename"]
+        == config.observability.quality_alerts_filename
+    )
+    assert (
+        raw["observability"]["quality"]["noise_control_target"]
+        == config.observability.quality.noise_control_target
+    )
+    assert (
+        raw["observability"]["quality"]["noise_control_warning"]
+        == config.observability.quality.noise_control_warning
+    )
+    assert (
+        raw["observability"]["quality"]["duplicate_rate_target"]
+        == config.observability.quality.duplicate_rate_target
+    )
+    assert (
+        raw["observability"]["quality"]["duplicate_rate_warning"]
+        == config.observability.quality.duplicate_rate_warning
+    )
+    assert (
+        raw["observability"]["quality"]["semantic_drift_drop_threshold"]
+        == config.observability.quality.semantic_drift_drop_threshold
+    )
+    assert (
+        raw["observability"]["quality"]["semantic_drift_relation_threshold"]
+        == config.observability.quality.semantic_drift_relation_threshold
+    )
 
 
 def test_google_client_ids_override_from_env(monkeypatch) -> None:

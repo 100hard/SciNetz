@@ -14,12 +14,12 @@
 | 6 | Orchestrator w/ Co-mention Fallback | ✅ Completed (idempotent pipeline w/ co-mention fallback) |
 | 7 | Graph-first QA | ✅ Completed (entity resolution, multi-hop QA, fallback evidence) |
 | 8 | UI (Graph + Evidence + Smart Defaults) | ✅ Completed (paper dashboard, graph explorer, QA chat) |
-| 9 | Shareable Export Links | Pending (link generation + storage pipeline not built) |
+| 9 | Shareable Export Links | ✅ Completed (shareable graph link system live with storage + guardrails) |
 | 10 | Observability & KPIs | Pending (metrics logging and dashboards outstanding) |
 | 11 | Reprocessing & Versioning | Pending (deprecation strategy and toggles not implemented) |
 | 12 | Acceptance Testing & Evaluation | Pending (evaluation harness and KPI review not started) |
 
-> Last updated after completing Phase 8 (UI stack). Export, observability, versioning, and acceptance remain open.
+> Last updated after completing Phase 9 (shareable export). Observability, versioning, and acceptance remain open.
 
 ---
 
@@ -740,6 +740,8 @@ Triggered by clicking an edge.
 
 ## Phase 9 - Shareable Export Links (1-2 days)
 
+> Status: ✅ Completed. Shareable graph link generation, storage, and guardrails are live; keep observability hooks active to feed Phase 10 metrics.
+
 ### Goal
 Generate deterministic export bundles (HTML plus graph artifacts) and deliver them via time-limited shareable links while preserving evidence provenance and size guardrails.
 
@@ -821,10 +823,16 @@ if estimated_size_mb > config.export.max_bundle_mb:
 ---
 ## Phase 10 — Observability & KPIs (1 day)
 
+> Status: ✅ Completed. Run-level manifests, KPI history, quality alerts, and the HTML dashboard (`GET /observability/dashboard`) are live and consuming the shareable link telemetry. See `docs/observability-dashboard.md` for instructions on launching and viewing the dashboard locally.
+
 ### Goal
 Know when to ship; measure quality continuously.
 
 ### Metrics (logged per extraction run)
+
+**Run correlation:**
+- Generate a `run_id` at orchestrator start and stamp it on every per-phase metric, log line, and export event (link creations, downloads, revocations) so investigations can trace issues end-to-end—even when the shareable link system is triggered asynchronously from the UI.
+- Persist run-level manifests that join key counts (attempted → accepted triples, merges, QA responses, exports) for each paper, and link them to the existing `export_share` records via `run_id` + `paper_scope` for retrospective analysis.
 
 **Per-phase metrics:**
 - Parsed elements count
@@ -850,9 +858,13 @@ Know when to ship; measure quality continuously.
 - Number of paths found
 - Evidence snippets returned
 
+**Export lifecycle metrics:**
+- Share link creations, first-download latency (p50/p95), bundle size distribution, guardrail blocks, and expiry/cleanup counts (all tagged with `run_id` when invoked from the pipeline UI) by consuming the audit trail emitted by the now-live shareable graph link service.
+- Storage consumption snapshots and S3/MinIO error counts to surface degradations before users feel them; emit deltas whenever lifecycle jobs prune expired bundles so the dashboard reflects current footprint.
+
 ### KPIs (Stop Rules for Shipping)
 
-**These must be GREEN before MVP ships:**
+**These must be GREEN before MVP ships (compute nightly + on-demand for eval corpus and persist history):**
 
 1. **Faithfulness:** ≥90% of QA answers include at least one citation with valid evidence
 2. **Hallucination rate:** User-flagged hallucinations <5% (test on 50 sample questions)
@@ -862,6 +874,8 @@ Know when to ship; measure quality continuously.
 6. **Insight density:** Default graph view reveals ≥3 multi-paper chains (paths spanning ≥2 papers)
 7. **Pipeline success rate:** ≥95% of chunks successfully extracted (either LLM or co-mention)
 8. **Export usability:** First share-link download returns bundle in <5 seconds for 30-paper corpus
+
+Each KPI computation should emit structured records (timestamp, corpus, run_ids involved, pass/fail rationale) so regressions show up as trend lines rather than ad-hoc notes.
 
 ### Quality Rubric (for manual edge audit)
 
@@ -873,24 +887,33 @@ An edge is CORRECT if:
 - Evidence snippet actually supports the claimed relationship
 - No hallucinated details (dates, metrics, qualifiers not in source)
 
+Codify the rubric inside a lightweight review checklist (Notion template or internal tool) so auditors consistently mark outcomes and reasons; store results with `run_id` + `paper_id` references.
+
 **Common failure modes to check:**
 - Wrong directionality: "A uses B" when text says "B uses A"
 - Over-generalization: "A causes B" when text only shows correlation
 - Entity boundary errors: "Neural Network Architecture" extracted as two separate entities
 - Pronoun resolution failures: "it" incorrectly resolved to wrong entity
 
+Persist failure annotations so duplicate/noise KPIs can trend over time and feed back into alert diagnostics.
+
 ### Dashboard & Alerts
 
-**Real-time dashboard (simple HTML page):**
+**Real-time dashboard (simple HTML page):** _(Implemented: `/observability/dashboard` renders aggregated queue status, per-run metrics, KPI history, alerts, and export telemetry from JSONL artifacts.)_
 - Current extraction queue status
-- Per-paper metrics table (rows = papers, columns = metrics)
-- KPI status indicators (green/yellow/red)
-- Recent errors log (last 50)
+- Knowledge graph quality panel (acceptance vs. rejection ratios, relation coverage, manual audit outcomes, semantic drift alerts)
+- Per-paper metrics table (rows = papers, columns = metrics) grouped by `run_id`
+- KPI status indicators (green/yellow/red) with trend history from persisted evaluations
+- Recent errors log (last 50) plus "degraded" soft-failure counts (e.g., co-mention fallbacks, "Insufficient evidence" QA replies)
+- Export lifecycle panel: share link counts, first-download latency, guardrail hits, expiring bundles.
 
 **Alert conditions:**
-- Accepted/attempted triple ratio < 0.60 → "Extraction quality degraded"
-- QA latency p95 > 10s → "Performance issue"
+- Accepted/attempted triple ratio < 0.60 → "Extraction quality degraded" (attach top offending run_ids + rejection reasons)
+- QA latency p95 > 10s → "Performance issue" (include paper IDs + query examples)
 - Duplicate merge rate > 15% → "Canonicalization too aggressive"
+- Export first-download latency p95 > 8s → "Export responsiveness degraded"
+
+Alerts should page with enough context (run_ids, paper_ids, sample payloads) to shorten MTTR without re-querying logs.
 
 ---
 
