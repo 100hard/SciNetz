@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { GraphEdge, GraphNode } from "./graph-explorer";
+import type { EdgeAttributeValue, GraphEdge, GraphNode } from "./graph-explorer";
 
 export const GRAPH_VISUALIZATION_NODE_LIMIT = 200;
 
@@ -821,7 +821,9 @@ const getEdgeLabelColor = (strokeColor: string): string => {
   return blendColors(strokeColor, EDGE_LABEL_LIGHTEN_TARGET, 0.32) ?? strokeColor;
 };
 
-const isCrossPaperEdge = (attributes?: Record<string, string> | null): boolean => {
+type EdgeAttributeValue = string | number | boolean;
+
+const isCrossPaperEdge = (attributes?: Record<string, EdgeAttributeValue> | null): boolean => {
   if (!attributes) {
     return false;
   }
@@ -830,7 +832,7 @@ const isCrossPaperEdge = (attributes?: Record<string, string> | null): boolean =
     if (!raw) {
       continue;
     }
-    const normalized = raw.trim().toLowerCase();
+    const normalized = String(raw).trim().toLowerCase();
     if (normalized === "true" || normalized === "1" || normalized === "yes") {
       return true;
     }
@@ -1120,7 +1122,7 @@ const GraphVisualization = ({
       }
       const crossPaper = isCrossPaperEdge(edge.attributes);
       const baseStroke = crossPaper ? EDGE_CROSS_PAPER_COLOR : getRelationColor(edge.relation);
-      const stroke = getEdgeStrokeColor(baseStroke, edge.confidence);
+      const stroke = crossPaper ? EDGE_CROSS_PAPER_COLOR : getEdgeStrokeColor(baseStroke, edge.confidence);
       const baseStrokeWidth = getEdgeStrokeWidth(edge.confidence);
       const strokeWidth = crossPaper
         ? Math.max(baseStrokeWidth, EDGE_MIN_STROKE_WIDTH + 0.9)
@@ -1130,7 +1132,7 @@ const GraphVisualization = ({
       const baseMarkerOpacity = getEdgeMarkerOpacity(edge.confidence);
       const markerOpacity = crossPaper ? Math.max(baseMarkerOpacity, 0.88) : baseMarkerOpacity;
       const labelColor = getEdgeLabelColor(stroke);
-      const markerColor = stroke;
+      const markerColor = crossPaper ? EDGE_CROSS_PAPER_COLOR : stroke;
       const markerKey = `${stroke}-${markerOpacity.toFixed(2)}${crossPaper ? "-cross" : ""}`;
       return {
         id: edge.id,

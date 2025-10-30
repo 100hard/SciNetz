@@ -48,6 +48,9 @@ class _Result:
     def __iter__(self):
         return iter(self.records)
 
+    def single(self):
+        return self.records[0] if self.records else None
+
 
 class _InMemoryTransaction:
     """Minimal transaction stub replicating the write queries."""
@@ -60,12 +63,16 @@ class _InMemoryTransaction:
             return self._apply_entities(params["entities"])
         elif "UNWIND $edges" in query:
             return self._apply_edges(params["edges"])
+        elif "WHERE node.node_id IN $ids" in query:
+            return self._load_nodes(params["ids"])
+        elif "UNWIND $entries AS entry" in query and "MATCH (node:Entity)" in query:
+            return self._lookup_aliases(params["entries"])
+        elif "CALL db.labels" in query:
+            return _Result(records=[{"present": 1}])
         else:  # pragma: no cover - defensive guard
             raise NotImplementedError(query)
 
-    def _apply_entities(
-        self, entities: Iterable[MutableMapping[str, Any]]
-    ) -> _Result:
+    def _apply_entities(self, entities: Iterable[MutableMapping[str, Any]]) -> _Result:
         for payload in entities:
             node = self._store.nodes.get(payload["node_id"])
             if node is None:
@@ -144,6 +151,52 @@ class _InMemoryTransaction:
             )
         return _Result(records=records)
 
+    def _lookup_aliases(
+        self, entries: Iterable[Mapping[str, str]]
+    ) -> _Result:
+        records: List[Dict[str, Any]] = []
+        for entry in entries:
+            alias = entry.get("alias", "")
+            requested = entry.get("node_id", "")
+            if not alias or not requested:
+                continue
+            alias_lower = str(alias).strip().lower()
+            for node in self._store.nodes.values():
+                candidate_aliases = {node.name.lower(), *(alias.lower() for alias in node.aliases)}
+                if alias_lower not in candidate_aliases:
+                    continue
+                records.append(
+                    {
+                        "alias": alias_lower,
+                        "requested_id": requested,
+                        "node_id": node.node_id,
+                        "name": node.name,
+                        "aliases": list(node.aliases),
+                        "docs": list(node.source_document_ids),
+                    }
+                )
+        return _Result(records=records)
+
+    def _load_nodes(self, ids: Iterable[str]) -> _Result:
+        records: List[Dict[str, Any]] = []
+        for node_id in ids:
+            node = self._store.nodes.get(node_id)
+            if node is None:
+                continue
+            sections = dict(node.section_distribution)
+            records.append(
+                {
+                    "node_id": node.node_id,
+                    "aliases": list(node.aliases),
+                    "docs": list(node.source_document_ids),
+                    "legacy_sections": None,
+                    "section_keys": list(sections.keys()),
+                    "section_values": list(sections.values()),
+                    "times_seen": node.times_seen,
+                }
+            )
+        return _Result(records=records)
+
     @staticmethod
     def _normalise_evidence(payload: Any) -> Dict[str, Any]:
         """Convert serialized evidence payloads into nested dictionaries.
@@ -211,6 +264,10 @@ class _InMemorySession:
     def execute_write(self, func: Callable[..., Any], payload: Iterable[MutableMapping[str, Any]]) -> None:
         tx = _InMemoryTransaction(self._store)
         func(tx, payload)
+
+    def execute_read(self, func: Callable[..., Any], *args: Any) -> Any:
+        tx = _InMemoryTransaction(self._store)
+        return func(tx, *args)
 
 
 class _InMemoryDriver:
@@ -564,3 +621,100 @@ def test_bidirectional_relations_do_not_conflict(
     reverse_key = (node_b.node_id, node_a.node_id, "compared-to")
     assert driver.edges[forward_key].conflicting is False
     assert driver.edges[reverse_key].conflicting is False
+
+
+def test_get_documents_by_aliases_consumes_results_before_session_close(
+    config: AppConfig,
+) -> None:
+    alias_map = {"Transformer": "node-42"}
+
+    class _AliasReadResult:
+        def __init__(self, session: "_AliasReadSession", rows: List[Dict[str, Any]]) -> None:
+            self._session = session
+            self._rows = rows
+
+        def __iter__(self) -> Iterable[Dict[str, Any]]:
+            if getattr(self._session, "closed", False):
+                raise RuntimeError("result out of scope")
+            return iter(self._rows)
+
+    class _AliasReadTransaction:
+        def __init__(self, session: "_AliasReadSession") -> None:
+            self._session = session
+
+        def run(
+            self,
+            query: str,
+            entries: Iterable[Mapping[str, str]],
+        ) -> _AliasReadResult:
+            rows = []
+            for entry in entries:
+                node_id = entry["node_id"]
+                if node_id == "node-42":
+                    rows.append(
+                        {
+                            "requested_id": node_id,
+                            "alias": entry["alias"],
+                            "node_id": "existing-42",
+                            "name": "Transformer",
+                            "aliases": ["Transformer"],
+                            "docs": ["doc-a", "doc-b", "doc-a"],
+                        }
+                    )
+            return _AliasReadResult(self._session, rows)
+
+    class _AliasReadSession:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __enter__(self) -> "_AliasReadSession":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            self.closed = True
+
+        def execute_read(self, callback: Callable[[Any], Any]) -> Any:
+            transaction = _AliasReadTransaction(self)
+            return callback(transaction)
+
+    class _AliasReadDriver:
+        def session(self) -> _AliasReadSession:
+            return _AliasReadSession()
+
+    writer = GraphWriter(
+        driver=_AliasReadDriver(),
+        config=config,
+        entity_batch_size=10,
+        edge_batch_size=10,
+    )
+
+    documents = writer.get_documents_by_aliases(alias_map)
+    assert documents == {"node-42": frozenset({"doc-a", "doc-b"})}
+
+
+def test_resolve_aliases_returns_existing_metadata(
+    writer: GraphWriter,
+    driver: _InMemoryDriver,
+) -> None:
+    existing = Node(
+        node_id="node-existing",
+        name="Transformer",
+        type="Model",
+        aliases=["Attention Model"],
+        section_distribution={"Methods": 2},
+        times_seen=3,
+        source_document_ids=["doc-old"],
+    )
+    writer.upsert_entity(existing)
+    writer.flush()
+
+    matches = writer.resolve_aliases({"transformer": "node-candidate"})
+    assert "node-candidate" in matches
+    match = matches["node-candidate"]
+    assert match.existing_node_id == "node-existing"
+    assert match.name == "Transformer"
+    assert match.aliases == frozenset({"Attention Model", "transformer"})
+    assert match.docs == frozenset({"doc-old"})
+
+    documents = writer.get_documents_by_aliases({"transformer": "node-candidate"})
+    assert documents == {"node-candidate": frozenset({"doc-old"})}

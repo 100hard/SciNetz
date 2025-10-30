@@ -12,7 +12,7 @@ from typing import Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence,
 
 from backend.app.canonicalization import CanonicalizationPipeline
 from backend.app.config import AppConfig
-from backend.app.contracts import Evidence, PaperMetadata, ParsedElement, TextSpan, Triplet
+from backend.app.contracts import Evidence, Node, PaperMetadata, ParsedElement, TextSpan, Triplet
 from backend.app.extraction import (
     DomainRouter,
     EntityInventoryBuilder,
@@ -20,6 +20,7 @@ from backend.app.extraction import (
     TwoPassTripletExtractor,
 )
 from backend.app.graph import GraphWriter
+from backend.app.graph.writer import AliasResolution
 from backend.app.parsing import ParsingPipeline
 
 LOGGER = logging.getLogger(__name__)
@@ -554,13 +555,28 @@ class ExtractionOrchestrator:
                 len(states),
                 canonical_elapsed,
             )
-            alias_lookup = self._build_alias_lookup(
-                canonical_result.nodes, canonical_result.merge_map
+            canonical_nodes = list(canonical_result.nodes)
+            merge_map = dict(canonical_result.merge_map)
+            alias_entries = self._collect_alias_entries(canonical_nodes, merge_map)
+            alias_resolutions: Dict[str, AliasResolution] = {}
+            if alias_entries:
+                alias_resolutions = self._graph_writer.resolve_aliases(alias_entries)
+            resolved_nodes, replacements = self._apply_alias_resolutions(
+                canonical_nodes, alias_resolutions
             )
+            if replacements:
+                merge_map = {
+                    alias_key: replacements.get(node_id, node_id)
+                    for alias_key, node_id in merge_map.items()
+                }
+            alias_lookup = self._build_alias_lookup(resolved_nodes, merge_map)
+            node_ids = [node.node_id for node in resolved_nodes]
+            existing_documents = self._graph_writer.get_node_documents(node_ids)
+            alias_document_map = self._build_alias_document_map(alias_resolutions, replacements)
             graph_write_start = perf_counter()
             graph_persistence_failed = False
             try:
-                for node in canonical_result.nodes:
+                for node in resolved_nodes:
                     self._graph_writer.upsert_entity(node)
                     nodes_written += 1
                     docs = {
@@ -568,6 +584,12 @@ class ExtractionOrchestrator:
                         for doc_id in getattr(node, "source_document_ids", []) or []
                         if str(doc_id).strip()
                     }
+                    existing_docs = existing_documents.get(node.node_id)
+                    if existing_docs:
+                        docs.update(existing_docs)
+                    alias_docs = alias_document_map.get(node.node_id)
+                    if alias_docs:
+                        docs.update(alias_docs)
                     node_sources[node.node_id] = frozenset(docs)
                     for doc_id in node.source_document_ids:
                         if not doc_id:
@@ -707,6 +729,72 @@ class ExtractionOrchestrator:
             state.skipped_chunks,
             len(state.errors),
         )
+
+    @staticmethod
+    def _collect_alias_entries(
+        nodes: Sequence[Node], merge_map: Mapping[str, str]
+    ) -> Dict[str, str]:
+        entries: Dict[str, str] = {}
+        for node in nodes:
+            name = node.name.strip()
+            if name:
+                entries.setdefault(name.lower(), node.node_id)
+            for alias in node.aliases:
+                alias_str = str(alias).strip()
+                if alias_str:
+                    entries.setdefault(alias_str.lower(), node.node_id)
+        for alias_key, node_id in merge_map.items():
+            base_alias = alias_key.split("::", 1)[0].strip().lower()
+            if base_alias and node_id:
+                entries.setdefault(base_alias, node_id)
+        return entries
+
+    @staticmethod
+    def _apply_alias_resolutions(
+        nodes: Sequence[Node], resolutions: Mapping[str, AliasResolution]
+    ) -> Tuple[List[Node], Dict[str, str]]:
+        replacements: Dict[str, str] = {}
+        resolved: List[Node] = []
+        for node in nodes:
+            match = resolutions.get(node.node_id)
+            if match is None:
+                resolved.append(node)
+                continue
+            final_id = match.existing_node_id or node.node_id
+            replacements[node.node_id] = final_id
+            target_name = match.name.strip() if match.name else node.name
+            alias_pool = {
+                str(alias).strip() for alias in node.aliases if str(alias).strip()
+            }
+            alias_pool.update(
+                str(alias).strip() for alias in match.aliases if str(alias).strip()
+            )
+            alias_pool.add(node.name.strip())
+            alias_pool.discard(target_name)
+            resolved.append(
+                node.model_copy(
+                    update={
+                        "node_id": final_id,
+                        "name": target_name,
+                        "aliases": sorted(alias_pool),
+                    }
+                )
+            )
+        return resolved, replacements
+
+    @staticmethod
+    def _build_alias_document_map(
+        alias_resolutions: Mapping[str, AliasResolution],
+        replacements: Mapping[str, str],
+    ) -> Dict[str, FrozenSet[str]]:
+        collected: Dict[str, Set[str]] = {}
+        for candidate_id, match in alias_resolutions.items():
+            final_id = replacements.get(candidate_id, candidate_id)
+            if not match.docs:
+                continue
+            docs = collected.setdefault(final_id, set())
+            docs.update(doc for doc in match.docs if doc)
+        return {node_id: frozenset(docs) for node_id, docs in collected.items() if docs}
 
     @staticmethod
     def _build_alias_lookup(

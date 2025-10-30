@@ -50,6 +50,8 @@ export type GraphNode = {
   source_document_ids: string[];
 };
 
+export type EdgeAttributeValue = string | number | boolean;
+
 export type GraphEdge = {
   id: string;
   source: string;
@@ -58,7 +60,7 @@ export type GraphEdge = {
   relation_verbatim: string;
   confidence: number;
   times_seen: number;
-  attributes: Record<string, string>;
+  attributes: Record<string, EdgeAttributeValue>;
   evidence: Record<string, unknown>;
   conflicting: boolean;
   created_at?: string | null;

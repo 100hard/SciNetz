@@ -3,8 +3,20 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    FrozenSet,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+)
 
 try:  # pragma: no cover - optional dependency for type checking
     from neo4j import Driver
@@ -19,6 +31,16 @@ from .section_distribution import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AliasResolution:
+    """Resolution metadata for an alias lookup against existing nodes."""
+
+    existing_node_id: str
+    name: str
+    aliases: FrozenSet[str]
+    docs: FrozenSet[str]
 
 
 class GraphWriter:
@@ -245,6 +267,155 @@ class GraphWriter:
 
         self._flush_entities()
         self._flush_edges()
+
+    def get_node_documents(self, node_ids: Sequence[str]) -> Mapping[str, FrozenSet[str]]:
+        """Return known source document identifiers for canonical nodes.
+
+        Args:
+            node_ids: Canonical node identifiers to look up.
+
+        Returns:
+            Mapping of node IDs to frozensets of source document identifiers.
+        """
+
+        if not node_ids:
+            return {}
+        existing = self._load_existing_nodes(node_ids)
+        return self._dedupe_document_payloads(
+            {node_id: payload.get("docs", []) for node_id, payload in existing.items()}
+        )
+
+    def resolve_aliases(
+        self, alias_map: Mapping[str, str]
+    ) -> Mapping[str, AliasResolution]:
+        """Resolve aliases against existing nodes and return their metadata.
+
+        Args:
+            alias_map: Mapping of alias strings to the candidate canonical node identifiers.
+
+        Returns:
+            Mapping from the candidate node identifiers to alias resolution metadata.
+        """
+
+        if not alias_map:
+            return {}
+        entries = [
+            {"alias": alias.strip().lower(), "node_id": node_id}
+            for alias, node_id in alias_map.items()
+            if alias and alias.strip()
+        ]
+        if not entries:
+            return {}
+
+        query = """
+        UNWIND $entries AS entry
+        MATCH (node:Entity)
+        WHERE toLower(node.name) = entry.alias
+           OR ANY(alias IN coalesce(node.aliases, []) WHERE toLower(alias) = entry.alias)
+        RETURN entry.node_id AS requested_id,
+               entry.alias AS alias,
+               node.node_id AS node_id,
+               node.name AS name,
+               coalesce(node.aliases, []) AS aliases,
+               coalesce(node.source_document_ids, []) AS docs
+        """
+
+        rows: List[Any] = []
+        try:
+            with self._driver.session() as session:
+                execute_read = getattr(session, "execute_read", None)
+                if callable(execute_read):
+                    rows = execute_read(lambda tx: list(tx.run(query, entries=entries)))
+                else:
+                    result = session.run(query, entries=entries)
+                    rows = list(result)
+        except Exception:  # pragma: no cover - defensive
+            LOGGER.exception("Failed to resolve aliases from Neo4j")
+            return {}
+
+        aggregated: Dict[str, Dict[str, Any]] = {}
+        for record in rows:
+            requested_id = self._record_value(record, "requested_id")
+            existing_id = self._record_value(record, "node_id")
+            if not requested_id or not existing_id:
+                continue
+            key = str(requested_id)
+            existing_key = str(existing_id)
+            alias_match = self._record_value(record, "alias") or ""
+            name = self._record_value(record, "name") or ""
+            docs = self._record_value(record, "docs") or []
+            aliases = self._record_value(record, "aliases") or []
+            bucket = aggregated.get(key)
+            if bucket is None or bucket["existing_node_id"] == existing_key:
+                if bucket is None:
+                    bucket = {
+                        "existing_node_id": existing_key,
+                        "name": str(name) if name else "",
+                        "aliases": set(),
+                        "docs": set(),
+                    }
+                bucket["aliases"].update(str(alias) for alias in aliases if alias)
+                if alias_match:
+                    bucket["aliases"].add(str(alias_match))
+                for doc in docs:
+                    if doc not in (None, ""):
+                        bucket["docs"].add(str(doc))
+                if name:
+                    bucket["name"] = str(name)
+                aggregated[key] = bucket
+            else:  # pragma: no cover - diagnostic logging
+                LOGGER.debug(
+                    "Alias '%s' matched multiple node IDs (%s, %s); retaining first occurrence",
+                    alias_match,
+                    bucket["existing_node_id"],
+                    existing_key,
+                )
+        return {
+            requested_id: AliasResolution(
+                existing_node_id=data["existing_node_id"],
+                name=data["name"],
+                aliases=frozenset(value for value in data["aliases"] if value),
+                docs=frozenset(value for value in data["docs"] if value),
+            )
+            for requested_id, data in aggregated.items()
+        }
+
+    def get_documents_by_aliases(
+        self, alias_map: Mapping[str, str]
+    ) -> Mapping[str, FrozenSet[str]]:
+        """Return source document identifiers for nodes referenced by aliases.
+
+        Args:
+            alias_map: Mapping of lowercase alias strings to canonical node identifiers.
+
+        Returns:
+            Mapping of canonical node IDs to frozensets of document identifiers.
+        """
+
+        resolutions = self.resolve_aliases(alias_map)
+        doc_map: Dict[str, FrozenSet[str]] = {}
+        for candidate_id, match in resolutions.items():
+            if match.docs:
+                doc_map[candidate_id] = match.docs
+        return doc_map
+
+    @staticmethod
+    def _dedupe_document_payloads(
+        payloads: Mapping[str, Sequence[str]]
+    ) -> Mapping[str, FrozenSet[str]]:
+        result: Dict[str, FrozenSet[str]] = {}
+        for node_id, raw_docs in payloads.items():
+            seen: set[str] = set()
+            collected: List[str] = []
+            for doc_id in raw_docs:
+                trimmed = str(doc_id).strip()
+                if not trimmed or trimmed in seen:
+                    continue
+                seen.add(trimmed)
+                collected.append(trimmed)
+            if collected:
+                result[node_id] = frozenset(collected)
+        return result
 
     def _flush_entities(self) -> None:
         if not self._entity_batch:

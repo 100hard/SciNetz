@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, FrozenSet, Iterable, List, Optional, Set
 
 import pytest
 
@@ -24,6 +24,7 @@ from backend.app.orchestration.orchestrator import (
     ProcessedChunkStore,
 )
 from backend.app.parsing.pipeline import ParseResult
+from backend.app.graph.writer import AliasResolution
 
 
 class StubParsingPipeline:
@@ -101,9 +102,12 @@ class StubGraphWriter:
         self.nodes = []
         self.edges = []
         self.deprecation_calls: List[str] = []
+        self.node_docs: Dict[str, Set[str]] = {}
 
     def upsert_entity(self, node) -> str:  # pragma: no cover - simple data container
         self.nodes.append(node)
+        docs = self.node_docs.setdefault(node.node_id, set())
+        docs.update(node.source_document_ids)
         return node.node_id
 
     def upsert_edge(
@@ -138,6 +142,48 @@ class StubGraphWriter:
     def deprecate_edges(self, doc_id: str) -> int:  # pragma: no cover - simple counter
         self.deprecation_calls.append(doc_id)
         return 1
+
+    def get_node_documents(self, node_ids: Iterable[str]) -> Dict[str, FrozenSet[str]]:
+        result: Dict[str, FrozenSet[str]] = {}
+        for node_id in node_ids:
+            docs = self.node_docs.get(node_id)
+            if not docs:
+                continue
+            result[node_id] = frozenset(docs)
+        return result
+
+    def get_documents_by_aliases(self, alias_map: Dict[str, str]) -> Dict[str, FrozenSet[str]]:
+        resolutions = self.resolve_aliases(alias_map)
+        return {
+            candidate_id: match.docs
+            for candidate_id, match in resolutions.items()
+            if match.docs
+        }
+
+    def resolve_aliases(self, alias_map: Dict[str, str]) -> Dict[str, AliasResolution]:
+        alias_index: Dict[str, List[object]] = {}
+        for node in self.nodes:
+            for label in [node.name, *node.aliases]:
+                alias_index.setdefault(label.lower(), []).append(node)
+        results: Dict[str, AliasResolution] = {}
+        for alias, candidate_id in alias_map.items():
+            alias_lower = alias.lower()
+            matches = alias_index.get(alias_lower)
+            if not matches:
+                continue
+            node = matches[0]
+            docs = frozenset(self.node_docs.get(node.node_id, set()))
+            existing = results.get(candidate_id)
+            if existing and existing.existing_node_id != node.node_id:
+                continue
+            alias_values = {str(value) for value in node.aliases if value}
+            results[candidate_id] = AliasResolution(
+                existing_node_id=node.node_id,
+                name=node.name,
+                aliases=frozenset(alias_values),
+                docs=docs,
+            )
+        return results
 
 
 @pytest.fixture(name="config")
@@ -575,6 +621,80 @@ def test_run_batch_merges_cross_papers(config: AppConfig, tmp_path: Path) -> Non
     assert set(model_nodes[0].source_document_ids) == {doc_a, doc_b}
     for edge in graph_writer.edges:
         assert edge["attributes"].get("cross_paper") == "true"
+
+
+def test_sequential_runs_mark_cross_paper_edges(config: AppConfig, tmp_path: Path) -> None:
+    doc_a = "paper-a"
+    doc_b = "paper-b"
+    element_a = _parsed_element(doc_a, f"{doc_a}:0", "Methods", "Model A uses dataset X.")
+    element_b = _parsed_element(doc_b, f"{doc_b}:0", "Methods", "Model A evaluates dataset Y.")
+    metadata_a = PaperMetadata(doc_id=doc_a, title="Paper A")
+    metadata_b = PaperMetadata(doc_id=doc_b, title="Paper B")
+    parse_results = {
+        doc_a: ParseResult(doc_id=doc_a, metadata=metadata_a, elements=[element_a], errors=[]),
+        doc_b: ParseResult(doc_id=doc_b, metadata=metadata_b, elements=[element_b], errors=[]),
+    }
+    parsing = MappingParsingPipeline(parse_results)
+
+    triplet_a = _triplet("Model A", "uses", "dataset X", element_a)
+    triplet_b = _triplet("Model A", "evaluates", "dataset Y", element_b)
+    extraction_a = ExtractionResult(
+        triplets=[triplet_a],
+        section_distribution={"Model A": {"Methods": 1}, "dataset X": {"Methods": 1}},
+        relation_verbatims=["uses"],
+    )
+    extraction_b = ExtractionResult(
+        triplets=[triplet_b],
+        section_distribution={"Model A": {"Methods": 1}, "dataset Y": {"Methods": 1}},
+        relation_verbatims=["evaluates"],
+    )
+    extractor = StubTripletExtractor(
+        {
+            element_a.element_id: extraction_a,
+            element_b.element_id: extraction_b,
+        }
+    )
+    inventory = StubInventoryBuilder({})
+    graph_writer = StubGraphWriter()
+
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=HashingEmbeddingBackend(),
+        embedding_dir=tmp_path / "embeddings",
+        report_dir=tmp_path / "reports",
+    )
+    canonicalization = CanonicalizationPipeline(config=config, canonicalizer=canonicalizer)
+    chunk_store = ProcessedChunkStore(tmp_path / "processed.json")
+    orchestrator = ExtractionOrchestrator(
+        config=config,
+        parsing_pipeline=parsing,
+        inventory_builder=inventory,
+        triplet_extractor=extractor,
+        canonicalization=canonicalization,
+        graph_writer=graph_writer,
+        chunk_store=chunk_store,
+    )
+
+    pdf_a = tmp_path / "paper_a.pdf"
+    pdf_b = tmp_path / "paper_b.pdf"
+    pdf_a.write_text("placeholder a")
+    pdf_b.write_text("placeholder b")
+
+    result_a = orchestrator.run(paper_id=doc_a, pdf_path=pdf_a)
+    assert isinstance(result_a, OrchestrationResult)
+    doc_a_edges = [
+        edge for edge in graph_writer.edges if edge["evidence"].doc_id == doc_a
+    ]
+    assert doc_a_edges, "expected at least one edge for doc_a"
+    assert all(edge["attributes"].get("cross_paper") != "true" for edge in doc_a_edges)
+
+    result_b = orchestrator.run(paper_id=doc_b, pdf_path=pdf_b)
+    assert isinstance(result_b, OrchestrationResult)
+    doc_b_edges = [
+        edge for edge in graph_writer.edges if edge["evidence"].doc_id == doc_b
+    ]
+    assert doc_b_edges, "expected at least one edge for doc_b"
+    assert all(edge["attributes"].get("cross_paper") == "true" for edge in doc_b_edges)
 
 
 def test_co_mention_fallback_creates_hidden_edges(
