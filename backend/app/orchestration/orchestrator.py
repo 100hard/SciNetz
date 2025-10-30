@@ -142,6 +142,7 @@ class _DocumentProcessingState:
     edge_records: List[_EdgeRecord] = field(default_factory=list)
     requires_deprecation: bool = False
     timings: _ProcessingTimers = field(default_factory=_ProcessingTimers)
+    relation_types: Set[str] = field(default_factory=set)
 
 
 class ProcessedChunkStore:
@@ -507,6 +508,7 @@ class ExtractionOrchestrator:
                         times_seen=1,
                     )
                 )
+                state.relation_types.add(relation_verbatim)
 
         if co_mention_accumulator is not None:
             co_start = perf_counter()
@@ -517,6 +519,7 @@ class ExtractionOrchestrator:
                 state.extractions.append(product.extraction)
                 state.accepted_triples += len(product.extraction.triplets)
                 state.edge_records.append(product.edge)
+                state.relation_types.add(product.edge.relation_verbatim)
 
         self._log_document_timings(state)
         return state
@@ -557,6 +560,7 @@ class ExtractionOrchestrator:
                         "rejection_reasons": dict(state.rejection_reasons),
                         "co_mention_edges": state.co_mention_edges,
                         "entity_candidates": state.entity_candidates,
+                        "relation_types": sorted(state.relation_types),
                         "timings": {
                             "parse_seconds": state.timings.parse_seconds,
                             "domain_seconds": state.timings.domain_seconds,

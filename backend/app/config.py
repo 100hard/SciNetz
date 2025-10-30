@@ -512,6 +512,27 @@ class UIConfig(_FrozenModel):
     extraction_worker_count: int = Field(..., ge=1)
 
 
+class ObservabilityQualityConfig(_FrozenModel):
+    """Thresholds governing quality alerts and semantic drift detection."""
+
+    noise_control_target: float = Field(..., ge=0.0, le=1.0)
+    noise_control_warning: float = Field(..., ge=0.0, le=1.0)
+    duplicate_rate_target: float = Field(..., ge=0.0, le=1.0)
+    duplicate_rate_warning: float = Field(..., ge=0.0, le=1.0)
+    semantic_drift_drop_threshold: float = Field(..., ge=0.0, le=1.0)
+    semantic_drift_relation_threshold: int = Field(..., ge=0)
+
+    @model_validator(mode="after")
+    def _validate_thresholds(self) -> "ObservabilityQualityConfig":
+        if self.noise_control_warning < self.noise_control_target:
+            msg = "noise_control_warning must be >= noise_control_target"
+            raise ValueError(msg)
+        if self.duplicate_rate_warning > self.duplicate_rate_target:
+            msg = "duplicate_rate_warning must be <= duplicate_rate_target"
+            raise ValueError(msg)
+        return self
+
+
 class ObservabilityConfig(_FrozenModel):
     """Filesystem locations for observability artifacts."""
 
@@ -520,6 +541,10 @@ class ObservabilityConfig(_FrozenModel):
     export_events_filename: str = Field("export_events.jsonl", min_length=1)
     qa_metrics_filename: str = Field("qa_metrics.jsonl", min_length=1)
     kpi_history_filename: str = Field("kpi_history.jsonl", min_length=1)
+    audit_results_filename: str = Field("edge_audits.jsonl", min_length=1)
+    semantic_drift_filename: str = Field("semantic_drift.jsonl", min_length=1)
+    quality_alerts_filename: str = Field("quality_alerts.jsonl", min_length=1)
+    quality: ObservabilityQualityConfig
 
 
 class AuthJWTConfig(_FrozenModel):
