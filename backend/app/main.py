@@ -47,7 +47,7 @@ from backend.app.extraction import (
     TwoPassTripletExtractor,
 )
 from backend.app.graph import GraphWriter
-from backend.app.observability import ObservabilityService
+from backend.app.observability import ObservabilityDashboard, ObservabilityService
 from backend.app.orchestration import ExtractionOrchestrator, OrchestrationResult
 from backend.app.orchestration.orchestrator import ProcessedChunkStore
 from backend.app.parsing import ParsingPipeline
@@ -334,6 +334,24 @@ def create_app(
         """Return service health information."""
 
         return {"status": "ok", "pipeline_version": resolved_config.pipeline.version}
+
+    @app.get(
+        "/observability/dashboard",
+        tags=["observability"],
+        summary="Render observability dashboard",
+        response_class=HTMLResponse,
+    )
+    def observability_dashboard() -> HTMLResponse:
+        """Render the observability dashboard as HTML."""
+
+        service: Optional[ObservabilityService] = getattr(app.state, "observability", None)
+        if service is None:
+            raise HTTPException(status_code=503, detail="Observability service unavailable")
+        registry = getattr(app.state, "paper_registry", None)
+        dashboard = ObservabilityDashboard(service, paper_registry=registry)
+        snapshot = dashboard.snapshot()
+        html_content = dashboard.render_html(snapshot)
+        return HTMLResponse(content=html_content)
 
     @app.get("/api/ui/settings", tags=["ui"], summary="UI configuration defaults")
     def ui_settings() -> UISettingsResponse:

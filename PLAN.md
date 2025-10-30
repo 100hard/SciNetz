@@ -823,6 +823,8 @@ if estimated_size_mb > config.export.max_bundle_mb:
 ---
 ## Phase 10 — Observability & KPIs (1 day)
 
+> Status: ✅ Completed. Run-level manifests, KPI history, quality alerts, and the HTML dashboard (`GET /observability/dashboard`) are live and consuming the shareable link telemetry.
+
 ### Goal
 Know when to ship; measure quality continuously.
 
@@ -897,7 +899,7 @@ Persist failure annotations so duplicate/noise KPIs can trend over time and feed
 
 ### Dashboard & Alerts
 
-**Real-time dashboard (simple HTML page):**
+**Real-time dashboard (simple HTML page):** _(Implemented: `/observability/dashboard` renders aggregated queue status, per-run metrics, KPI history, alerts, and export telemetry from JSONL artifacts.)_
 - Current extraction queue status
 - Per-paper metrics table (rows = papers, columns = metrics) grouped by `run_id`
 - KPI status indicators (green/yellow/red) with trend history from persisted evaluations

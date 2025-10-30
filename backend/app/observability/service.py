@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Mapping, MutableMapping, Optional, Sequence
+from typing_extensions import Literal
 from uuid import uuid4
 
 from backend.app.config import ObservabilityConfig
@@ -157,6 +158,31 @@ class ObservabilityService:
             self._quality_alerts_path,
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
+
+    def artifact_path(
+        self,
+        artifact: Literal[
+            "run_manifests",
+            "export_events",
+            "qa_metrics",
+            "kpi_history",
+            "audit_results",
+            "semantic_drift",
+            "quality_alerts",
+        ],
+    ) -> Path:
+        """Return the filesystem path for a named observability artifact."""
+
+        mapping = {
+            "run_manifests": self._run_manifests_path,
+            "export_events": self._export_events_path,
+            "qa_metrics": self._qa_metrics_path,
+            "kpi_history": self._kpi_history_path,
+            "audit_results": self._audit_results_path,
+            "semantic_drift": self._semantic_drift_path,
+            "quality_alerts": self._quality_alerts_path,
+        }
+        return mapping[artifact]
 
     def now(self) -> datetime:
         """Return the current timestamp in UTC."""

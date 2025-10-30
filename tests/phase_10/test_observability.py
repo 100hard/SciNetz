@@ -1,10 +1,33 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Sequence
 
 from backend.app.config import ObservabilityConfig, ObservabilityQualityConfig
-from backend.app.observability import ObservabilityService
+from backend.app.observability import ObservabilityDashboard, ObservabilityService
+
+
+@dataclass(frozen=True)
+class _StubStatus:
+    value: str
+
+
+@dataclass(frozen=True)
+class _StubRecord:
+    paper_id: str
+    filename: str
+    status: _StubStatus
+    updated_at: datetime
+
+
+class _StubRegistry:
+    def __init__(self, records: Sequence[_StubRecord]) -> None:
+        self._records = list(records)
+
+    def list_records(self) -> Sequence[_StubRecord]:
+        return list(self._records)
 
 
 def _config() -> ObservabilityConfig:
@@ -166,3 +189,126 @@ def test_semantic_drift_detection_emits_alert(tmp_path) -> None:
     metrics = [entry["metric"] for entry in alerts_lines]
     assert "semantic_drift" in metrics
     assert "relation_type_growth" in metrics
+
+
+def test_observability_artifact_path_resolves(tmp_path) -> None:
+    service = ObservabilityService(
+        _config(),
+        root_dir=tmp_path,
+        clock=lambda: datetime(2024, 1, 1, tzinfo=timezone.utc),
+    )
+
+    runs_path = service.artifact_path("run_manifests")
+    alerts_path = service.artifact_path("quality_alerts")
+
+    assert runs_path == (tmp_path / "observability" / "runs.jsonl")
+    assert alerts_path == (tmp_path / "observability" / "alerts.jsonl")
+
+
+def test_dashboard_snapshot_and_render(tmp_path) -> None:
+    clock_time = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
+    service = ObservabilityService(_config(), root_dir=tmp_path, clock=lambda: clock_time)
+
+    run = service.start_run(papers=["paper-1"], pipeline_version="1.2.3")
+    run.record_document(
+        "paper-1",
+        {
+            "parsed_elements": 10,
+            "processed_chunks": 5,
+            "attempted_triples": 12,
+            "accepted_triples": 10,
+            "rejected_triples": 2,
+            "nodes_written": 4,
+            "edges_written": 8,
+            "co_mention_edges": 2,
+        },
+        errors=["parse warning"],
+    )
+    run.record_summary({"documents": 1, "co_mention_edges": 2})
+    run.finalize()
+
+    service.record_qa_metrics(
+        {
+            "question": "Q1",
+            "mode": "direct",
+            "resolution_seconds": 0.5,
+            "total_seconds": 1.2,
+            "paths": 1,
+            "fallback_edges": 0,
+        }
+    )
+    service.record_qa_metrics(
+        {
+            "question": "Q2",
+            "mode": "direct",
+            "resolution_seconds": 1.0,
+            "total_seconds": 2.0,
+            "paths": 0,
+            "fallback_edges": 2,
+        }
+    )
+    service.persist_kpi_snapshot(
+        {"metric": "noise_control", "value": 0.9, "status": "green", "timestamp": clock_time.isoformat()}
+    )
+    service.persist_kpi_snapshot(
+        {"metric": "noise_control", "value": 0.8, "status": "amber", "timestamp": clock_time.isoformat()}
+    )
+    service.record_quality_alert(
+        level="warning",
+        metric="noise_control",
+        current_value=0.8,
+        threshold=0.85,
+        context={"run_id": "run-demo"},
+    )
+    service.record_export_event(
+        "create",
+        {
+            "metadata_id": "meta-1",
+            "bundle_size_bytes": 2_000_000,
+            "warning": False,
+        },
+    )
+    service.record_export_event(
+        "download",
+        {
+            "metadata_id": "meta-1",
+            "first_download": True,
+            "latency_seconds": 3.0,
+        },
+    )
+
+    registry = _StubRegistry(
+        [
+            _StubRecord(
+                paper_id="paper-1",
+                filename="demo.pdf",
+                status=_StubStatus("uploaded"),
+                updated_at=clock_time,
+            ),
+            _StubRecord(
+                paper_id="paper-2",
+                filename="second.pdf",
+                status=_StubStatus("processing"),
+                updated_at=clock_time,
+            ),
+        ]
+    )
+
+    dashboard = ObservabilityDashboard(service, paper_registry=registry)
+    snapshot = dashboard.snapshot()
+
+    assert snapshot.queue.totals["processing"] == 1
+    assert snapshot.queue.totals["uploaded"] == 1
+    assert snapshot.exports.created == 1
+    assert snapshot.exports.downloads == 1
+    assert snapshot.exports.pending_first_downloads == 0
+    assert snapshot.qa.fallback_queries == 1
+    assert snapshot.soft_failures.co_mention_edges == 2
+    assert snapshot.kpis and snapshot.kpis[0].metric == "noise_control"
+    assert snapshot.alerts and snapshot.alerts[0].metric == "noise_control"
+    assert any("parse warning" in error for error in snapshot.recent_errors)
+
+    html_content = dashboard.render_html(snapshot)
+    assert "SciNetz Observability Dashboard" in html_content
+    assert snapshot.runs[0].run_id in html_content
+    assert "Extraction Queue" in html_content
