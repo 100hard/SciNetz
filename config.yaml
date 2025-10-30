@@ -736,3 +736,19 @@ ui:
   lexical_similarity_threshold: 0.9
   lexical_similarity_bonus: 0.04
   type_match_bonus: 0.03
+observability:
+  root_dir: data/observability
+  run_manifests_filename: runs.jsonl
+  export_events_filename: export_events.jsonl
+  qa_metrics_filename: qa_metrics.jsonl
+  kpi_history_filename: kpi_history.jsonl
+  audit_results_filename: edge_audits.jsonl
+  semantic_drift_filename: semantic_drift.jsonl
+  quality_alerts_filename: quality_alerts.jsonl
+  quality:
+    noise_control_target: 0.85
+    noise_control_warning: 0.9
+    duplicate_rate_target: 0.1
+    duplicate_rate_warning: 0.05
+    semantic_drift_drop_threshold: 0.25
+    semantic_drift_relation_threshold: 3
