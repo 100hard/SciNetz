@@ -95,6 +95,8 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.graph.relation_semantics["interacts-with"] == "bidirectional"
     assert config.graph.entity_batch_size == 200
     assert config.graph.edge_batch_size == 500
+    assert config.observability.root_dir == "data/observability"
+    assert config.observability.run_manifests_filename == "runs.jsonl"
 
 
 def test_config_strict_fields_match_yaml() -> None:

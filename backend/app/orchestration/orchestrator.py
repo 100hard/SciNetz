@@ -22,6 +22,7 @@ from backend.app.extraction import (
 from backend.app.graph import GraphWriter
 from backend.app.graph.writer import AliasResolution
 from backend.app.parsing import ParsingPipeline
+from backend.app.observability import ObservabilityRun, ObservabilityService
 
 LOGGER = logging.getLogger(__name__)
 
@@ -130,6 +131,12 @@ class _DocumentProcessingState:
     processed_chunks: int = 0
     skipped_chunks: int = 0
     co_mention_edges: int = 0
+    parsed_elements: int = 0
+    entity_candidates: int = 0
+    attempted_triples: int = 0
+    accepted_triples: int = 0
+    rejected_triples: int = 0
+    rejection_reasons: Dict[str, int] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
     extractions: List[ExtractionResult] = field(default_factory=list)
     edge_records: List[_EdgeRecord] = field(default_factory=list)
@@ -385,6 +392,7 @@ class ExtractionOrchestrator:
         canonicalization: CanonicalizationPipeline,
         graph_writer: GraphWriter,
         chunk_store: ProcessedChunkStore,
+        observability: Optional[ObservabilityService] = None,
     ) -> None:
         self._config = config
         self._parsing = parsing_pipeline
@@ -394,6 +402,7 @@ class ExtractionOrchestrator:
         self._canonicalization = canonicalization
         self._graph_writer = graph_writer
         self._chunk_store = chunk_store
+        self._observability = observability
 
     def _process_document(self, request: BatchExtractionInput) -> _DocumentProcessingState:
         """Parse and extract a single document without performing canonicalization."""
@@ -406,6 +415,7 @@ class ExtractionOrchestrator:
         parse_elapsed = perf_counter() - parse_start
         state = _DocumentProcessingState(doc_id=request.paper_id, metadata=parse_result.metadata)
         state.timings.parse_seconds = parse_elapsed
+        state.parsed_elements = len(parse_result.elements)
         if parse_result.errors:
             LOGGER.error("Parsing failed for %s: %s", request.paper_id, parse_result.errors)
             state.errors.extend(str(error) for error in parse_result.errors)
@@ -445,6 +455,7 @@ class ExtractionOrchestrator:
                     domain=domain_name,
                 )
                 state.timings.inventory_seconds += perf_counter() - inventory_start
+                state.entity_candidates += len(candidate_entities)
             extract_start = perf_counter()
             try:
                 extraction = self._triplet_extractor.extract_with_metadata(
@@ -466,6 +477,7 @@ class ExtractionOrchestrator:
                             domain=domain_name,
                         )
                         state.timings.inventory_seconds += perf_counter() - inventory_start
+                        state.entity_candidates += len(fallback_candidates)
                     co_mention_accumulator.record(element, fallback_candidates, domain=domain_name)
                     state.processed_chunks += 1
                     self._chunk_store.mark_processed(
@@ -476,6 +488,10 @@ class ExtractionOrchestrator:
             state.timings.extraction_seconds += perf_counter() - extract_start
             state.extractions.append(extraction)
             state.processed_chunks += 1
+            state.attempted_triples += extraction.attempted_triples or len(extraction.triplets)
+            state.accepted_triples += len(extraction.triplets)
+            state.rejected_triples += extraction.rejected_triples
+            self._merge_rejection_reasons(state.rejection_reasons, extraction.rejection_reasons)
             self._chunk_store.mark_processed(element.doc_id, element.content_hash, pipeline_version)
             for idx, triplet in enumerate(extraction.triplets):
                 relation_verbatim = triplet.predicate
@@ -499,6 +515,7 @@ class ExtractionOrchestrator:
             state.co_mention_edges += len(products)
             for product in products:
                 state.extractions.append(product.extraction)
+                state.accepted_triples += len(product.extraction.triplets)
                 state.edge_records.append(product.edge)
 
         self._log_document_timings(state)
@@ -516,200 +533,288 @@ class ExtractionOrchestrator:
         if not requests:
             msg = "requests must not be empty"
             raise ValueError(msg)
-
-        states: List[_DocumentProcessingState] = []
-        for request in requests:
-            state = self._process_document(request)
-            states.append(state)
-
-        extraction_results: List[ExtractionResult] = []
-        edge_records: List[_EdgeRecord] = []
-        for state in states:
-            extraction_results.extend(state.extractions)
-            edge_records.extend(state.edge_records)
-
-        nodes_written = 0
-        edges_written = 0
-        doc_node_map: Dict[str, Set[str]] = {}
-        node_sources: Dict[str, FrozenSet[str]] = {}
-        doc_edge_counts: Dict[str, int] = {}
-        batch_errors: List[str] = []
-        canonical_start = perf_counter()
-        try:
-            canonical_result = self._canonicalization.run(extraction_results)
-        except Exception as exc:  # noqa: BLE001 - protective barrier around persistence
-            canonical_elapsed = perf_counter() - canonical_start
-            LOGGER.exception(
-                "Failed to canonicalize extraction batch after %.2fs", canonical_elapsed
+        run_context: Optional[ObservabilityRun] = None
+        run_start = perf_counter()
+        if self._observability is not None:
+            run_context = self._observability.start_run(
+                papers=[request.paper_id for request in requests],
+                pipeline_version=self._config.pipeline.version,
             )
-            message = str(exc)
-            batch_errors.append(message)
+
+        try:
+            states: List[_DocumentProcessingState] = []
+            for request in requests:
+                state = self._process_document(request)
+                states.append(state)
+                if run_context is not None:
+                    metrics = {
+                        "parsed_elements": state.parsed_elements,
+                        "processed_chunks": state.processed_chunks,
+                        "skipped_chunks": state.skipped_chunks,
+                        "attempted_triples": state.attempted_triples,
+                        "accepted_triples": state.accepted_triples,
+                        "rejected_triples": state.rejected_triples,
+                        "rejection_reasons": dict(state.rejection_reasons),
+                        "co_mention_edges": state.co_mention_edges,
+                        "entity_candidates": state.entity_candidates,
+                        "timings": {
+                            "parse_seconds": state.timings.parse_seconds,
+                            "domain_seconds": state.timings.domain_seconds,
+                            "inventory_seconds": state.timings.inventory_seconds,
+                            "extraction_seconds": state.timings.extraction_seconds,
+                            "co_mention_seconds": state.timings.co_mention_seconds,
+                        },
+                    }
+                    run_context.record_document(state.doc_id, metrics, errors=state.errors)
+
+            extraction_results: List[ExtractionResult] = []
+            edge_records: List[_EdgeRecord] = []
             for state in states:
-                state.errors.append(message)
+                extraction_results.extend(state.extractions)
+                edge_records.extend(state.edge_records)
+
             nodes_written = 0
             edges_written = 0
-        else:
-            canonical_elapsed = perf_counter() - canonical_start
-            LOGGER.info(
-                "Canonicalization completed for %d documents in %.2fs",
-                len(states),
-                canonical_elapsed,
-            )
-            canonical_nodes = list(canonical_result.nodes)
-            merge_map = dict(canonical_result.merge_map)
-            alias_entries = self._collect_alias_entries(canonical_nodes, merge_map)
-            alias_resolutions: Dict[str, AliasResolution] = {}
-            if alias_entries:
-                alias_resolutions = self._graph_writer.resolve_aliases(alias_entries)
-            resolved_nodes, replacements = self._apply_alias_resolutions(
-                canonical_nodes, alias_resolutions
-            )
-            if replacements:
-                merge_map = {
-                    alias_key: replacements.get(node_id, node_id)
-                    for alias_key, node_id in merge_map.items()
-                }
-            alias_lookup = self._build_alias_lookup(resolved_nodes, merge_map)
-            node_ids = [node.node_id for node in resolved_nodes]
-            existing_documents = self._graph_writer.get_node_documents(node_ids)
-            alias_document_map = self._build_alias_document_map(alias_resolutions, replacements)
-            graph_write_start = perf_counter()
-            graph_persistence_failed = False
+            doc_node_map: Dict[str, Set[str]] = {}
+            node_sources: Dict[str, FrozenSet[str]] = {}
+            doc_edge_counts: Dict[str, int] = {}
+            batch_errors: List[str] = []
+            canonical_nodes: List[Node] = []
+            merge_map: Dict[str, str] = {}
+            canonical_start = perf_counter()
+            canonical_elapsed = 0.0
+            graph_elapsed = 0.0
             try:
-                for node in resolved_nodes:
-                    self._graph_writer.upsert_entity(node)
-                    nodes_written += 1
-                    docs = {
-                        str(doc_id).strip()
-                        for doc_id in getattr(node, "source_document_ids", []) or []
-                        if str(doc_id).strip()
-                    }
-                    existing_docs = existing_documents.get(node.node_id)
-                    if existing_docs:
-                        docs.update(existing_docs)
-                    alias_docs = alias_document_map.get(node.node_id)
-                    if alias_docs:
-                        docs.update(alias_docs)
-                    node_sources[node.node_id] = frozenset(docs)
-                    for doc_id in node.source_document_ids:
-                        if not doc_id:
-                            continue
-                        doc_node_map.setdefault(doc_id, set()).add(node.node_id)
-                for state in states:
-                    if not state.requires_deprecation:
-                        continue
-                    try:
-                        deprecated_count = self._graph_writer.deprecate_edges(state.doc_id)
-                        if deprecated_count:
-                            LOGGER.info(
-                                "Marked %s edges as deprecated for %s",
-                                deprecated_count,
-                                state.doc_id,
-                            )
-                    except Exception as exc:  # noqa: BLE001 - surfaced to result payload
-                        message = f"Failed to deprecate edges for {state.doc_id}: {exc}"
-                        LOGGER.exception(message)
-                        batch_errors.append(message)
-                        state.errors.append(message)
-                for record in edge_records:
-                    src_id = self._resolve_node(alias_lookup, record.triplet.subject)
-                    dst_id = self._resolve_node(alias_lookup, record.triplet.object)
-                    if not src_id or not dst_id:
-                        LOGGER.warning(
-                            "Skipping edge; missing canonical nodes for %s -> %s",
-                            record.triplet.subject,
-                            record.triplet.object,
-                        )
-                        continue
-                    relation_verbatim = record.relation_verbatim or record.triplet.predicate
-                    attributes: Dict[str, str] = dict(record.attributes or {})
-                    if self._is_cross_paper_edge(node_sources, src_id, dst_id):
-                        attributes["cross_paper"] = "true"
-                    final_attributes = attributes or None
-                    self._graph_writer.upsert_edge(
-                        src_id=src_id,
-                        dst_id=dst_id,
-                        relation_norm=record.triplet.predicate,
-                        relation_verbatim=relation_verbatim,
-                        evidence=record.triplet.evidence,
-                        confidence=record.triplet.confidence,
-                        attributes=final_attributes,
-                        times_seen=record.times_seen,
-                    )
-                    edges_written += 1
-                    doc_id = record.triplet.evidence.doc_id
-                    if doc_id:
-                        doc_edge_counts[doc_id] = doc_edge_counts.get(doc_id, 0) + 1
-                self._graph_writer.flush()
+                canonical_result = self._canonicalization.run(extraction_results)
             except Exception as exc:  # noqa: BLE001 - protective barrier around persistence
-                graph_persistence_failed = True
-                graph_elapsed = perf_counter() - graph_write_start
+                canonical_elapsed = perf_counter() - canonical_start
                 LOGGER.exception(
-                    "Failed to persist extraction results for batch after %.2fs",
-                    graph_elapsed,
+                    "Failed to canonicalize extraction batch after %.2fs", canonical_elapsed
                 )
                 message = str(exc)
                 batch_errors.append(message)
                 for state in states:
                     state.errors.append(message)
-                nodes_written = 0
-                edges_written = 0
-            finally:
-                graph_elapsed = perf_counter() - graph_write_start
-                if not graph_persistence_failed:
-                    LOGGER.info(
-                        "Graph persistence completed (nodes=%d edges=%d) in %.2fs",
-                        nodes_written,
-                        edges_written,
+                if run_context is not None:
+                    run_context.record_batch_errors([message])
+            else:
+                canonical_elapsed = perf_counter() - canonical_start
+                LOGGER.info(
+                    "Canonicalization completed for %d documents in %.2fs",
+                    len(states),
+                    canonical_elapsed,
+                )
+                canonical_nodes = list(canonical_result.nodes)
+                merge_map = dict(canonical_result.merge_map)
+                alias_entries = self._collect_alias_entries(canonical_nodes, merge_map)
+                alias_resolutions: Dict[str, AliasResolution] = {}
+                if alias_entries:
+                    alias_resolutions = self._graph_writer.resolve_aliases(alias_entries)
+                resolved_nodes, replacements = self._apply_alias_resolutions(
+                    canonical_nodes, alias_resolutions
+                )
+                if replacements:
+                    merge_map = {
+                        alias_key: replacements.get(node_id, node_id)
+                        for alias_key, node_id in merge_map.items()
+                    }
+                alias_lookup = self._build_alias_lookup(resolved_nodes, merge_map)
+                node_ids = [node.node_id for node in resolved_nodes]
+                existing_documents = self._graph_writer.get_node_documents(node_ids)
+                alias_document_map = self._build_alias_document_map(alias_resolutions, replacements)
+                graph_write_start = perf_counter()
+                graph_persistence_failed = False
+                try:
+                    for node in resolved_nodes:
+                        self._graph_writer.upsert_entity(node)
+                        nodes_written += 1
+                        docs = {
+                            str(doc_id).strip()
+                            for doc_id in getattr(node, "source_document_ids", []) or []
+                            if str(doc_id).strip()
+                        }
+                        existing_docs = existing_documents.get(node.node_id)
+                        if existing_docs:
+                            docs.update(existing_docs)
+                        alias_docs = alias_document_map.get(node.node_id)
+                        if alias_docs:
+                            docs.update(alias_docs)
+                        node_sources[node.node_id] = frozenset(docs)
+                        for doc_id in node.source_document_ids:
+                            if not doc_id:
+                                continue
+                            doc_node_map.setdefault(doc_id, set()).add(node.node_id)
+                    for state in states:
+                        if not state.requires_deprecation:
+                            continue
+                        try:
+                            deprecated_count = self._graph_writer.deprecate_edges(state.doc_id)
+                            if deprecated_count:
+                                LOGGER.info(
+                                    "Marked %s edges as deprecated for %s",
+                                    deprecated_count,
+                                    state.doc_id,
+                                )
+                        except Exception as exc:  # noqa: BLE001 - surfaced to result payload
+                            message = f"Failed to deprecate edges for {state.doc_id}: {exc}"
+                            LOGGER.exception(message)
+                            batch_errors.append(message)
+                            state.errors.append(message)
+                            if run_context is not None:
+                                run_context.record_batch_errors([message])
+                    for record in edge_records:
+                        src_id = self._resolve_node(alias_lookup, record.triplet.subject)
+                        dst_id = self._resolve_node(alias_lookup, record.triplet.object)
+                        if not src_id or not dst_id:
+                            LOGGER.warning(
+                                "Skipping edge; missing canonical nodes for %s -> %s",
+                                record.triplet.subject,
+                                record.triplet.object,
+                            )
+                            continue
+                        relation_verbatim = record.relation_verbatim or record.triplet.predicate
+                        attributes: Dict[str, str] = dict(record.attributes or {})
+                        if self._is_cross_paper_edge(node_sources, src_id, dst_id):
+                            attributes["cross_paper"] = "true"
+                        final_attributes = attributes or None
+                        self._graph_writer.upsert_edge(
+                            src_id=src_id,
+                            dst_id=dst_id,
+                            relation_norm=record.triplet.predicate,
+                            relation_verbatim=relation_verbatim,
+                            evidence=record.triplet.evidence,
+                            confidence=record.triplet.confidence,
+                            attributes=final_attributes,
+                            times_seen=record.times_seen,
+                        )
+                        edges_written += 1
+                        doc_id = record.triplet.evidence.doc_id
+                        if doc_id:
+                            doc_edge_counts[doc_id] = doc_edge_counts.get(doc_id, 0) + 1
+                    self._graph_writer.flush()
+                except Exception as exc:  # noqa: BLE001 - protective barrier around persistence
+                    graph_persistence_failed = True
+                    graph_elapsed = perf_counter() - graph_write_start
+                    LOGGER.exception(
+                        "Failed to persist extraction results for batch after %.2fs",
                         graph_elapsed,
                     )
+                    message = str(exc)
+                    batch_errors.append(message)
+                    for state in states:
+                        state.errors.append(message)
+                    nodes_written = 0
+                    edges_written = 0
+                    if run_context is not None:
+                        run_context.record_batch_errors([message])
+                finally:
+                    graph_elapsed = perf_counter() - graph_write_start
+                    if not graph_persistence_failed:
+                        LOGGER.info(
+                            "Graph persistence completed (nodes=%d edges=%d) in %.2fs",
+                            nodes_written,
+                            edges_written,
+                            graph_elapsed,
+                        )
 
-        chunk_flush_start = perf_counter()
-        try:
-            self._chunk_store.flush()
-        except OSError as exc:
-            LOGGER.exception("Failed to persist processed chunk registry")
-            message = str(exc)
-            batch_errors.append(message)
+            if run_context is not None:
+                run_context.record_phase_metrics(
+                    "canonicalization",
+                    {
+                        "seconds": canonical_elapsed,
+                        "documents": len(states),
+                        "nodes": len(canonical_nodes),
+                        "merge_map_entries": len(merge_map),
+                    },
+                )
+                run_context.record_phase_metrics(
+                    "graph_write",
+                    {
+                        "seconds": graph_elapsed,
+                        "nodes": nodes_written,
+                        "edges": edges_written,
+                    },
+                )
+
+            chunk_flush_start = perf_counter()
+            chunk_elapsed = 0.0
+            try:
+                self._chunk_store.flush()
+            except OSError as exc:
+                chunk_elapsed = perf_counter() - chunk_flush_start
+                LOGGER.exception("Failed to persist processed chunk registry")
+                message = str(exc)
+                batch_errors.append(message)
+                for state in states:
+                    state.errors.append(message)
+                if run_context is not None:
+                    run_context.record_batch_errors([message])
+            else:
+                chunk_elapsed = perf_counter() - chunk_flush_start
+                LOGGER.info("Processed chunk registry flush completed in %.2fs", chunk_elapsed)
+
+            if run_context is not None:
+                run_context.record_phase_metrics("chunk_store", {"seconds": chunk_elapsed})
+
+            documents: Dict[str, OrchestrationResult] = {}
             for state in states:
-                state.errors.append(message)
-        else:
-            chunk_elapsed = perf_counter() - chunk_flush_start
-            LOGGER.info("Processed chunk registry flush completed in %.2fs", chunk_elapsed)
+                doc_nodes = len(doc_node_map.get(state.doc_id, set()))
+                doc_edges = doc_edge_counts.get(state.doc_id, 0)
+                documents[state.doc_id] = OrchestrationResult(
+                    doc_id=state.doc_id,
+                    metadata=state.metadata,
+                    processed_chunks=state.processed_chunks,
+                    skipped_chunks=state.skipped_chunks,
+                    nodes_written=doc_nodes,
+                    edges_written=doc_edges,
+                    co_mention_edges=state.co_mention_edges,
+                    errors=list(state.errors),
+                )
+                if run_context is not None:
+                    run_context.record_document(
+                        state.doc_id,
+                        {
+                            "nodes_written": doc_nodes,
+                            "edges_written": doc_edges,
+                            "co_mention_edges": state.co_mention_edges,
+                        },
+                        errors=[],
+                    )
 
-        documents: Dict[str, OrchestrationResult] = {}
-        for state in states:
-            doc_nodes = len(doc_node_map.get(state.doc_id, set()))
-            doc_edges = doc_edge_counts.get(state.doc_id, 0)
-            documents[state.doc_id] = OrchestrationResult(
-                doc_id=state.doc_id,
-                metadata=state.metadata,
-                processed_chunks=state.processed_chunks,
-                skipped_chunks=state.skipped_chunks,
-                nodes_written=doc_nodes,
-                edges_written=doc_edges,
-                co_mention_edges=state.co_mention_edges,
-                errors=list(state.errors),
+            total_processed = sum(state.processed_chunks for state in states)
+            total_skipped = sum(state.skipped_chunks for state in states)
+            total_co_mentions = sum(state.co_mention_edges for state in states)
+            aggregated_errors = list(
+                dict.fromkeys(
+                    [error for state in states for error in state.errors] + batch_errors
+                )
             )
 
-        total_processed = sum(state.processed_chunks for state in states)
-        total_skipped = sum(state.skipped_chunks for state in states)
-        total_co_mentions = sum(state.co_mention_edges for state in states)
-        aggregated_errors = list(
-            dict.fromkeys(
-                [error for state in states for error in state.errors] + batch_errors
-            )
-        )
+            if run_context is not None:
+                batch_summary = {
+                    "documents": len(states),
+                    "processed_chunks": total_processed,
+                    "skipped_chunks": total_skipped,
+                    "nodes_written": nodes_written,
+                    "edges_written": edges_written,
+                    "co_mention_edges": total_co_mentions,
+                }
+                run_context.record_summary(batch_summary)
+                run_context.record_batch_errors(batch_errors)
 
-        return BatchOrchestrationResult(
-            documents=documents,
-            total_processed_chunks=total_processed,
-            total_skipped_chunks=total_skipped,
-            total_nodes_written=nodes_written,
-            total_edges_written=edges_written,
-            total_co_mention_edges=total_co_mentions,
-            errors=aggregated_errors,
-        )
+            return BatchOrchestrationResult(
+                documents=documents,
+                total_processed_chunks=total_processed,
+                total_skipped_chunks=total_skipped,
+                total_nodes_written=nodes_written,
+                total_edges_written=edges_written,
+                total_co_mention_edges=total_co_mentions,
+                errors=aggregated_errors,
+            )
+        finally:
+            if run_context is not None:
+                run_context.set_total_seconds(perf_counter() - run_start)
+                run_context.finalize()
 
     @staticmethod
     def _log_document_timings(state: _DocumentProcessingState) -> None:
@@ -729,6 +834,16 @@ class ExtractionOrchestrator:
             state.skipped_chunks,
             len(state.errors),
         )
+
+    @staticmethod
+    def _merge_rejection_reasons(
+        target: Dict[str, int],
+        reasons: Mapping[str, int],
+    ) -> None:
+        for reason, count in reasons.items():
+            if count <= 0:
+                continue
+            target[reason] = target.get(reason, 0) + int(count)
 
     @staticmethod
     def _collect_alias_entries(

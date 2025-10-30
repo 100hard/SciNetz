@@ -138,6 +138,9 @@ class ExtractionResult:
     section_distribution: Dict[str, Dict[str, int]]
     relation_verbatims: List[str] = field(default_factory=list)
     entity_type_votes: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    attempted_triples: int = 0
+    rejected_triples: int = 0
+    rejection_reasons: Dict[str, int] = field(default_factory=dict)
 
 
 class _TruncationError(RuntimeError):
@@ -951,7 +954,7 @@ class TwoPassTripletExtractor:
             List[Triplet]: Triples that passed span validation and normalization.
         """
 
-        triplets, _, _, _ = self._extract_internal(
+        triplets, _, _, _, _, _ = self._extract_internal(
             element,
             candidate_entities,
             metadata=metadata,
@@ -969,17 +972,28 @@ class TwoPassTripletExtractor:
     ) -> "ExtractionResult":
         """Extract triples and section distribution metadata for canonicalization."""
 
-        triplets, section_distribution, verbatims, type_votes = self._extract_internal(
+        (
+            triplets,
+            section_distribution,
+            verbatims,
+            type_votes,
+            attempted_count,
+            rejection_reasons,
+        ) = self._extract_internal(
             element,
             candidate_entities,
             metadata=metadata,
             domain=domain,
         )
+        rejected_count = max(attempted_count - len(triplets), 0)
         return ExtractionResult(
             triplets=triplets,
             section_distribution=section_distribution,
             relation_verbatims=verbatims,
             entity_type_votes=type_votes,
+            attempted_triples=attempted_count,
+            rejected_triples=rejected_count,
+            rejection_reasons=rejection_reasons,
         )
 
     def _extract_internal(
@@ -994,6 +1008,8 @@ class TwoPassTripletExtractor:
         Dict[str, Dict[str, int]],
         List[str],
         Dict[str, Dict[str, int]],
+        int,
+        Dict[str, int],
     ]:
         """Run LLM extraction and span validation, returning metadata.
 
@@ -1020,11 +1036,16 @@ class TwoPassTripletExtractor:
         section_counts: Dict[str, Dict[str, int]] = {}
         relation_verbatims: List[str] = []
         type_votes: Dict[str, Dict[str, int]] = {}
+        rejection_reasons: Dict[str, int] = {}
+
+        def _record_rejection(reason: str) -> None:
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
         for raw in raw_triples:
             try:
                 normalized_relation, swap = normalize_relation(raw.relation_verbatim)
             except ValueError:
                 LOGGER.info("Dropping triple with unmapped relation: %s", raw.relation_verbatim)
+                _record_rejection("relation_unmapped")
                 continue
             subject_text = raw.subject_text.strip()
             object_text = raw.object_text.strip()
@@ -1032,12 +1053,15 @@ class TwoPassTripletExtractor:
             object_type = self._normalize_entity_type(raw.object_type)
             if not subject_text or not object_text:
                 LOGGER.info("Dropping triple with empty subject/object: %s", raw)
+                _record_rejection("empty_entity")
                 continue
             if self._is_ambiguous_type(subject_type):
                 LOGGER.info("Dropping triple; ambiguous subject type: %s", raw.subject_type)
+                _record_rejection("subject_type_ambiguous")
                 continue
             if self._is_ambiguous_type(object_type):
                 LOGGER.info("Dropping triple; ambiguous object type: %s", raw.object_type)
+                _record_rejection("object_type_ambiguous")
                 continue
             sentence_text = self._resolve_supportive_sentence(
                 raw,
@@ -1047,15 +1071,18 @@ class TwoPassTripletExtractor:
             )
             if not sentence_text:
                 LOGGER.info("Dropping triple; supportive sentence unavailable: %s", raw)
+                _record_rejection("sentence_missing")
                 continue
             if not (0.0 <= raw.confidence <= 1.0):
                 LOGGER.info("Dropping triple with invalid confidence %.3f", raw.confidence)
+                _record_rejection("invalid_confidence")
                 continue
             if swap:
                 subject_text, object_text = object_text, subject_text
                 subject_type, object_type = object_type, subject_type
             if subject_text.casefold() == object_text.casefold():
                 LOGGER.info("Dropping triple; subject and object identical: %s", subject_text)
+                _record_rejection("identical_entities")
                 continue
             subject_span = self._find_span(
                 element.content,
@@ -1074,24 +1101,31 @@ class TwoPassTripletExtractor:
             )
             if not subject_span:
                 LOGGER.info("Dropping triple; subject span not found: %s", subject_text)
+                _record_rejection("subject_span_missing")
                 continue
             if not object_span:
                 LOGGER.info("Dropping triple; object span not found: %s", object_text)
+                _record_rejection("object_span_missing")
                 continue
             if subject_span[0] < 0 or subject_span[1] > len(element.content):
                 LOGGER.info("Dropping triple; subject span out of bounds: %s", subject_span)
+                _record_rejection("subject_span_out_of_bounds")
                 continue
             if object_span[0] < 0 or object_span[1] > len(element.content):
                 LOGGER.info("Dropping triple; object span out of bounds: %s", object_span)
+                _record_rejection("object_span_out_of_bounds")
                 continue
             if spans_overlap(subject_span, object_span):
                 LOGGER.info("Dropping triple; overlapping subject/object spans: %s", raw)
+                _record_rejection("span_overlap")
                 continue
             if not sentence_span:
                 LOGGER.info("Dropping triple; sentence span not found: %s", sentence_text)
+                _record_rejection("sentence_span_missing")
                 continue
             if sentence_span[0] < 0 or sentence_span[1] > len(element.content):
                 LOGGER.info("Dropping triple; sentence span out of bounds: %s", sentence_span)
+                _record_rejection("sentence_span_out_of_bounds")
                 continue
             evidence = Evidence(
                 element_id=element.element_id,
@@ -1125,7 +1159,15 @@ class TwoPassTripletExtractor:
             )
         section_distribution = {entity: dict(counts) for entity, counts in section_counts.items()}
         entity_type_votes = {entity: dict(counts) for entity, counts in type_votes.items()}
-        return accepted, section_distribution, relation_verbatims, entity_type_votes
+        attempted_count = len(raw_triples)
+        return (
+            accepted,
+            section_distribution,
+            relation_verbatims,
+            entity_type_votes,
+            attempted_count,
+            dict(sorted(rejection_reasons.items())),
+        )
 
     def _resolve_domain(
         self,

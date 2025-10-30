@@ -512,6 +512,16 @@ class UIConfig(_FrozenModel):
     extraction_worker_count: int = Field(..., ge=1)
 
 
+class ObservabilityConfig(_FrozenModel):
+    """Filesystem locations for observability artifacts."""
+
+    root_dir: str = Field("data/observability", min_length=1)
+    run_manifests_filename: str = Field("runs.jsonl", min_length=1)
+    export_events_filename: str = Field("export_events.jsonl", min_length=1)
+    qa_metrics_filename: str = Field("qa_metrics.jsonl", min_length=1)
+    kpi_history_filename: str = Field("kpi_history.jsonl", min_length=1)
+
+
 class AuthJWTConfig(_FrozenModel):
     """JWT signing settings."""
 
@@ -597,6 +607,7 @@ class AppConfig(_FrozenModel):
     export: ExportConfig
     ui: UIConfig
     auth: AuthConfig
+    observability: ObservabilityConfig
 
     @staticmethod
     def default_path() -> Path:

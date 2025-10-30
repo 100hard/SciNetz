@@ -736,3 +736,9 @@ ui:
   lexical_similarity_threshold: 0.9
   lexical_similarity_bonus: 0.04
   type_match_bonus: 0.03
+observability:
+  root_dir: data/observability
+  run_manifests_filename: runs.jsonl
+  export_events_filename: export_events.jsonl
+  qa_metrics_filename: qa_metrics.jsonl
+  kpi_history_filename: kpi_history.jsonl

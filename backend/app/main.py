@@ -47,6 +47,7 @@ from backend.app.extraction import (
     TwoPassTripletExtractor,
 )
 from backend.app.graph import GraphWriter
+from backend.app.observability import ObservabilityService
 from backend.app.orchestration import ExtractionOrchestrator, OrchestrationResult
 from backend.app.orchestration.orchestrator import ProcessedChunkStore
 from backend.app.parsing import ParsingPipeline
@@ -168,6 +169,7 @@ class ShareExportAPIRequest(BaseModel):
     include_snippets: bool = True
     truncate_snippets: bool = False
     requested_by: str = Field(..., min_length=1)
+    run_id: Optional[str] = Field(default=None, min_length=1)
 
 
 class ShareLinkResolution(BaseModel):
@@ -214,6 +216,12 @@ def create_app(
     resolved_config = config or load_config()
     app = FastAPI(title="SciNets API", version=resolved_config.pipeline.version)
     app.state.app_config = resolved_config
+    repo_root = Path(__file__).resolve().parents[2]
+    observability = ObservabilityService(
+        resolved_config.observability,
+        root_dir=repo_root,
+    )
+    app.state.observability = observability
 
     async def _test_user() -> AuthUser:
         now = datetime.now(timezone.utc)
@@ -270,14 +278,21 @@ def create_app(
     orchestrator_instance = orchestrator
     neo4j_driver = None
     if orchestrator_instance is None:
-        orchestrator_instance, neo4j_driver = _build_default_orchestrator(resolved_config)
+        orchestrator_instance, neo4j_driver = _build_default_orchestrator(
+            resolved_config,
+            observability=observability,
+        )
     if neo4j_driver is None:
         neo4j_driver = _create_neo4j_driver(resolved_config)
     app.state.orchestrator = orchestrator_instance
     app.state.neo4j_driver = neo4j_driver
-    qa_service = _build_default_qa_service(resolved_config, neo4j_driver)
+    qa_service = _build_default_qa_service(
+        resolved_config,
+        neo4j_driver,
+        observability=observability,
+    )
     app.state.qa_service = qa_service
-    root_dir = Path(__file__).resolve().parents[2]
+    root_dir = repo_root
     upload_dir = (root_dir / resolved_config.ui.upload_dir).resolve()
     registry_path = (root_dir / resolved_config.ui.paper_registry_path).resolve()
     paper_registry = PaperRegistry(registry_path)
@@ -302,7 +317,12 @@ def create_app(
         share_token_manager,
         share_storage_client,
         share_storage_reader,
-    ) = _build_share_export_service(resolved_config, graph_view_service, root_dir)
+    ) = _build_share_export_service(
+        resolved_config,
+        graph_view_service,
+        root_dir,
+        observability=observability,
+    )
     app.state.share_export_service = share_export_service
     app.state.share_metadata_repository = share_metadata_repo
     app.state.share_token_manager = share_token_manager
@@ -375,6 +395,7 @@ def create_app(
             requested_by=current_user.id,
             pipeline_version=resolved_config.pipeline.version,
             allowed_papers=allowed_for_request,
+            run_id=payload.run_id,
         )
         try:
             response = service.create_share(request)
@@ -445,6 +466,61 @@ def create_app(
         except Exception as exc:  # pragma: no cover - storage failures logged
             LOGGER.exception("Failed to issue presigned download URL")
             raise HTTPException(status_code=500, detail="Unable to generate download URL") from exc
+
+        created_at_raw = record.get("created_at")
+        created_at_dt: Optional[datetime] = None
+        if isinstance(created_at_raw, datetime):
+            created_at_dt = created_at_raw
+        elif isinstance(created_at_raw, str) and created_at_raw:
+            try:
+                created_at_dt = datetime.fromisoformat(created_at_raw)
+            except ValueError:
+                LOGGER.warning("Invalid created_at on share metadata %s", decoded.metadata_id)
+        first_download_raw = record.get("first_download_at")
+        first_download_dt: Optional[datetime] = None
+        if isinstance(first_download_raw, datetime):
+            first_download_dt = first_download_raw
+        elif isinstance(first_download_raw, str) and first_download_raw:
+            try:
+                first_download_dt = datetime.fromisoformat(first_download_raw)
+            except ValueError:
+                LOGGER.warning("Invalid first_download_at on share metadata %s", decoded.metadata_id)
+        first_download_latency_raw = record.get("first_download_latency_seconds")
+        first_download_latency: Optional[float] = None
+        if isinstance(first_download_latency_raw, (int, float)):
+            first_download_latency = float(first_download_latency_raw)
+        is_first_download = False
+        if first_download_dt is None:
+            is_first_download = True
+            first_download_dt = now_utc
+            update_payload = {"first_download_at": first_download_dt.isoformat()}
+            if created_at_dt is not None:
+                first_download_latency = (first_download_dt - created_at_dt).total_seconds()
+                update_payload["first_download_latency_seconds"] = first_download_latency
+            try:
+                metadata_repo.update(decoded.metadata_id, update_payload)
+            except Exception:  # noqa: BLE001 - metadata update failures logged and ignored
+                LOGGER.exception("Failed to record first download timestamp for %s", decoded.metadata_id)
+        observability_service: Optional[ObservabilityService] = getattr(app.state, "observability", None)
+        if observability_service is not None:
+            filters = record.get("filters") if isinstance(record, dict) else None
+            papers: List[str] = []
+            if isinstance(filters, dict):
+                raw_papers = filters.get("papers")
+                if isinstance(raw_papers, (list, tuple, set)):
+                    papers = [str(paper) for paper in raw_papers if str(paper).strip()]
+            event_payload = {
+                "metadata_id": decoded.metadata_id,
+                "run_id": record.get("run_id") if isinstance(record, dict) else None,
+                "requested_by": record.get("requested_by") if isinstance(record, dict) else None,
+                "bundle_size_bytes": record.get("size_bytes") if isinstance(record, dict) else None,
+                "first_download": is_first_download,
+                "latency_seconds": first_download_latency,
+                "created_at": created_at_dt,
+                "downloaded_at": now_utc,
+                "papers": papers,
+            }
+            observability_service.record_export_event("download", event_payload)
 
         prefers_html = _prefers_html_response(request, format=format)
         if prefers_html:
@@ -874,6 +950,8 @@ def _build_share_export_service(
     config: AppConfig,
     graph_service: GraphViewService,
     root_dir: Path,
+    *,
+    observability: Optional[ObservabilityService] = None,
 ) -> Tuple[
     Optional[ShareExportService],
     Optional[JSONShareMetadataRepository],
@@ -966,6 +1044,7 @@ def _build_share_export_service(
         token_manager=token_manager,
         config=config.export,
         clock=lambda: datetime.now(timezone.utc),
+        observability=observability,
     )
     return service, metadata_repo, token_manager, public_client, client
 
@@ -989,6 +1068,8 @@ def _normalise_endpoint(raw_endpoint: str, secure_default: bool) -> Tuple[str, b
 
 def _build_default_orchestrator(
     config: AppConfig,
+    *,
+    observability: Optional[ObservabilityService] = None,
 ) -> Tuple[Optional[ExtractionOrchestrator], Optional[object]]:
     """Construct the default orchestrator if dependencies are available."""
 
@@ -1027,6 +1108,7 @@ def _build_default_orchestrator(
             canonicalization=canonicalization,
             graph_writer=graph_writer,
             chunk_store=chunk_store,
+            observability=observability,
         )
         return orchestrator, driver
     except Exception:  # noqa: BLE001 - safeguard during startup
@@ -1034,7 +1116,12 @@ def _build_default_orchestrator(
         return None, driver
 
 
-def _build_default_qa_service(config: AppConfig, driver: Optional[object]) -> Optional[QAService]:
+def _build_default_qa_service(
+    config: AppConfig,
+    driver: Optional[object],
+    *,
+    observability: Optional[ObservabilityService] = None,
+) -> Optional[QAService]:
     """Instantiate the QA service when a Neo4j driver is available."""
 
     if driver is None:
@@ -1046,6 +1133,7 @@ def _build_default_qa_service(config: AppConfig, driver: Optional[object]) -> Op
             config=config,
             repository=repository,
             answer_synthesizer=synthesizer,
+            observability=observability,
         )
     except Exception:  # noqa: BLE001 - QA should fail softly
         LOGGER.exception("Failed to initialize QA service")
