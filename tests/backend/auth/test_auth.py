@@ -4,12 +4,14 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Sequence, Tuple
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+import backend.app.auth.utils as utils_module
 from backend.app.auth.enums import UserRole
 from backend.app.auth.models import AuthBase, User
 from backend.app.auth.repository import AuthRepository
@@ -18,6 +20,7 @@ from backend.app.auth.schemas import GoogleLoginRequest, RefreshRequest, Registe
 from backend.app.auth.service import AuthService, AuthServiceError
 from backend.app.auth.utils import (
     GoogleTokenVerificationError,
+    GoogleTokenVerifier,
     JWTError,
     JWTManager,
 )
@@ -239,6 +242,67 @@ def test_google_login_requires_verified_email() -> None:
         await engine.dispose()
 
     asyncio.run(_run())
+
+
+def test_google_verifier_allows_audience_list(monkeypatch) -> None:
+    calls: Dict[str, Any] = {}
+
+    def _fake_verify(credential: str, request: Any, audience: Any = None) -> Dict[str, Any]:
+        calls["credential"] = credential
+        calls["request_type"] = type(request).__name__
+        calls["audience"] = audience
+        return {
+            "aud": ["client-one.apps.googleusercontent.com", "other-client"],
+            "email": "example@example.com",
+            "email_verified": True,
+        }
+
+    monkeypatch.setattr(utils_module, "GOOGLE_IMPORT_ERROR", None)
+    monkeypatch.setattr(
+        utils_module,
+        "google_requests",
+        SimpleNamespace(Request=lambda: object()),
+    )
+    monkeypatch.setattr(
+        utils_module,
+        "id_token",
+        SimpleNamespace(verify_oauth2_token=_fake_verify),
+    )
+
+    verifier = GoogleTokenVerifier(["client-one.apps.googleusercontent.com"])
+    claims = asyncio.run(verifier.verify("sample-token"))
+
+    assert claims["aud"][0] == "client-one.apps.googleusercontent.com"
+    assert calls["audience"] is None
+
+
+def test_google_verifier_falls_back_to_authorized_party(monkeypatch) -> None:
+    def _fake_verify(credential: str, request: Any, audience: Any = None) -> Dict[str, Any]:
+        return {
+            "aud": "unexpected-client",
+            "azp": "client-two.apps.googleusercontent.com",
+            "email": "example@example.com",
+            "email_verified": True,
+        }
+
+    monkeypatch.setattr(utils_module, "GOOGLE_IMPORT_ERROR", None)
+    monkeypatch.setattr(
+        utils_module,
+        "google_requests",
+        SimpleNamespace(Request=lambda: object()),
+    )
+    monkeypatch.setattr(
+        utils_module,
+        "id_token",
+        SimpleNamespace(verify_oauth2_token=_fake_verify),
+    )
+
+    verifier = GoogleTokenVerifier(
+        ["client-two.apps.googleusercontent.com", "client-one.apps.googleusercontent.com"]
+    )
+    claims = asyncio.run(verifier.verify("sample-token"))
+
+    assert claims["azp"] == "client-two.apps.googleusercontent.com"
 
 
 def test_google_login_reuses_existing_user() -> None:

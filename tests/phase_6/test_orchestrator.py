@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, FrozenSet, Iterable, List, Optional, Set
@@ -16,6 +18,7 @@ from backend.app.canonicalization import (
 from backend.app.config import AppConfig, load_config
 from backend.app.contracts import Evidence, PaperMetadata, ParsedElement, TextSpan, Triplet
 from backend.app.extraction import ExtractionResult
+from backend.app.graph.writer import AliasResolution
 from backend.app.orchestration import ExtractionOrchestrator
 from backend.app.orchestration.orchestrator import (
     BatchExtractionInput,
@@ -24,7 +27,6 @@ from backend.app.orchestration.orchestrator import (
     ProcessedChunkStore,
 )
 from backend.app.parsing.pipeline import ParseResult
-from backend.app.graph.writer import AliasResolution
 
 
 class StubParsingPipeline:
@@ -79,6 +81,46 @@ class StubTripletExtractor:
         if element.element_id in self._failures:
             raise RuntimeError(f"LLM failure for {element.element_id}")
         return self._outputs[element.element_id]
+
+
+class DelayedTripletExtractor(StubTripletExtractor):
+    """Extractor that simulates network latency and records concurrent usage."""
+
+    def __init__(
+        self,
+        outputs: Dict[str, ExtractionResult],
+        *,
+        delay_seconds: float = 0.05,
+    ) -> None:
+        super().__init__(outputs)
+        self._delay_seconds = delay_seconds
+        self.max_active: int = 0
+        self._active: int = 0
+        self._lock = threading.Lock()
+
+    def extract_with_metadata(
+        self,
+        element: ParsedElement,
+        candidate_entities: Optional[Iterable[str]],
+        *,
+        metadata: Optional[PaperMetadata] = None,
+        domain: Optional[object] = None,
+    ) -> ExtractionResult:
+        with self._lock:
+            self._active += 1
+            if self._active > self.max_active:
+                self.max_active = self._active
+        try:
+            time.sleep(self._delay_seconds)
+            return super().extract_with_metadata(
+                element,
+                candidate_entities,
+                metadata=metadata,
+                domain=domain,
+            )
+        finally:
+            with self._lock:
+                self._active -= 1
 
 
 class StubInventoryBuilder:
@@ -285,6 +327,69 @@ def test_orchestrator_runs_end_to_end(config: AppConfig, tmp_path: Path) -> None
     assert len(graph_writer.edges) == 2
     assert all("cross_paper" not in edge["attributes"] for edge in graph_writer.edges)
     assert chunk_store.should_process(doc_id, element_a.content_hash, config.pipeline.version) is False
+
+
+def test_orchestrator_parallelizes_extraction_when_configured(
+    config: AppConfig,
+    tmp_path: Path,
+) -> None:
+    doc_id = "parallel-paper"
+    elements = [
+        _parsed_element(doc_id, f"{doc_id}:{idx}", "Methods", f"Chunk {idx}")
+        for idx in range(3)
+    ]
+    metadata = PaperMetadata(doc_id=doc_id)
+    parse_result = ParseResult(
+        doc_id=doc_id,
+        metadata=metadata,
+        elements=elements,
+        errors=[],
+    )
+    parsing = StubParsingPipeline(parse_result)
+
+    extraction_outputs = {
+        element.element_id: ExtractionResult(
+            triplets=[],
+            section_distribution={},
+            relation_verbatims=[],
+        )
+        for element in elements
+    }
+    extractor = DelayedTripletExtractor(extraction_outputs, delay_seconds=0.05)
+    inventory = StubInventoryBuilder({})
+    graph_writer = StubGraphWriter()
+
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=HashingEmbeddingBackend(),
+        embedding_dir=tmp_path / "embeddings",
+        report_dir=tmp_path / "reports",
+    )
+    canonicalization = CanonicalizationPipeline(config=config, canonicalizer=canonicalizer)
+    chunk_store = ProcessedChunkStore(tmp_path / "processed.json")
+
+    config_override = config.model_copy(
+        update={
+            "extraction": config.extraction.model_copy(update={"concurrent_workers": 2})
+        }
+    )
+
+    orchestrator = ExtractionOrchestrator(
+        config=config_override,
+        parsing_pipeline=parsing,
+        inventory_builder=inventory,
+        triplet_extractor=extractor,
+        canonicalization=canonicalization,
+        graph_writer=graph_writer,
+        chunk_store=chunk_store,
+    )
+
+    pdf_path = tmp_path / "parallel.pdf"
+    pdf_path.write_text("placeholder")
+
+    orchestrator.run(paper_id=doc_id, pdf_path=pdf_path)
+
+    assert extractor.max_active >= 2
 
 
 def test_orchestrator_routes_biology_domain(config: AppConfig, tmp_path: Path) -> None:

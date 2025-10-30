@@ -13,7 +13,7 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert "Nature" in config.parsing.metadata_known_venues
     assert config.parsing.docling_artifacts_path == "data/cache/docling"
     assert config.parsing.accelerator.device == "auto"
-    assert config.parsing.accelerator.num_threads == 4
+    assert config.parsing.accelerator.num_threads == 8
     assert config.parsing.rapidocr.backend == "torch"
     assert config.parsing.rapidocr.text_score == 0.5
     assert config.parsing.rapidocr.use_det is True
@@ -29,6 +29,7 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.parsing.threaded_pdf.queue_max_size == 32
     assert config.extraction.max_triples_per_chunk_base == 15
     assert config.extraction.max_prompt_entities == 12
+    assert config.extraction.concurrent_workers == 3
     assert config.extraction.llm_provider == "openai"
     assert config.extraction.fuzzy_match_threshold == 0.9
     assert config.extraction.openai_model == "gpt-4o-mini"
@@ -44,7 +45,7 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert settings.max_retries == 2
     assert settings.temperature == 0.0
     assert settings.max_output_tokens == 3200
-    assert settings.initial_output_multiplier == 2
+    assert settings.initial_output_multiplier == 1.5
     assert 429 in settings.retry_statuses
     assert config.extraction.default_domain == "ml"
     domains = {domain.name: domain for domain in config.extraction.domains}
@@ -63,6 +64,10 @@ def test_config_loads_expected_structure(tmp_path) -> None:
     assert config.canonicalization.min_shared_token_count == 1
     assert config.canonicalization.alias_token_limit == 5
     assert config.qa.entity_match_threshold == 0.83
+    assert config.canonicalization.embedding_model == "intfloat/e5-base"
+    assert config.canonicalization.embedding_device == "cpu"
+    assert config.canonicalization.embedding_batch_size == 16
+    assert config.canonicalization.preload_embeddings is True
     assert config.export.max_bundle_mb == 5
     assert config.export.warn_bundle_mb == 3
     assert config.export.link_ttl_hours is None

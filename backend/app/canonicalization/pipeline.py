@@ -153,6 +153,9 @@ class CanonicalizationPipeline:
         else:
             self._aggregator_factory = aggregator_factory
 
+        if self._config.canonicalization.preload_embeddings:
+            self._launch_preload_thread()
+
     def run(self, extractions: Sequence[ExtractionResult]) -> CanonicalizationResult:
         """Canonicalize entities from a sequence of extraction outputs."""
 
@@ -160,4 +163,27 @@ class CanonicalizationPipeline:
         aggregator.extend(extractions)
         candidates = aggregator.build_candidates()
         return self._canonicalizer.canonicalize(candidates)
+
+    def preload_embeddings(self) -> None:
+        """Warm the canonicalization embedding backend."""
+
+        if hasattr(self._canonicalizer, "preload_embeddings"):
+            self._canonicalizer.preload_embeddings()
+
+    def _launch_preload_thread(self) -> None:
+        """Start a background thread to warm the embedding backend."""
+
+        from threading import Thread
+
+        def _target() -> None:
+            try:
+                self.preload_embeddings()
+            except Exception:  # noqa: BLE001 - warm-up issues should not block pipeline
+                LOGGER.exception("Failed to preload canonicalization embeddings")
+
+        Thread(
+            target=_target,
+            name="canonicalization-preload",
+            daemon=True,
+        ).start()
 

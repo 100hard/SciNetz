@@ -3,6 +3,10 @@
 
 ## Progress Snapshot
 
+## Operational Notes
+
+- Google OAuth requires runtime client IDs. **Do not change or remove these entries unless you are intentionally rotating credentials.** Before launching the stack, set `SCINETS_AUTH_GOOGLE_CLIENT_IDS` for the backend and `NEXT_PUBLIC_GOOGLE_CLIENT_ID` for the frontend (or update `config.yaml`). If login ever fails with `401 Invalid Google credential`, check API logs for the rejected audiences, then (1) export the correct client IDs, (2) restart the stack with `docker compose down && docker compose up -d --build`, and (3) verify the `/api/auth/google/config` endpoint returns the expected IDs.
+
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 0 | Spine & Contracts | ✅ Completed (contracts frozen, config + compose in repo) |

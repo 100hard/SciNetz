@@ -57,7 +57,7 @@ parsing:
   docling_artifacts_path: data/cache/docling
   accelerator:
     device: auto
-    num_threads: 4
+    num_threads: 8
   rapidocr:
     backend: torch
     text_score: 0.5
@@ -77,8 +77,9 @@ extraction:
   max_triples_per_chunk_base: 15
   tokens_per_triple: 60
   max_prompt_entities: 12
-  chunk_size_tokens: 512
-  chunk_overlap_tokens: 50
+  chunk_size_tokens: 768
+  chunk_overlap_tokens: 80
+  concurrent_workers: 3
   use_entity_inventory: false
   llm_provider: openai
   fuzzy_match_threshold: 0.9
@@ -89,7 +90,7 @@ extraction:
   openai_max_retries: 2
   openai_temperature: 0.0
   openai_max_output_tokens: 3200
-  openai_initial_output_multiplier: 2
+  openai_initial_output_multiplier: 1.5
   openai_backoff_initial_seconds: 0.5
   openai_backoff_max_seconds: 4.0
   openai_retry_statuses:
@@ -231,6 +232,10 @@ canonicalization:
   long_alias_penalty: 0.05
   sentence_alias_penalty: 0.08
   cross_type_penalty: 0.06
+  embedding_model: intfloat/e5-base
+  embedding_device: cpu
+  embedding_batch_size: 16
+  preload_embeddings: true
 relations:
   normalization_patterns:
   - canonical: uses

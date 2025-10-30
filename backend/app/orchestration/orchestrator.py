@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
@@ -109,6 +110,24 @@ class _CoMentionProduct:
 
     extraction: ExtractionResult
     edge: _EdgeRecord
+
+
+@dataclass(frozen=True)
+class _PendingExtraction:
+    """Context required to run LLM extraction for a parsed element."""
+
+    element: ParsedElement
+    domain_context: ExtractionDomain
+    candidate_entities: Optional[List[str]]
+
+
+@dataclass(frozen=True)
+class _ExtractionTaskResult:
+    """Outcome returned after executing an extraction attempt."""
+
+    extraction: Optional[ExtractionResult]
+    elapsed_seconds: float
+    error: Optional[Exception] = None
 
 
 @dataclass
@@ -428,6 +447,7 @@ class ExtractionOrchestrator:
         if self._config.co_mention.enabled:
             co_mention_accumulator = CoMentionAccumulator(self._config, self._inventory_builder)
 
+        pending_extractions: List[_PendingExtraction] = []
         for element in parse_result.elements:
             previous_version = self._chunk_store.get_version(
                 element.doc_id, element.content_hash
@@ -457,58 +477,21 @@ class ExtractionOrchestrator:
                 )
                 state.timings.inventory_seconds += perf_counter() - inventory_start
                 state.entity_candidates += len(candidate_entities)
-            extract_start = perf_counter()
-            try:
-                extraction = self._triplet_extractor.extract_with_metadata(
-                    element,
-                    candidate_entities,
-                    metadata=state.metadata,
-                    domain=domain_context,
+            pending_extractions.append(
+                _PendingExtraction(
+                    element=element,
+                    domain_context=domain_context,
+                    candidate_entities=candidate_entities,
                 )
-            except Exception as exc:  # noqa: BLE001 - third-party errors bubble up
-                state.timings.extraction_seconds += perf_counter() - extract_start
-                LOGGER.exception("Triplet extraction failed for %s", element.element_id)
-                state.errors.append(str(exc))
-                if co_mention_accumulator is not None:
-                    fallback_candidates = candidate_entities
-                    if fallback_candidates is None:
-                        inventory_start = perf_counter()
-                        fallback_candidates = self._inventory_builder.build_inventory(
-                            element,
-                            domain=domain_name,
-                        )
-                        state.timings.inventory_seconds += perf_counter() - inventory_start
-                        state.entity_candidates += len(fallback_candidates)
-                    co_mention_accumulator.record(element, fallback_candidates, domain=domain_name)
-                    state.processed_chunks += 1
-                    self._chunk_store.mark_processed(
-                        element.doc_id, element.content_hash, pipeline_version
-                    )
-                continue
+            )
 
-            state.timings.extraction_seconds += perf_counter() - extract_start
-            state.extractions.append(extraction)
-            state.processed_chunks += 1
-            state.attempted_triples += extraction.attempted_triples or len(extraction.triplets)
-            state.accepted_triples += len(extraction.triplets)
-            state.rejected_triples += extraction.rejected_triples
-            self._merge_rejection_reasons(state.rejection_reasons, extraction.rejection_reasons)
-            self._chunk_store.mark_processed(element.doc_id, element.content_hash, pipeline_version)
-            for idx, triplet in enumerate(extraction.triplets):
-                relation_verbatim = triplet.predicate
-                if idx < len(extraction.relation_verbatims):
-                    candidate = extraction.relation_verbatims[idx]
-                    if candidate:
-                        relation_verbatim = candidate
-                state.edge_records.append(
-                    _EdgeRecord(
-                        triplet=triplet,
-                        relation_verbatim=relation_verbatim,
-                        attributes={"method": "llm", "section": element.section},
-                        times_seen=1,
-                    )
-                )
-                state.relation_types.add(relation_verbatim)
+        if pending_extractions:
+            self._run_extractions(
+                state=state,
+                pending=pending_extractions,
+                pipeline_version=pipeline_version,
+                co_mention_accumulator=co_mention_accumulator,
+            )
 
         if co_mention_accumulator is not None:
             co_start = perf_counter()
@@ -523,6 +506,152 @@ class ExtractionOrchestrator:
 
         self._log_document_timings(state)
         return state
+
+    def _run_extractions(
+        self,
+        *,
+        state: _DocumentProcessingState,
+        pending: Sequence[_PendingExtraction],
+        pipeline_version: str,
+        co_mention_accumulator: Optional["CoMentionAccumulator"],
+    ) -> None:
+        worker_count = max(1, getattr(self._config.extraction, "concurrent_workers", 1))
+        if worker_count <= 1 or len(pending) <= 1:
+            for item in pending:
+                result = self._execute_extraction(
+                    item.element,
+                    item.candidate_entities,
+                    state.metadata,
+                    item.domain_context,
+                )
+                state.timings.extraction_seconds += result.elapsed_seconds
+                if result.error is not None:
+                    self._handle_extraction_failure(
+                        state,
+                        item,
+                        result,
+                        pipeline_version,
+                        co_mention_accumulator,
+                    )
+                elif result.extraction is not None:
+                    self._handle_extraction_success(state, item, result.extraction, pipeline_version)
+            return
+
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {
+                executor.submit(
+                    self._execute_extraction,
+                    item.element,
+                    item.candidate_entities,
+                    state.metadata,
+                    item.domain_context,
+                ): item
+                for item in pending
+            }
+            for future in as_completed(future_map):
+                item = future_map[future]
+                result = future.result()
+                state.timings.extraction_seconds += result.elapsed_seconds
+                if result.error is not None:
+                    self._handle_extraction_failure(
+                        state,
+                        item,
+                        result,
+                        pipeline_version,
+                        co_mention_accumulator,
+                    )
+                elif result.extraction is not None:
+                    self._handle_extraction_success(state, item, result.extraction, pipeline_version)
+
+    def _execute_extraction(
+        self,
+        element: ParsedElement,
+        candidate_entities: Optional[Sequence[str]],
+        metadata: Optional[PaperMetadata],
+        domain_context: ExtractionDomain,
+    ) -> _ExtractionTaskResult:
+        extract_start = perf_counter()
+        try:
+            extraction = self._triplet_extractor.extract_with_metadata(
+                element,
+                candidate_entities,
+                metadata=metadata,
+                domain=domain_context,
+            )
+        except Exception as exc:  # noqa: BLE001 - third-party errors bubble up
+            elapsed = perf_counter() - extract_start
+            LOGGER.exception("Triplet extraction failed for %s", element.element_id)
+            return _ExtractionTaskResult(extraction=None, elapsed_seconds=elapsed, error=exc)
+        elapsed = perf_counter() - extract_start
+        return _ExtractionTaskResult(extraction=extraction, elapsed_seconds=elapsed)
+
+    def _handle_extraction_success(
+        self,
+        state: _DocumentProcessingState,
+        item: _PendingExtraction,
+        extraction: ExtractionResult,
+        pipeline_version: str,
+    ) -> None:
+        state.extractions.append(extraction)
+        state.processed_chunks += 1
+        attempted = extraction.attempted_triples or len(extraction.triplets)
+        state.attempted_triples += attempted
+        state.accepted_triples += len(extraction.triplets)
+        state.rejected_triples += extraction.rejected_triples
+        self._merge_rejection_reasons(state.rejection_reasons, extraction.rejection_reasons)
+        self._chunk_store.mark_processed(
+            item.element.doc_id,
+            item.element.content_hash,
+            pipeline_version,
+        )
+        for idx, triplet in enumerate(extraction.triplets):
+            relation_verbatim = triplet.predicate
+            if idx < len(extraction.relation_verbatims):
+                candidate = extraction.relation_verbatims[idx]
+                if candidate:
+                    relation_verbatim = candidate
+            state.edge_records.append(
+                _EdgeRecord(
+                    triplet=triplet,
+                    relation_verbatim=relation_verbatim,
+                    attributes={"method": "llm", "section": item.element.section},
+                    times_seen=1,
+                )
+            )
+            state.relation_types.add(relation_verbatim)
+
+    def _handle_extraction_failure(
+        self,
+        state: _DocumentProcessingState,
+        item: _PendingExtraction,
+        result: _ExtractionTaskResult,
+        pipeline_version: str,
+        co_mention_accumulator: Optional["CoMentionAccumulator"],
+    ) -> None:
+        if result.error is not None:
+            state.errors.append(str(result.error))
+        if co_mention_accumulator is None:
+            return
+        candidate_entities = item.candidate_entities
+        if candidate_entities is None:
+            inventory_start = perf_counter()
+            candidate_entities = self._inventory_builder.build_inventory(
+                item.element,
+                domain=item.domain_context.name,
+            )
+            state.timings.inventory_seconds += perf_counter() - inventory_start
+            state.entity_candidates += len(candidate_entities)
+        co_mention_accumulator.record(
+            item.element,
+            candidate_entities,
+            domain=item.domain_context.name,
+        )
+        state.processed_chunks += 1
+        self._chunk_store.mark_processed(
+            item.element.doc_id,
+            item.element.content_hash,
+            pipeline_version,
+        )
 
     def run(self, *, paper_id: str, pdf_path: Path, force: bool = False) -> OrchestrationResult:
         """Execute the full extraction pipeline for a given paper."""

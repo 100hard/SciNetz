@@ -172,6 +172,7 @@ class ExtractionConfig(_FrozenModel):
     max_prompt_entities: int = Field(..., ge=1)
     chunk_size_tokens: int = Field(..., ge=1)
     chunk_overlap_tokens: int = Field(..., ge=0)
+    concurrent_workers: int = Field(1, ge=1)
     use_entity_inventory: bool = False
     llm_provider: str = Field(..., min_length=1)
     fuzzy_match_threshold: float = Field(..., ge=0.0, le=1.0)
@@ -322,6 +323,10 @@ class CanonicalizationConfig(_FrozenModel):
     long_alias_penalty: float = Field(..., ge=0.0, le=1.0)
     sentence_alias_penalty: float = Field(..., ge=0.0, le=1.0)
     cross_type_penalty: float = Field(..., ge=0.0, le=1.0)
+    embedding_model: str = Field("intfloat/e5-base", min_length=1)
+    embedding_device: Optional[str] = None
+    embedding_batch_size: int = Field(16, ge=1)
+    preload_embeddings: bool = False
 
 
 class RelationPatternConfig(_FrozenModel):

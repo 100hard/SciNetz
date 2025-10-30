@@ -97,8 +97,30 @@ class GoogleTokenVerifier:
             claims = id_token.verify_oauth2_token(credential, request, audience=None)
         except Exception as exc:  # pragma: no cover - upstream library handles edge cases
             raise GoogleTokenVerificationError("Failed to verify Google credential") from exc
-        audience = claims.get("aud")
-        if audience not in self._allowed_audiences:
+        audiences: set[str] = set()
+        audience_claim = claims.get("aud")
+        if isinstance(audience_claim, str):
+            if audience_claim:
+                audiences.add(audience_claim)
+        elif isinstance(audience_claim, (list, tuple, set)):
+            audiences.update(
+                str(value).strip()
+                for value in audience_claim
+                if isinstance(value, str) and value.strip()
+            )
+        candidate_matches = audiences & self._allowed_audiences
+        if not candidate_matches:
+            azp_claim = claims.get("azp")
+            if isinstance(azp_claim, str) and azp_claim.strip() in self._allowed_audiences:
+                return claims
+            LOGGER.warning(
+                "Rejected Google credential due to audience mismatch",
+                extra={
+                    "audiences": sorted(audiences),
+                    "authorized_party": azp_claim if isinstance(azp_claim, str) else None,
+                    "allowed_audiences": sorted(self._allowed_audiences),
+                },
+            )
             raise GoogleTokenVerificationError("Google credential has an unexpected audience")
         return claims
 

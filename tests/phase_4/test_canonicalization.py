@@ -42,6 +42,17 @@ class StubEmbeddingBackend:
         return self._vectors[normalized]
 
 
+class WarmupEmbeddingBackend:
+    """Embedding backend that records warm-up calls."""
+
+    def __init__(self) -> None:
+        self.calls: int = 0
+
+    def embed(self, text: str) -> np.ndarray:
+        self.calls += 1
+        return np.array([1.0], dtype=np.float32)
+
+
 @pytest.fixture(name="config")
 def fixture_config() -> AppConfig:
     return load_config()
@@ -122,8 +133,11 @@ def test_canonicalizer_prefers_e5_backend_by_default(monkeypatch, config, storag
         def is_available(cls) -> bool:
             return True
 
-        def __init__(self) -> None:
+        def __init__(self, model_name: str = "", device: str | None = None, batch_size: int = 16) -> None:
             DummyBackend.instances += 1
+            self.model_name = model_name
+            self.device = device
+            self.batch_size = batch_size
 
         def embed(self, text: str) -> np.ndarray:
             return np.array([1.0], dtype=np.float32)
@@ -138,6 +152,28 @@ def test_canonicalizer_prefers_e5_backend_by_default(monkeypatch, config, storag
 
     assert isinstance(canonicalizer._embedding_backend, DummyBackend)
     assert DummyBackend.instances == 1
+
+
+def test_canonicalization_pipeline_can_preload_embeddings(config, storage_dirs) -> None:
+    config = config.model_copy(
+        update={
+            "canonicalization": config.canonicalization.model_copy(
+                update={"preload_embeddings": False}
+            )
+        }
+    )
+    warm_backend = WarmupEmbeddingBackend()
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=warm_backend,
+        embedding_dir=storage_dirs["embeddings"],
+        report_dir=storage_dirs["reports"],
+    )
+    pipeline = CanonicalizationPipeline(config=config, canonicalizer=canonicalizer)
+
+    pipeline.preload_embeddings()
+
+    assert warm_backend.calls == 1
 
 
 def _candidate(

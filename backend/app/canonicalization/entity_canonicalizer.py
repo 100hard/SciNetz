@@ -458,6 +458,19 @@ class EntityCanonicalizer:
         self._embedding_dir.mkdir(parents=True, exist_ok=True)
         self._report_dir.mkdir(parents=True, exist_ok=True)
 
+    def preload_embeddings(self) -> None:
+        """Warm the embedding backend so subsequent calls avoid cold starts."""
+
+        backend = self._embedding_backend
+        try:
+            getter = getattr(backend, "_get_model", None)
+            if callable(getter):
+                getter()
+            else:
+                backend.embed("__scinets_embedding_warmup__")
+        except Exception:  # noqa: BLE001 - warm-up failures should not abort extraction
+            LOGGER.exception("Failed to preload canonicalization embedding backend")
+
     def canonicalize(self, candidates: Sequence[EntityCandidate]) -> CanonicalizationResult:
         """Merge duplicate entity candidates into canonical nodes.
 
@@ -798,7 +811,11 @@ class EntityCanonicalizer:
 
         if E5EmbeddingBackend.is_available():
             try:
-                return E5EmbeddingBackend()
+                return E5EmbeddingBackend(
+                    model_name=self._config.canonicalization.embedding_model,
+                    device=self._config.canonicalization.embedding_device,
+                    batch_size=self._config.canonicalization.embedding_batch_size,
+                )
             except Exception:  # pragma: no cover - defensive fallback
                 LOGGER.exception(
                     "Failed to initialize E5 embedding backend; falling back to hashing backend",
