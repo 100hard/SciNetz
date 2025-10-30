@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import isclose
 from typing import Sequence
 
 from backend.app.config import ObservabilityConfig, ObservabilityQualityConfig
@@ -221,6 +222,8 @@ def test_dashboard_snapshot_and_render(tmp_path) -> None:
             "nodes_written": 4,
             "edges_written": 8,
             "co_mention_edges": 2,
+            "rejection_reasons": {"direction": 1, "confidence": 1},
+            "relation_types": ["uses", "improves", "uses"],
         },
         errors=["parse warning"],
     )
@@ -276,6 +279,15 @@ def test_dashboard_snapshot_and_render(tmp_path) -> None:
             "latency_seconds": 3.0,
         },
     )
+    service.record_edge_audit(
+        run_id="run-demo",
+        paper_id="paper-1",
+        reviewer="auditor",
+        total_edges=20,
+        correct_edges=16,
+        duplicate_edges=2,
+        failure_reasons={"direction": 2},
+    )
 
     registry = _StubRegistry(
         [
@@ -304,11 +316,17 @@ def test_dashboard_snapshot_and_render(tmp_path) -> None:
     assert snapshot.exports.pending_first_downloads == 0
     assert snapshot.qa.fallback_queries == 1
     assert snapshot.soft_failures.co_mention_edges == 2
-    assert snapshot.kpis and snapshot.kpis[0].metric == "noise_control"
+    assert any(kpi.metric == "noise_control" for kpi in snapshot.kpis)
     assert snapshot.alerts and snapshot.alerts[0].metric == "noise_control"
     assert any("parse warning" in error for error in snapshot.recent_errors)
+    assert snapshot.quality.run_id == snapshot.runs[0].run_id
+    assert isclose(snapshot.quality.acceptance_rate or 0.0, 10 / 12, rel_tol=1e-6)
+    assert snapshot.quality.rejection_breakdown
+    assert snapshot.quality.audit_summary.total_reviews == 1
+    assert snapshot.quality.audit_summary.recent_findings
 
     html_content = dashboard.render_html(snapshot)
     assert "SciNetz Observability Dashboard" in html_content
     assert snapshot.runs[0].run_id in html_content
     assert "Extraction Queue" in html_content
+    assert "Knowledge Graph Quality" in html_content
