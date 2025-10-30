@@ -6,7 +6,9 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from dataclasses import dataclass
 from itertools import combinations
+from time import perf_counter
 from typing import Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -18,6 +20,7 @@ from backend.app.canonicalization.entity_canonicalizer import (
     HashingEmbeddingBackend,
 )
 from backend.app.config import AppConfig
+from backend.app.observability import ObservabilityService
 from backend.app.qa.answer_synthesis import (
     AnswerContextEdge,
     AnswerSynthesisRequest,
@@ -128,6 +131,17 @@ class QAStreamEvent:
     payload: object
 
 
+@dataclass
+class _QAMetrics:
+    """Runtime metrics captured for a QA query."""
+
+    question: str
+    start_time: float
+    resolution_seconds: float = 0.0
+    subgraph_seconds: float = 0.0
+    total_seconds: float = 0.0
+
+
 class QAService:
     """High-level QA service responsible for resolving and answering questions."""
 
@@ -141,6 +155,7 @@ class QAService:
         max_neighbor_results: int = 10,
         answer_synthesizer: Optional[LLMAnswerSynthesizer] = None,
         intent_classifier: Optional[QueryIntentClassifier] = None,
+        observability: Optional[ObservabilityService] = None,
     ) -> None:
         self._config = config
         self._repository = repository
@@ -161,6 +176,7 @@ class QAService:
         self._intent_classifier = intent_classifier or QueryIntentClassifier(self._config.qa.intent)
         self._summary_edge_limit = max(1, self._config.qa.intent.max_summary_edges)
         self._allow_llm_without_evidence = self._config.qa.llm.allow_fallback_without_evidence
+        self._observability = observability
 
     def answer(self, question: str) -> QAResponse:
         """Answer the supplied question using the knowledge graph."""
@@ -211,6 +227,7 @@ class QAService:
             yield QAStreamEvent("final", self._empty_response())
             return
 
+        start_time = perf_counter()
         classification = self._classify(question_text)
         yield QAStreamEvent("classification", classification)
 
@@ -219,32 +236,51 @@ class QAService:
         resolved_models = [self._to_model(entity) for entity in resolved_entities]
         yield QAStreamEvent("entities", resolved_models)
 
+        metrics = _QAMetrics(question=question_text, start_time=start_time)
+        metrics.resolution_seconds = perf_counter() - start_time
+
         if classification.intent == QAIntent.PAPER_SUMMARY:
-            yield from self._answer_paper_summary_stream(
-                question_text,
-                classification,
-                resolved_entities,
-                resolved_models,
+            yield from self._stream_with_metrics(
+                self._answer_paper_summary_stream(
+                    question_text,
+                    classification,
+                    resolved_entities,
+                    resolved_models,
+                    metrics,
+                ),
+                metrics,
             )
             return
         if classification.intent == QAIntent.CLUSTER_SUMMARY:
-            yield from self._answer_cluster_summary_stream(
-                question_text,
-                resolved_entities,
-                resolved_models,
+            yield from self._stream_with_metrics(
+                self._answer_cluster_summary_stream(
+                    question_text,
+                    resolved_entities,
+                    resolved_models,
+                    metrics,
+                ),
+                metrics,
             )
             return
         if classification.intent == QAIntent.ENTITY_SUMMARY:
-            yield from self._answer_entity_summary_stream(
+            yield from self._stream_with_metrics(
+                self._answer_entity_summary_stream(
+                    question_text,
+                    resolved_entities,
+                    resolved_models,
+                    metrics,
+                ),
+                metrics,
+            )
+            return
+        yield from self._stream_with_metrics(
+            self._answer_factoid_stream(
                 question_text,
                 resolved_entities,
                 resolved_models,
-            )
-            return
-        yield from self._answer_factoid_stream(
-            question_text,
-            resolved_entities,
-            resolved_models,
+                metrics,
+            ),
+            metrics,
         )
 
     def _answer_factoid_stream(
@@ -252,6 +288,7 @@ class QAService:
         question_text: str,
         resolved_entities: Sequence[ResolvedEntity],
         resolved_models: Sequence[ResolvedEntityModel],
+        metrics: _QAMetrics,
     ) -> Iterator[QAStreamEvent]:
         primary_candidates = [
             entity.candidates[0] for entity in resolved_entities if entity.candidates
@@ -269,7 +306,9 @@ class QAService:
             yield QAStreamEvent("final", response)
             return
 
+        discover_start = perf_counter()
         path_scores = self._discover_paths(resolved_entities)
+        metrics.subgraph_seconds = perf_counter() - discover_start
         top_scores = path_scores[: self._config.qa.max_results]
         paths = [score.path for score in top_scores]
         has_conflict = any(score.conflicting for score in top_scores)
@@ -301,7 +340,9 @@ class QAService:
             yield QAStreamEvent("final", response)
             return
 
+        fallback_start = perf_counter()
         fallback_edges = self._collect_neighbors(resolved_entities)
+        metrics.subgraph_seconds = perf_counter() - fallback_start
         if fallback_edges:
             yield QAStreamEvent("fallback", fallback_edges)
             summary = self._summarize_neighbors(fallback_edges)
@@ -335,12 +376,20 @@ class QAService:
         question_text: str,
         resolved_entities: Sequence[ResolvedEntity],
         resolved_models: Sequence[ResolvedEntityModel],
+        metrics: _QAMetrics,
     ) -> Iterator[QAStreamEvent]:
         primary = self._select_primary_candidate(resolved_entities)
         if primary is None:
-            yield from self._answer_factoid_stream(question_text, resolved_entities, resolved_models)
+            yield from self._answer_factoid_stream(
+                question_text,
+                resolved_entities,
+                resolved_models,
+                metrics,
+            )
             return
+        summary_start = perf_counter()
         edges = self._collect_summary_neighbors([primary])
+        metrics.subgraph_seconds = perf_counter() - summary_start
         if not edges:
             summary = self._summarize_entity_profiles(resolved_entities)
             llm_answer = None
@@ -397,12 +446,20 @@ class QAService:
         question_text: str,
         resolved_entities: Sequence[ResolvedEntity],
         resolved_models: Sequence[ResolvedEntityModel],
+        metrics: _QAMetrics,
     ) -> Iterator[QAStreamEvent]:
         candidates = self._unique_candidates(resolved_entities)
         if not candidates:
-            yield from self._answer_factoid_stream(question_text, resolved_entities, resolved_models)
+            yield from self._answer_factoid_stream(
+                question_text,
+                resolved_entities,
+                resolved_models,
+                metrics,
+            )
             return
+        summary_start = perf_counter()
         edges = self._collect_summary_neighbors(candidates)
+        metrics.subgraph_seconds = perf_counter() - summary_start
         if not edges:
             summary = self._summarize_entity_profiles(resolved_entities)
             llm_answer = None
@@ -462,6 +519,7 @@ class QAService:
         classification: IntentClassification,
         resolved_entities: Sequence[ResolvedEntity],
         resolved_models: Sequence[ResolvedEntityModel],
+        metrics: _QAMetrics,
     ) -> Iterator[QAStreamEvent]:
         document_ids = classification.document_ids
         if not document_ids:
@@ -476,7 +534,9 @@ class QAService:
             )
             yield QAStreamEvent("final", response)
             return
+        summary_start = perf_counter()
         edges = self._collect_document_edges(document_ids)
+        metrics.subgraph_seconds = perf_counter() - summary_start
         if not edges:
             joined = ", ".join(document_ids)
             summary = f"No extracted findings available for documents: {joined}."
@@ -875,6 +935,46 @@ class QAService:
         if normalized == "insufficient evidence to answer.":
             return None
         return answer
+
+    def _stream_with_metrics(
+        self, iterator: Iterator[QAStreamEvent], metrics: _QAMetrics
+    ) -> Iterator[QAStreamEvent]:
+        for event in iterator:
+            if event.type == "final":
+                metrics.total_seconds = perf_counter() - metrics.start_time
+                response = self._coerce_response(event.payload)
+                self._emit_qa_metrics(metrics, response)
+            yield event
+
+    def _coerce_response(self, payload: object) -> QAResponse:
+        if isinstance(payload, QAResponse):
+            return payload
+        if isinstance(payload, BaseModel):
+            return QAResponse(**payload.model_dump())
+        if isinstance(payload, Mapping):
+            return QAResponse(**payload)
+        serialized = self._serialize_payload(payload)
+        if isinstance(serialized, Mapping):
+            return QAResponse(**serialized)
+        raise TypeError("Unexpected QA response payload type")
+
+    def _emit_qa_metrics(self, metrics: _QAMetrics, response: QAResponse) -> None:
+        if self._observability is None:
+            return
+        evidence_count = sum(len(path.edges) for path in response.paths) + len(
+            response.fallback_edges
+        )
+        payload = {
+            "question": metrics.question,
+            "mode": response.mode.value,
+            "resolution_seconds": metrics.resolution_seconds,
+            "subgraph_seconds": metrics.subgraph_seconds,
+            "total_seconds": metrics.total_seconds,
+            "paths": len(response.paths),
+            "fallback_edges": len(response.fallback_edges),
+            "evidence_count": evidence_count,
+        }
+        self._observability.record_qa_metrics(payload)
 
     def _serialize_payload(self, payload: object) -> object:
         if isinstance(payload, BaseModel):
