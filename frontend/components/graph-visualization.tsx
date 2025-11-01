@@ -90,6 +90,45 @@ const hashToUnit = (value: string, salt: string): number => {
   return (hash % 10000) / 10000;
 };
 
+const computeWebLayout = (nodes: GraphNode[]): Map<string, { x: number; y: number }> => {
+  const positions = new Map<string, { x: number; y: number }>();
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  const baseRadius = 0.22;
+  const ringSpacing = 0.18;
+  const radiusJitter = 0.045;
+  const angleJitter = Math.PI / 18;
+
+  const ringBuckets = new Map<number, GraphNode[]>();
+  nodes.forEach((node) => {
+    const ring = node.layout_ring ?? 5;
+    if (!ringBuckets.has(ring)) {
+      ringBuckets.set(ring, []);
+    }
+    ringBuckets.get(ring)?.push(node);
+  });
+
+  const sortedRings = Array.from(ringBuckets.entries()).sort((a, b) => a[0] - b[0]);
+  sortedRings.forEach(([ring, ringNodes]) => {
+    ringNodes
+      .slice()
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .forEach((node, index) => {
+        const baseAngle = index * goldenAngle + ring * 0.45;
+        const jitteredAngle =
+          baseAngle + (hashToUnit(node.id, "angle") - 0.5) * 2 * angleJitter;
+        const jitteredRadius =
+          baseRadius +
+          ringSpacing * ring +
+          (hashToUnit(node.id, "radius") - 0.5) * 2 * radiusJitter;
+        const x = Math.cos(jitteredAngle) * jitteredRadius;
+        const y = Math.sin(jitteredAngle) * jitteredRadius;
+        positions.set(node.id, { x, y });
+      });
+  });
+
+  return positions;
+};
+
 const resolveNodeColor = (node: GraphNode): string => {
   const type = node.type?.trim().toLowerCase();
   if (type && TYPE_COLOR_MAP[type]) {
@@ -336,9 +375,12 @@ const GraphVisualization = ({ nodes, edges, isFullscreen = false }: GraphVisuali
 
     const hasCoordinates = nodes.every((node) => typeof node.x === "number" && typeof node.y === "number");
 
+    const seededPositions = hasCoordinates ? null : computeWebLayout(nodes);
+
     nodes.forEach((node) => {
-      const x = hasCoordinates ? node.x : hashToUnit(node.id, "x") * 2 - 1;
-      const y = hasCoordinates ? node.y : hashToUnit(node.id, "y") * 2 - 1;
+      const seeded = seededPositions?.get(node.id);
+      const x = hasCoordinates ? node.x : seeded?.x ?? hashToUnit(node.id, "x") * 2 - 1;
+      const y = hasCoordinates ? node.y : seeded?.y ?? hashToUnit(node.id, "y") * 2 - 1;
       const nodeType = typeof node.type === "string" && node.type.trim().length > 0 ? node.type.trim() : "default";
       const normalisedType = nodeType.toLowerCase();
       const displayType = normalisedType.length > 0 ? normalisedType : "default";
@@ -373,16 +415,19 @@ const GraphVisualization = ({ nodes, edges, isFullscreen = false }: GraphVisuali
     const shouldRunLayout = !hasCoordinates && graph.order > 1 && graph.size > 0;
     if (shouldRunLayout) {
       try {
-        const iterations = Math.min(600, Math.max(120, nodes.length * 4));
+        const iterations = Math.min(480, Math.max(120, nodes.length * 3));
         const inferred = forceAtlas2.inferSettings(graph);
         forceAtlas2.assign(graph, {
           iterations,
           settings: {
             ...inferred,
             adjustSizes: true,
-            scalingRatio: 12,
-            gravity: 1.2,
-            slowDown: 1.2,
+            scalingRatio: 2.8,
+            gravity: 3.2,
+            strongGravityMode: true,
+            linLogMode: true,
+            outboundAttractionDistribution: true,
+            slowDown: 2.5,
           },
         });
       } catch (error) {
