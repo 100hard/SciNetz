@@ -10,14 +10,17 @@ from typing import Callable, Optional, Sequence
 
 import pytest
 
-from backend.app.config import load_config
+from backend.app.config import AppConfig, load_config
 from backend.app.contracts import PaperMetadata, ParsedElement
 from backend.app.extraction.cache import LLMResponseCache, TokenBudgetCache
+from backend.app.extraction.relation_semantics import RelationSemanticMatch
 from backend.app.extraction.triplet_extraction import (
     ExtractionResult,
     LLMExtractor,
     OpenAIExtractor,
     RawLLMTriple,
+    RelationNormalizationTelemetry,
+    RelationReviewRequired,
     TwoPassTripletExtractor,
     normalize_relation,
 )
@@ -67,6 +70,16 @@ def fixture_config():
     return load_config()
 
 
+def _config_with_review_threshold(base: AppConfig, review_threshold: float) -> AppConfig:
+    """Return a copy of the app config with a semantic review threshold enabled."""
+
+    semantic = base.relations.semantic_matching.model_copy(
+        update={"review_threshold": review_threshold}
+    )
+    relations = base.relations.model_copy(update={"semantic_matching": semantic})
+    return base.model_copy(update={"relations": relations})
+
+
 @dataclass(frozen=True)
 class _StubExtractor(LLMExtractor):
     """LLM extractor that returns pre-seeded triples for tests."""
@@ -99,11 +112,257 @@ def _load_golden(name: str) -> dict:
         return json.load(handle)
 
 
-def test_normalize_relation_rejects_unknown_relation() -> None:
+def test_normalize_relation_rejects_unknown_relation(monkeypatch) -> None:
     """Unknown relation phrases should raise a validation error."""
 
+    monkeypatch.setattr(
+        "backend.app.extraction.triplet_extraction._get_semantic_matcher",
+        lambda cfg: None,
+    )
     with pytest.raises(ValueError):
         normalize_relation("collaborates with")
+
+
+def test_normalize_relation_semantic_fallback_accepts_phrase(monkeypatch, config) -> None:
+    """Semantic matcher should accept high-confidence novel phrases."""
+
+    class _DummyMatcher:
+        def match(self, phrase: str):
+            assert phrase == "fine tunes over"
+            settings = config.relations.semantic_matching
+            return RelationSemanticMatch(
+                canonical="trained-on",
+                swap=False,
+                score=0.94,
+                matched_phrase="trained on",
+                candidate="fine tunes over",
+                accepted=True,
+                needs_review=False,
+                acceptance_threshold=settings.acceptance_threshold,
+                review_threshold=settings.review_threshold,
+            )
+
+    monkeypatch.setattr(
+        "backend.app.extraction.triplet_extraction._get_semantic_matcher",
+        lambda cfg: _DummyMatcher(),
+    )
+
+    canonical, swap = normalize_relation("fine tunes over", config=config)
+
+    assert canonical == "trained-on"
+    assert swap is False
+
+
+def test_normalize_relation_routes_medium_confidence_to_review(monkeypatch, config) -> None:
+    """Semantic matcher should flag medium-confidence matches for manual review when enabled."""
+
+    review_config = _config_with_review_threshold(
+        config,
+        max(0.0, config.relations.semantic_matching.acceptance_threshold - 0.05),
+    )
+    settings = review_config.relations.semantic_matching
+    review_threshold = settings.review_threshold
+    assert review_threshold is not None
+    score = min(settings.acceptance_threshold - 0.01, review_threshold + 0.01)
+
+    class _DummyMatcher:
+        def match(self, phrase: str):
+            assert phrase == "fine tunes maybe"
+            return RelationSemanticMatch(
+                canonical="trained-on",
+                swap=False,
+                score=score,
+                matched_phrase="trained on",
+                candidate="fine tunes maybe",
+                accepted=False,
+                needs_review=True,
+                acceptance_threshold=settings.acceptance_threshold,
+                review_threshold=settings.review_threshold,
+            )
+
+    monkeypatch.setattr(
+        "backend.app.extraction.triplet_extraction._get_semantic_matcher",
+        lambda cfg: _DummyMatcher(),
+    )
+
+    telemetry = RelationNormalizationTelemetry("fine tunes maybe")
+    with pytest.raises(RelationReviewRequired):
+        normalize_relation("fine tunes maybe", config=review_config, telemetry=telemetry)
+    assert telemetry.event is not None
+    assert telemetry.event.decision == "semantic_review"
+    assert telemetry.event.canonical == "trained-on"
+    assert telemetry.event.score == score
+
+
+def test_normalize_relation_medium_confidence_rejected_without_review(monkeypatch, config) -> None:
+    """Medium-confidence phrases should be rejected outright when review is disabled."""
+
+    settings = config.relations.semantic_matching
+    assert settings.review_threshold is None
+    score = max(0.0, settings.acceptance_threshold - 0.01)
+
+    class _DummyMatcher:
+        def match(self, phrase: str):
+            assert phrase == "fine tunes maybe"
+            return RelationSemanticMatch(
+                canonical="trained-on",
+                swap=False,
+                score=score,
+                matched_phrase="trained on",
+                candidate="fine tunes maybe",
+                accepted=False,
+                needs_review=False,
+                acceptance_threshold=settings.acceptance_threshold,
+                review_threshold=settings.review_threshold,
+            )
+
+    monkeypatch.setattr(
+        "backend.app.extraction.triplet_extraction._get_semantic_matcher",
+        lambda cfg: _DummyMatcher(),
+    )
+
+    telemetry = RelationNormalizationTelemetry("fine tunes maybe")
+    with pytest.raises(ValueError):
+        normalize_relation("fine tunes maybe", config=config, telemetry=telemetry)
+    assert telemetry.event is not None
+    assert telemetry.event.decision == "rejected"
+
+
+def test_extractor_records_review_candidates_when_enabled(monkeypatch, config) -> None:
+    """Extraction results should include telemetry for phrases sent to review when enabled."""
+
+    review_config = _config_with_review_threshold(
+        config,
+        max(0.0, config.relations.semantic_matching.acceptance_threshold - 0.05),
+    )
+    settings = review_config.relations.semantic_matching
+    review_threshold = settings.review_threshold
+    assert review_threshold is not None
+    score = min(settings.acceptance_threshold - 0.01, review_threshold + 0.01)
+
+    class _DummyMatcher:
+        def match(self, phrase: str):
+            return RelationSemanticMatch(
+                canonical="trained-on",
+                swap=False,
+                score=score,
+                matched_phrase="trained on",
+                candidate=phrase,
+                accepted=False,
+                needs_review=True,
+                acceptance_threshold=settings.acceptance_threshold,
+                review_threshold=settings.review_threshold,
+            )
+
+    monkeypatch.setattr(
+        "backend.app.extraction.triplet_extraction._get_semantic_matcher",
+        lambda cfg: _DummyMatcher(),
+    )
+
+    content = "The model was fine tuned maybe on ImageNet."
+    element = ParsedElement(
+        doc_id="doc-review",
+        element_id="doc-review:0",
+        section="Methods",
+        content=content,
+        content_hash="1" * 64,
+        start_char=0,
+        end_char=len(content),
+    )
+    extractor = _StubExtractor(
+        triples=[
+            RawLLMTriple(
+                subject_text="model",
+                subject_type="Method",
+                relation_verbatim="fine tunes maybe",
+                object_text="ImageNet",
+                object_type="Dataset",
+                supportive_sentence=content,
+                confidence=0.7,
+            )
+        ]
+    )
+    pipeline = TwoPassTripletExtractor(config=review_config, llm_extractor=extractor)
+
+    result = pipeline.extract_with_metadata(element, candidate_entities=None)
+
+    assert len(result.triplets) == 0
+    assert result.rejection_reasons.get("relation_needs_review") == 1
+    assert len(result.relation_review_events) == 1
+    event = result.relation_review_events[0]
+    assert event.decision == "semantic_review"
+    assert event.canonical == "trained-on"
+    assert event.score == score
+
+
+def test_extractor_rejects_medium_confidence_without_review(monkeypatch, config) -> None:
+    """Extraction should reject medium-confidence phrases when review is disabled."""
+
+    settings = config.relations.semantic_matching
+    assert settings.review_threshold is None
+    score = max(0.0, settings.acceptance_threshold - 0.01)
+
+    class _DummyMatcher:
+        def match(self, phrase: str):
+            return RelationSemanticMatch(
+                canonical="trained-on",
+                swap=False,
+                score=score,
+                matched_phrase="trained on",
+                candidate=phrase,
+                accepted=False,
+                needs_review=False,
+                acceptance_threshold=settings.acceptance_threshold,
+                review_threshold=settings.review_threshold,
+            )
+
+    monkeypatch.setattr(
+        "backend.app.extraction.triplet_extraction._get_semantic_matcher",
+        lambda cfg: _DummyMatcher(),
+    )
+
+    content = "The model was fine tuned maybe on ImageNet."
+    element = ParsedElement(
+        doc_id="doc-review",
+        element_id="doc-review:0",
+        section="Methods",
+        content=content,
+        content_hash="1" * 64,
+        start_char=0,
+        end_char=len(content),
+    )
+    extractor = _StubExtractor(
+        triples=[
+            RawLLMTriple(
+                subject_text="model",
+                subject_type="Method",
+                relation_verbatim="fine tunes maybe",
+                object_text="ImageNet",
+                object_type="Dataset",
+                supportive_sentence=content,
+                confidence=0.7,
+            )
+        ]
+    )
+    pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
+
+    result = pipeline.extract_with_metadata(element, candidate_entities=None)
+
+    assert len(result.triplets) == 0
+    assert result.rejection_reasons.get("relation_unmapped") == 1
+    assert not result.relation_review_events
+    assert not result.relation_events
+
+def test_normalize_relation_semantic_fallback_still_rejects_when_disabled(monkeypatch) -> None:
+    """Semantic matcher returning None should keep raising a validation error."""
+
+    monkeypatch.setattr(
+        "backend.app.extraction.triplet_extraction._get_semantic_matcher",
+        lambda cfg: None,
+    )
+
+    with pytest.raises(ValueError):
+        normalize_relation("novel verb without mapping")
 
 
 @pytest.mark.parametrize(
@@ -120,12 +379,16 @@ def test_normalize_relation_rejects_unknown_relation() -> None:
         ("Our system achieves state of the art on ImageNet.", "achieves-state-of-the-art-on"),
         ("The model was fine-tuned on MNLI.", "trained-on"),
         ("Our procedure was applied on the validation set.", "trained-on"),
+        ("The architecture trains on synthetic data.", "trained-on"),
+        ("The encoder learned on large corpora.", "trained-on"),
         ("The generator won the ImageNet challenge.", "achieves-state-of-the-art-on"),
         ("The decoder generates high-resolution samples.", "results-in"),
+        ("The decoder makes sharper samples.", "results-in"),
         ("The updated architecture refines the baseline.", "builds-upon"),
         ("The algorithm is implemented in PyTorch.", "implemented-in"),
         ("This procedure requires sterile equipment.", "requires"),
         ("ATP is required for the contraction response.", "requires-for"),
+        ("The toolkit is used during evaluation.", "uses"),
         ("Calcium influx enables neurotransmitter release.", "enables"),
         ("Secondary metabolites mediate the plant response.", "mediates"),
         ("Sample X is an instance of the MNIST dataset.", "instance-of"),
@@ -141,6 +404,7 @@ def test_normalize_relation_rejects_unknown_relation() -> None:
         ("The interferometer detects the passing signal.", "detects"),
         ("The instrument measures magnetic flux.", "measures"),
         ("The parameter is inferred from spectral data.", "infers-from"),
+        ("The signal occurs in hippocampal neurons.", "present-in"),
         ("The collision results in high-energy photons.", "results-in"),
         ("Alloy Z is composed of iron and nickel.", "composed-of"),
         ("Nanotubes are synthesized from methane feedstock.", "synthesized-from"),
@@ -407,6 +671,78 @@ def test_type_hints_resolve_ambiguous_method(config) -> None:
     votes = result.entity_type_votes.get("ResNet model", {})
     assert votes.get("Method") == 1
     assert "subject_type_ambiguous" not in result.rejection_reasons
+
+
+def test_type_hints_resolve_metric_error_rate(config) -> None:
+    """Metric hints should classify error rates when the LLM emits Other."""
+
+    content = "The top-1 error rate on ImageNet dropped to 25.7 percent."
+    element = ParsedElement(
+        doc_id="doc-metric-hint",
+        element_id="doc-metric-hint:0",
+        section="Results",
+        content=content,
+        content_hash="1" * 64,
+        start_char=0,
+        end_char=len(content),
+    )
+    extractor = _StubExtractor(
+        triples=[
+            RawLLMTriple(
+                subject_text="top-1 error rate",
+                subject_type="Other",
+                relation_verbatim="evaluated on",
+                object_text="ImageNet",
+                object_type="Dataset",
+                supportive_sentence=content,
+                confidence=0.81,
+            )
+        ]
+    )
+    pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
+
+    result = pipeline.extract_with_metadata(element, candidate_entities=None)
+
+    assert len(result.triplets) == 1
+    votes = result.entity_type_votes.get("top-1 error rate", {})
+    assert votes.get("Metric") == 1
+    assert "subject_type_ambiguous" not in result.rejection_reasons
+
+
+def test_type_hints_resolve_dataset_alias(config) -> None:
+    """Dataset hints should classify benchmark names even without suffixes."""
+
+    content = "The Transformer model was trained on ImageNet and achieved strong results."
+    element = ParsedElement(
+        doc_id="doc-dataset-hint",
+        element_id="doc-dataset-hint:0",
+        section="Methods",
+        content=content,
+        content_hash="2" * 64,
+        start_char=0,
+        end_char=len(content),
+    )
+    extractor = _StubExtractor(
+        triples=[
+            RawLLMTriple(
+                subject_text="Transformer",
+                subject_type="Method",
+                relation_verbatim="trained on",
+                object_text="ImageNet",
+                object_type="Other",
+                supportive_sentence=content,
+                confidence=0.83,
+            )
+        ]
+    )
+    pipeline = TwoPassTripletExtractor(config=config, llm_extractor=extractor)
+
+    result = pipeline.extract_with_metadata(element, candidate_entities=None)
+
+    assert len(result.triplets) == 1
+    votes = result.entity_type_votes.get("ImageNet", {})
+    assert votes.get("Dataset") == 1
+    assert "object_type_ambiguous" not in result.rejection_reasons
 
 
 def test_golden_triplet_extraction_matches_fixture(config) -> None:

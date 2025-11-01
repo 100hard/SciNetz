@@ -16,7 +16,7 @@ import {
   ShieldAlert,
 } from "lucide-react";
 
-import GraphVisualization, { GRAPH_VISUALIZATION_NODE_LIMIT } from "./graph-visualization";
+import GraphVisualization from "./graph-visualization";
 import apiClient, { buildApiUrl, extractErrorMessage } from "@/lib/http";
 
 type GraphDefaults = {
@@ -46,8 +46,11 @@ export type GraphNode = {
   aliases: string[];
   times_seen: number;
   importance?: number | null;
+  layout_ring?: number | null;
   section_distribution: Record<string, number>;
   source_document_ids: string[];
+  x: number;
+  y: number;
 };
 
 export type EdgeAttributeValue = string | number | boolean;
@@ -294,7 +297,12 @@ const GraphExplorer = () => {
         params.papers = trimmedPapers;
       }
       const { data } = await apiClient.get<GraphResponse>("/api/ui/graph", { params });
-      setGraph(data);
+      const normalisedNodes = data.nodes.map((node) => ({
+        ...node,
+        x: typeof node.x === "number" ? node.x : 0,
+        y: typeof node.y === "number" ? node.y : 0,
+      }));
+      setGraph({ ...data, nodes: normalisedNodes });
       setError(null);
     } catch (err) {
       setGraph(null);
@@ -369,7 +377,7 @@ const GraphExplorer = () => {
       const uniqueDocs = Array.from(new Set(docs));
       const docSet = new Set(uniqueDocs);
       nodeDocs.set(node.id, docSet);
-      for (const docId of docSet) {
+      docSet.forEach((docId) => {
         let entry = docEntries.get(docId);
         if (!entry) {
           entry = { nodes: [], nodeIds: new Set(), edges: [] };
@@ -379,7 +387,7 @@ const GraphExplorer = () => {
           entry.nodeIds.add(node.id);
           entry.nodes.push(node);
         }
-      }
+      });
     }
 
     for (const edge of graph.edges) {
@@ -941,11 +949,6 @@ const GraphExplorer = () => {
                     {isCreatingShareLink ? <Loader2 className="h-4 w-4 animate-spin" /> : <Share2 className="h-4 w-4" />}
                     {isCreatingShareLink ? "Creatingâ€¦" : "Create share link"}
                   </button>
-                  {graph.nodes.length > GRAPH_VISUALIZATION_NODE_LIMIT && (
-                    <p className="text-xs text-muted-foreground">
-                      Showing first {GRAPH_VISUALIZATION_NODE_LIMIT} nodes out of {graph.nodes.length}.
-                    </p>
-                  )}
                   <button
                     type="button"
                     onClick={toggleFullscreen}
@@ -965,7 +968,6 @@ const GraphExplorer = () => {
                   <GraphVisualization
                     nodes={graph.nodes}
                     edges={graph.edges}
-                    showComponentBackgrounds={false}
                     isFullscreen={isFullscreen}
                   />
                 </div>

@@ -244,8 +244,14 @@ const applyStreamEventToTurn = (turn: ChatTurn, event: QAStreamEvent): ChatTurn 
       break;
     }
     case "llm_answer": {
-      response.llm_answer =
-        typeof event.payload === "string" || event.payload === null ? event.payload : String(event.payload);
+      const payload = event.payload;
+      if (typeof payload === "string") {
+        response.llm_answer = payload;
+      } else if (payload === null) {
+        response.llm_answer = null;
+      } else {
+        response.llm_answer = String(payload);
+      }
       updated.pending = true;
       break;
     }

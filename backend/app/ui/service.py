@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Optional, Sequence
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 LOGGER = logging.getLogger(__name__)
 
+from backend.app.ui.layout import LayoutResult, NodeLayoutInfo, compute_node_positions
 from backend.app.ui.repository import GraphEdgeRecord, GraphNodeRecord, GraphViewFilters, GraphViewRepositoryProtocol
 
 
@@ -22,8 +23,12 @@ class GraphNode:
     type: Optional[str]
     aliases: List[str]
     times_seen: int
+    importance: Optional[float]
+    layout_ring: Optional[int]
     section_distribution: Dict[str, int]
     source_document_ids: List[str]
+    x: float
+    y: float
 
 
 @dataclass(frozen=True)
@@ -107,15 +112,37 @@ class GraphViewService:
             records = self._repository.fetch_edges(filters, allowed_papers=allowed_set)
         else:
             records = self._repository.fetch_edges(filters)
-        node_map: Dict[str, GraphNode] = {}
+        node_records: Dict[str, GraphNodeRecord] = {}
         edges: List[GraphEdge] = []
+        layout_edges: List[Tuple[str, str]] = []
         for record in records:
-            if record.source.node_id not in node_map:
-                node_map[record.source.node_id] = self._node_from_record(record.source)
-            if record.target.node_id not in node_map:
-                node_map[record.target.node_id] = self._node_from_record(record.target)
+            if record.source.node_id not in node_records:
+                node_records[record.source.node_id] = record.source
+            if record.target.node_id not in node_records:
+                node_records[record.target.node_id] = record.target
+            layout_edges.append((record.source.node_id, record.target.node_id))
             edges.append(self._edge_from_record(record))
-        return GraphView(nodes=list(node_map.values()), edges=edges)
+
+        layout_infos: Dict[str, NodeLayoutInfo] = {
+            node_id: NodeLayoutInfo(
+                node_id=node_id,
+                times_seen=record.times_seen,
+                node_type=record.type,
+                section_distribution=record.section_distribution,
+            )
+            for node_id, record in node_records.items()
+        }
+
+        layout: LayoutResult = compute_node_positions(layout_infos, layout_edges)
+
+        nodes: List[GraphNode] = []
+        for node_id, record in node_records.items():
+            position = layout.positions.get(node_id, (0.0, 0.0))
+            importance = layout.importance.get(node_id)
+            ring = layout.rings.get(node_id)
+            nodes.append(self._node_from_record(record, position, importance, ring))
+        nodes.sort(key=lambda node: node.id)
+        return GraphView(nodes=nodes, edges=edges)
 
     def clear_graph(self) -> None:
         """Remove nodes and edges exposed through the graph view."""
@@ -127,15 +154,25 @@ class GraphViewService:
             raise
 
     @staticmethod
-    def _node_from_record(record: GraphNodeRecord) -> GraphNode:
+    def _node_from_record(
+        record: GraphNodeRecord,
+        position: Tuple[float, float],
+        importance: Optional[float],
+        layout_ring: Optional[int],
+    ) -> GraphNode:
+        x, y = position
         return GraphNode(
             id=record.node_id,
             label=record.name,
             type=record.type,
             aliases=list(record.aliases),
             times_seen=record.times_seen,
+            importance=importance,
+            layout_ring=layout_ring,
             section_distribution=dict(record.section_distribution),
             source_document_ids=list(record.source_document_ids),
+            x=float(x),
+            y=float(y),
         )
 
     @staticmethod

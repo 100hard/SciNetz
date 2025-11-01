@@ -363,10 +363,25 @@ class RelationPatternConfig(_FrozenModel):
     swap: bool = False
 
 
+class RelationSemanticMatchConfig(_FrozenModel):
+    """Configuration for semantic relation matching fallback."""
+
+    enabled: bool = False
+    acceptance_threshold: float = Field(0.9, ge=0.0, le=1.0)
+    review_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
+    embedding_model: Optional[str] = Field("intfloat/e5-base")
+    embedding_device: Optional[str] = None
+    auto_accept_log_filename: str = Field("relation_auto_accepts.jsonl", min_length=1)
+    review_queue_filename: str = Field("relation_review_queue.jsonl", min_length=1)
+
+
 class RelationsConfig(_FrozenModel):
     """Relation normalization and metadata configuration."""
 
     normalization_patterns: List[RelationPatternConfig] = Field(default_factory=list)
+    semantic_matching: RelationSemanticMatchConfig = Field(
+        default_factory=RelationSemanticMatchConfig
+    )
 
     def canonical_relation_names(self) -> List[str]:
         """Return the unique canonical relation identifiers."""
@@ -574,6 +589,33 @@ class ObservabilityQualityConfig(_FrozenModel):
         return self
 
 
+class ObservabilityAutoAuditConfig(_FrozenModel):
+    """Configuration governing automated edge audit generation."""
+
+    enabled: bool = False
+    reviewer_id: str = Field("auto-verifier", min_length=1)
+    min_edges: int = Field(10, ge=0)
+
+
+class ObservabilityRelevancyConfig(_FrozenModel):
+    """Configuration for semantic relevancy scoring of persisted edges."""
+
+    enabled: bool = False
+    embedding_model: str = Field("hashing", min_length=1)
+    embedding_device: Optional[str] = None
+    embedding_batch_size: int = Field(16, ge=1)
+    target: float = Field(0.7, ge=0.0, le=1.0)
+    warning: float = Field(0.6, ge=0.0, le=1.0)
+    minimum_edges: int = Field(5, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_thresholds(self) -> "ObservabilityRelevancyConfig":
+        if self.warning > self.target:
+            msg = "warning must be <= target"
+            raise ValueError(msg)
+        return self
+
+
 class ObservabilityConfig(_FrozenModel):
     """Filesystem locations for observability artifacts."""
 
@@ -586,6 +628,9 @@ class ObservabilityConfig(_FrozenModel):
     semantic_drift_filename: str = Field("semantic_drift.jsonl", min_length=1)
     quality_alerts_filename: str = Field("quality_alerts.jsonl", min_length=1)
     quality: ObservabilityQualityConfig
+    auto_audit: ObservabilityAutoAuditConfig = Field(default_factory=ObservabilityAutoAuditConfig)
+    relevancy_metrics_filename: str = Field("relevancy_metrics.jsonl", min_length=1)
+    relevancy: ObservabilityRelevancyConfig = Field(default_factory=ObservabilityRelevancyConfig)
 
 
 class AuthJWTConfig(_FrozenModel):

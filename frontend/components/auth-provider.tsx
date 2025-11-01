@@ -11,6 +11,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { AxiosHeaders } from "axios";
+
 import apiClient from "@/lib/http";
 import type {
   AuthUser,
@@ -136,12 +138,15 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     const interceptorId = apiClient.interceptors.request.use((config) => {
+      const headers = AxiosHeaders.from(config.headers ?? {});
+
       if (state.tokens.accessToken) {
-        config.headers = config.headers ?? {};
-        config.headers.Authorization = `Bearer ${state.tokens.accessToken}`;
-      } else if (config.headers?.Authorization) {
-        delete config.headers.Authorization;
+        headers.set("Authorization", `Bearer ${state.tokens.accessToken}`);
+      } else {
+        headers.delete("Authorization");
       }
+
+      config.headers = headers;
       return config;
     });
 

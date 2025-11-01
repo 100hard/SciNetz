@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, FrozenSet, Iterable, List, Optional, Set
 
@@ -17,7 +19,8 @@ from backend.app.canonicalization import (
 )
 from backend.app.config import AppConfig, load_config
 from backend.app.contracts import Evidence, PaperMetadata, ParsedElement, TextSpan, Triplet
-from backend.app.extraction import ExtractionResult
+from backend.app.extraction import ExtractionResult, RelationNormalizationEvent
+from backend.app.observability import ObservabilityService
 from backend.app.graph.writer import AliasResolution
 from backend.app.orchestration import ExtractionOrchestrator
 from backend.app.orchestration.orchestrator import (
@@ -640,6 +643,174 @@ def test_pipeline_version_upgrade_deprecates_previous_edges(
         chunk_store_v2.should_process(doc_id, element.content_hash, upgraded_config.pipeline.version)
         is False
     )
+
+
+def test_relation_events_persist_to_observability(config: AppConfig, tmp_path: Path) -> None:
+    doc_id = "paper-rel"
+    content = "Transformer was fine tuned on Dataset Z while another relation needs review."
+    element = _parsed_element(doc_id, f"{doc_id}:0", "Methods", content)
+    metadata = PaperMetadata(doc_id=doc_id, title="Relation Telemetry Paper")
+    parse_result = ParseResult(doc_id=doc_id, metadata=metadata, elements=[element], errors=[])
+    parsing = StubParsingPipeline(parse_result)
+
+    triplet = _triplet("Transformer", "trained-on", "Dataset Z", element)
+    auto_event = RelationNormalizationEvent(
+        surface="finetuned-on",
+        decision="semantic_auto",
+        canonical="trained-on",
+        matched_phrase="trained on",
+        score=0.93,
+        swap=False,
+        acceptance_threshold=0.75,
+        review_threshold=None,
+    )
+    extraction = ExtractionResult(
+        triplets=[triplet],
+        section_distribution={"Transformer": {"Methods": 1}, "Dataset Z": {"Methods": 1}},
+        relation_verbatims=["finetuned-on"],
+        attempted_triples=2,
+        rejected_triples=1,
+        rejection_reasons={"relation_unmapped": 1},
+        relation_events=[auto_event],
+        relation_review_events=[],
+    )
+    extractor = StubTripletExtractor({element.element_id: extraction})
+    inventory = StubInventoryBuilder({})
+    graph_writer = StubGraphWriter()
+
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=HashingEmbeddingBackend(),
+        embedding_dir=tmp_path / "embeddings",
+        report_dir=tmp_path / "reports",
+    )
+    canonicalization = CanonicalizationPipeline(config=config, canonicalizer=canonicalizer)
+    chunk_store = ProcessedChunkStore(tmp_path / "processed.json")
+    observability = ObservabilityService(
+        config.observability,
+        root_dir=tmp_path,
+        relation_auto_accepts_filename="auto.jsonl",
+        relation_review_queue_filename="review.jsonl",
+    )
+
+    orchestrator = ExtractionOrchestrator(
+        config=config,
+        parsing_pipeline=parsing,
+        inventory_builder=inventory,
+        triplet_extractor=extractor,
+        canonicalization=canonicalization,
+        graph_writer=graph_writer,
+        chunk_store=chunk_store,
+        observability=observability,
+    )
+
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_text("placeholder")
+
+    orchestrator.run(paper_id=doc_id, pdf_path=pdf_path)
+
+    observability_dir = tmp_path / Path(config.observability.root_dir)
+    auto_path = observability_dir / "auto.jsonl"
+    review_path = observability_dir / "review.jsonl"
+    assert auto_path.exists(), list(observability_dir.iterdir())
+    assert not review_path.exists(), list(observability_dir.iterdir())
+    auto_entries = [json.loads(line) for line in auto_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    assert auto_entries and auto_entries[0]["doc_id"] == doc_id
+    assert auto_entries[0]["surface_relation"] == "finetuned-on"
+    assert auto_entries[0]["decision"] == "semantic_auto"
+    assert auto_entries[0]["matched_phrase"] == "trained on"
+    assert auto_entries[0]["score"] == pytest.approx(0.93)
+    assert auto_entries[0]["predicate"] == "trained-on"
+
+
+def test_auto_audit_records_entries(config: AppConfig, tmp_path: Path) -> None:
+    doc_id = "paper-auto"
+    element = _parsed_element(doc_id, f"{doc_id}:0", "Methods", "Model A uses dataset X.")
+    metadata = PaperMetadata(doc_id=doc_id, title="Auto Audit Paper")
+    parse_result = ParseResult(doc_id=doc_id, metadata=metadata, elements=[element], errors=[])
+    parsing = StubParsingPipeline(parse_result)
+
+    triplet = _triplet("Model A", "uses", "dataset X", element)
+    extraction = ExtractionResult(
+        triplets=[triplet],
+        section_distribution={"Model A": {"Methods": 1}, "dataset X": {"Methods": 1}},
+        relation_verbatims=["uses"],
+        attempted_triples=1,
+        rejected_triples=0,
+    )
+    extractor = StubTripletExtractor({element.element_id: extraction})
+    inventory = StubInventoryBuilder({})
+    graph_writer = StubGraphWriter()
+
+    canonicalizer = EntityCanonicalizer(
+        config,
+        embedding_backend=HashingEmbeddingBackend(),
+        embedding_dir=tmp_path / "embeddings",
+        report_dir=tmp_path / "reports",
+    )
+    canonicalization = CanonicalizationPipeline(config=config, canonicalizer=canonicalizer)
+    chunk_store = ProcessedChunkStore(tmp_path / "processed.json")
+
+    auto_config = config.observability.auto_audit.model_copy(
+        update={"enabled": True, "min_edges": 1, "reviewer_id": "auto-check"}
+    )
+    relevancy_config = config.observability.relevancy.model_copy(update={"minimum_edges": 1})
+    observability_config = config.observability.model_copy(
+        update={"auto_audit": auto_config, "relevancy": relevancy_config}
+    )
+    clock_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    observability = ObservabilityService(
+        observability_config,
+        root_dir=tmp_path,
+        clock=lambda: clock_time,
+    )
+
+    orchestrator = ExtractionOrchestrator(
+        config=config.model_copy(update={"observability": observability_config}),
+        parsing_pipeline=parsing,
+        inventory_builder=inventory,
+        triplet_extractor=extractor,
+        canonicalization=canonicalization,
+        graph_writer=graph_writer,
+        chunk_store=chunk_store,
+        observability=observability,
+    )
+
+    pdf_path = tmp_path / "paper.pdf"
+    pdf_path.write_text("placeholder")
+
+    orchestrator.run(paper_id=doc_id, pdf_path=pdf_path)
+
+    audit_path = observability.artifact_path("audit_results")
+    assert audit_path.exists()
+    entries = [
+        json.loads(line)
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(entries) == 1
+    audit_entry = entries[0]
+    assert audit_entry["paper_id"] == doc_id
+    assert audit_entry["reviewer"] == "auto-check"
+    assert audit_entry["total_edges"] == 1
+    assert audit_entry["correct_edges"] == 1
+    assert audit_entry["duplicate_edges"] == 0
+    assert audit_entry["run_id"]
+
+    relevancy_path = observability.artifact_path("relevancy_metrics")
+    assert relevancy_path.exists()
+    relevancy_entries = [
+        json.loads(line)
+        for line in relevancy_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(relevancy_entries) == 1
+    relevancy_entry = relevancy_entries[0]
+    assert relevancy_entry["paper_id"] == doc_id
+    assert relevancy_entry["edge_count"] == 1
+    assert "score_avg" in relevancy_entry
+    assert relevancy_entry["status"]
 
 
 def test_run_batch_merges_cross_papers(config: AppConfig, tmp_path: Path) -> None:

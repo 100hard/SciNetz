@@ -15,6 +15,9 @@ const sampleNodes: GraphNode[] = [
       Results: 4,
       Discussion: 2,
     },
+    source_document_ids: ["sample-doc-1"],
+    x: 0,
+    y: 0,
   },
   {
     id: "n2",
@@ -26,6 +29,9 @@ const sampleNodes: GraphNode[] = [
       Methods: 5,
       Appendix: 2,
     },
+    source_document_ids: ["sample-doc-2"],
+    x: 0.8,
+    y: 0.4,
   },
   {
     id: "n3",
@@ -37,6 +43,9 @@ const sampleNodes: GraphNode[] = [
       Results: 3,
       Evaluation: 2,
     },
+    source_document_ids: ["sample-doc-3"],
+    x: -0.6,
+    y: 0.3,
   },
   {
     id: "n4",
@@ -48,6 +57,9 @@ const sampleNodes: GraphNode[] = [
       Methods: 2,
       Results: 1,
     },
+    source_document_ids: ["sample-doc-4"],
+    x: -0.4,
+    y: -0.5,
   },
   {
     id: "n5",
@@ -59,6 +71,9 @@ const sampleNodes: GraphNode[] = [
       Introduction: 2,
       Results: 3,
     },
+    source_document_ids: ["sample-doc-5"],
+    x: 0.4,
+    y: -0.6,
   },
   {
     id: "n6",
@@ -70,6 +85,9 @@ const sampleNodes: GraphNode[] = [
       Methods: 1,
       Results: 1,
     },
+    source_document_ids: ["sample-doc-6"],
+    x: 1.0,
+    y: -0.2,
   },
 ];
 

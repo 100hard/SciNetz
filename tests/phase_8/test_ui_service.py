@@ -67,11 +67,16 @@ def test_graph_view_service_converts_records() -> None:
     node = view.nodes[0]
     assert isinstance(node, GraphNode)
     assert node.label == "Alpha"
+    assert isinstance(node.x, float)
+    assert isinstance(node.y, float)
     edge = view.edges[0]
     assert isinstance(edge, GraphEdge)
     assert edge.relation == "uses"
     assert edge.attributes["method"] == "llm"
     assert edge.evidence["doc_id"] == "doc1"
+    assert node.importance is not None
+    assert 0.0 <= node.importance <= 1.0
+    assert node.layout_ring is not None
 
 
 def test_graph_view_service_decodes_attribute_strings() -> None:

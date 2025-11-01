@@ -24,6 +24,7 @@ from backend.app.graph import GraphWriter
 from backend.app.graph.writer import AliasResolution
 from backend.app.parsing import ParsingPipeline
 from backend.app.observability import ObservabilityRun, ObservabilityService
+from backend.app.observability.relevancy import SemanticRelevancyEvaluator
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,6 +73,25 @@ class _EdgeRecord:
     relation_verbatim: str
     attributes: Optional[Dict[str, str]]
     times_seen: int = 1
+
+
+@dataclass
+class _AutoAuditStats:
+    """Aggregated metrics for automated edge auditing."""
+
+    total_edges: int = 0
+    duplicate_edges: int = 0
+
+
+@dataclass(frozen=True)
+class _RelationTelemetryRecord:
+    """Telemetry tying relation normalization events back to source context."""
+
+    event: RelationNormalizationEvent
+    doc_id: str
+    element_id: str
+    section: str
+    triplet: Optional[Triplet]
 
 
 @dataclass(frozen=True)
@@ -159,6 +179,7 @@ class _DocumentProcessingState:
     errors: List[str] = field(default_factory=list)
     extractions: List[ExtractionResult] = field(default_factory=list)
     edge_records: List[_EdgeRecord] = field(default_factory=list)
+    relation_events: List[_RelationTelemetryRecord] = field(default_factory=list)
     requires_deprecation: bool = False
     timings: _ProcessingTimers = field(default_factory=_ProcessingTimers)
     relation_types: Set[str] = field(default_factory=set)
@@ -319,6 +340,7 @@ class CoMentionAccumulator:
                     "method": "co-mention",
                     "hidden": "true",
                     "sections": ",".join(sections),
+                    "surface_relation": "co-mentioned",
                 },
                 times_seen=len(occurrences),
             )
@@ -423,6 +445,9 @@ class ExtractionOrchestrator:
         self._graph_writer = graph_writer
         self._chunk_store = chunk_store
         self._observability = observability
+        self._relevancy_evaluator: Optional[SemanticRelevancyEvaluator] = None
+        if observability is not None and observability.relevancy.enabled:
+            self._relevancy_evaluator = SemanticRelevancyEvaluator(observability.relevancy)
 
     def _process_document(self, request: BatchExtractionInput) -> _DocumentProcessingState:
         """Parse and extract a single document without performing canonicalization."""
@@ -610,15 +635,40 @@ class ExtractionOrchestrator:
                 candidate = extraction.relation_verbatims[idx]
                 if candidate:
                     relation_verbatim = candidate
+            if idx < len(extraction.relation_events):
+                event = extraction.relation_events[idx]
+                state.relation_events.append(
+                    _RelationTelemetryRecord(
+                        event=event,
+                        doc_id=item.element.doc_id,
+                        element_id=item.element.element_id,
+                        section=item.element.section,
+                        triplet=triplet,
+                    )
+                )
             state.edge_records.append(
                 _EdgeRecord(
                     triplet=triplet,
                     relation_verbatim=relation_verbatim,
-                    attributes={"method": "llm", "section": item.element.section},
+                    attributes={
+                        "method": "llm",
+                        "section": item.element.section,
+                        "surface_relation": relation_verbatim,
+                    },
                     times_seen=1,
                 )
             )
             state.relation_types.add(relation_verbatim)
+        for review_event in extraction.relation_review_events:
+            state.relation_events.append(
+                _RelationTelemetryRecord(
+                    event=review_event,
+                    doc_id=item.element.doc_id,
+                    element_id=item.element.element_id,
+                    section=item.element.section,
+                    triplet=None,
+                )
+            )
 
     def _handle_extraction_failure(
         self,
@@ -653,6 +703,88 @@ class ExtractionOrchestrator:
             pipeline_version,
         )
 
+    def _persist_relation_events(
+        self,
+        *,
+        state: _DocumentProcessingState,
+        run_id: Optional[str],
+        pipeline_version: str,
+    ) -> None:
+        if self._observability is None or not state.relation_events:
+            return
+        for record in state.relation_events:
+            event = record.event
+            if event.decision not in {"semantic_auto", "semantic_review"}:
+                continue
+            payload: Dict[str, object] = {
+                "doc_id": record.doc_id,
+                "element_id": record.element_id,
+                "section": record.section,
+                "surface_relation": event.surface,
+                "canonical_relation": event.canonical,
+                "matched_phrase": event.matched_phrase,
+                "score": event.score,
+                "swap": event.swap,
+                "pipeline_version": pipeline_version,
+            }
+            if run_id is not None:
+                payload["run_id"] = run_id
+            payload["decision"] = event.decision
+            if event.acceptance_threshold is not None:
+                payload["acceptance_threshold"] = event.acceptance_threshold
+            if event.review_threshold is not None:
+                payload["review_threshold"] = event.review_threshold
+            if record.triplet is not None:
+                payload.update(
+                    {
+                        "predicate": record.triplet.predicate,
+                        "subject": record.triplet.subject,
+                        "object": record.triplet.object,
+                        "confidence": record.triplet.confidence,
+                    }
+                )
+                span = record.triplet.evidence.text_span
+                payload["evidence_start"] = span.start
+                payload["evidence_end"] = span.end
+            if event.decision == "semantic_auto":
+                self._observability.record_relation_auto_accept(payload)
+            elif event.decision == "semantic_review":
+                self._observability.enqueue_relation_review(payload)
+        state.relation_events.clear()
+
+    def _record_auto_audit(
+        self,
+        *,
+        run_context: ObservabilityRun,
+        stats: Mapping[str, _AutoAuditStats],
+    ) -> None:
+        """Persist automated edge audit entries when configured."""
+
+        if self._observability is None:
+            return
+        config = self._observability.auto_audit
+        if not config.enabled:
+            return
+        reviewer = config.reviewer_id
+        minimum_edges = max(1, config.min_edges)
+        run_id = run_context.run_id
+        for doc_id, metrics in stats.items():
+            total_edges = max(0, metrics.total_edges)
+            if total_edges < minimum_edges:
+                continue
+            duplicate_edges = max(0, metrics.duplicate_edges)
+            # Automated audit treats all persisted edges as correct by construction.
+            correct_edges = total_edges
+            self._observability.record_edge_audit(
+                run_id=run_id,
+                paper_id=doc_id,
+                reviewer=reviewer,
+                total_edges=total_edges,
+                correct_edges=correct_edges,
+                duplicate_edges=duplicate_edges,
+                failure_reasons=None,
+            )
+
     def run(self, *, paper_id: str, pdf_path: Path, force: bool = False) -> OrchestrationResult:
         """Execute the full extraction pipeline for a given paper."""
 
@@ -672,6 +804,17 @@ class ExtractionOrchestrator:
                 papers=[request.paper_id for request in requests],
                 pipeline_version=self._config.pipeline.version,
             )
+
+        auto_audit_stats: Dict[str, _AutoAuditStats] = {}
+        auto_audit_enabled = (
+            self._observability is not None and self._observability.auto_audit.enabled
+        )
+        relevancy_scores: Dict[str, List[float]] = {}
+        relevancy_enabled = (
+            self._relevancy_evaluator is not None
+            and self._observability is not None
+            and self._observability.relevancy.enabled
+        )
 
         try:
             states: List[_DocumentProcessingState] = []
@@ -699,7 +842,12 @@ class ExtractionOrchestrator:
                         },
                     }
                     run_context.record_document(state.doc_id, metrics, errors=state.errors)
-
+                run_id = run_context.run_id if run_context is not None else None
+                self._persist_relation_events(
+                    state=state,
+                    run_id=run_id,
+                    pipeline_version=self._config.pipeline.version,
+                )
             extraction_results: List[ExtractionResult] = []
             edge_records: List[_EdgeRecord] = []
             for state in states:
@@ -824,6 +972,18 @@ class ExtractionOrchestrator:
                         doc_id = record.triplet.evidence.doc_id
                         if doc_id:
                             doc_edge_counts[doc_id] = doc_edge_counts.get(doc_id, 0) + 1
+                            if auto_audit_enabled:
+                                stats = auto_audit_stats.setdefault(doc_id, _AutoAuditStats())
+                                occurrences = max(1, record.times_seen)
+                                stats.total_edges += occurrences
+                                if occurrences > 1:
+                                    stats.duplicate_edges += occurrences - 1
+                            if relevancy_enabled and self._relevancy_evaluator is not None:
+                                score = self._relevancy_evaluator.score_triplet(record.triplet)
+                                if score is not None:
+                                    occurrences = max(1, record.times_seen)
+                                    per_doc = relevancy_scores.setdefault(doc_id, [])
+                                    per_doc.extend([score] * occurrences)
                     self._graph_writer.flush()
                 except Exception as exc:  # noqa: BLE001 - protective barrier around persistence
                     graph_persistence_failed = True
@@ -913,6 +1073,40 @@ class ExtractionOrchestrator:
                         },
                         errors=[],
                     )
+
+            if (
+                auto_audit_enabled
+                and run_context is not None
+                and not graph_persistence_failed
+                and auto_audit_stats
+            ):
+                self._record_auto_audit(run_context=run_context, stats=auto_audit_stats)
+
+            if (
+                relevancy_enabled
+                and run_context is not None
+                and not graph_persistence_failed
+                and relevancy_scores
+                and self._observability is not None
+                and self._relevancy_evaluator is not None
+            ):
+                summaries = self._relevancy_evaluator.summaries(relevancy_scores)
+                minimum_edges = self._relevancy_evaluator.minimum_edges()
+                for doc_id, summary in summaries.items():
+                    if summary.count < minimum_edges:
+                        continue
+                    status = self._relevancy_evaluator.classify(summary.average)
+                    payload = {
+                        "run_id": run_context.run_id,
+                        "paper_id": doc_id,
+                        "pipeline_version": self._config.pipeline.version,
+                        "edge_count": summary.count,
+                        "score_avg": summary.average,
+                        "score_min": summary.minimum,
+                        "score_max": summary.maximum,
+                        "status": status,
+                    }
+                    self._observability.record_relevancy_metrics(payload)
 
             total_processed = sum(state.processed_chunks for state in states)
             total_skipped = sum(state.skipped_chunks for state in states)

@@ -135,6 +135,8 @@ class GraphNodePayload(BaseModel):
     times_seen: int
     section_distribution: Dict[str, int] = Field(default_factory=dict)
     source_document_ids: List[str] = Field(default_factory=list)
+    x: float
+    y: float
 
 
 class GraphEdgePayload(BaseModel):
@@ -220,6 +222,8 @@ def create_app(
     observability = ObservabilityService(
         resolved_config.observability,
         root_dir=repo_root,
+        relation_auto_accepts_filename=resolved_config.relations.semantic_matching.auto_accept_log_filename,
+        relation_review_queue_filename=resolved_config.relations.semantic_matching.review_queue_filename,
     )
     app.state.observability = observability
 
@@ -1247,6 +1251,8 @@ def _graph_response_from_view(view: GraphView) -> GraphResponse:
             times_seen=node.times_seen,
             section_distribution=dict(node.section_distribution),
             source_document_ids=list(node.source_document_ids),
+            x=node.x,
+            y=node.y,
         )
         for node in view.nodes
     ]

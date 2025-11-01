@@ -192,6 +192,27 @@ class AuditSummary:
 
 
 @dataclass(frozen=True)
+class RelevancyDocumentSummary:
+    """Semantic relevancy metrics for a single paper."""
+
+    paper_id: str
+    score: float
+    status: str
+    edge_count: int
+    minimum: float
+    maximum: float
+
+
+@dataclass(frozen=True)
+class RelevancyDashboardSummary:
+    """Aggregated semantic relevancy metrics."""
+
+    average_score: Optional[float]
+    status: Optional[str]
+    documents: List[RelevancyDocumentSummary]
+
+
+@dataclass(frozen=True)
 class GraphQualitySummary:
     """Knowledge-graph quality metrics derived from recent runs and audits."""
 
@@ -209,6 +230,7 @@ class GraphQualitySummary:
     relation_coverage: List[RelationCoverage]
     audit_summary: AuditSummary
     semantic_drift_events: int
+    relevancy_summary: Optional[RelevancyDashboardSummary]
 
 
 @dataclass(frozen=True)
@@ -445,6 +467,40 @@ class ObservabilityDashboard:
         html_parts.append(
             f"<tr><th>Edges per node</th><td>{fmt_float(quality.edges_per_node)}</td></tr>"
         )
+        if quality.relevancy_summary:
+            relevancy = quality.relevancy_summary
+            average_label = fmt_float(relevancy.average_score)
+            status_class = fmt_status_class(relevancy.status)
+            status_text = (relevancy.status or "unknown").title()
+            if status_class:
+                status_html = f' <span class="{status_class}">{html.escape(status_text)}</span>'
+            else:
+                status_html = f" {html.escape(status_text)}"
+            html_parts.append(
+                f"<tr><th>Semantic relevancy (avg)</th><td>{average_label}{status_html}</td></tr>"
+            )
+            if relevancy.documents:
+                doc_items: List[str] = []
+                for item in relevancy.documents:
+                    doc_status_class = fmt_status_class(item.status)
+                    doc_status = (item.status or "unknown").title()
+                    if doc_status_class:
+                        doc_status_html = (
+                            f'<span class="{doc_status_class}">{html.escape(doc_status)}</span>'
+                        )
+                    else:
+                        doc_status_html = html.escape(doc_status)
+                    doc_items.append(
+                        "<li>"
+                        + f"{html.escape(item.paper_id)} - score={fmt_float(item.score)} "
+                        + f"(min={fmt_float(item.minimum)}, max={fmt_float(item.maximum)}) "
+                        + f"edges={item.edge_count} "
+                        + doc_status_html
+                        + "</li>"
+                    )
+                html_parts.append(
+                    "<tr><th>Relevancy by paper</th><td><ul>" + "".join(doc_items) + "</ul></td></tr>"
+                )
         html_parts.append(
             f"<tr><th>Semantic drift events</th><td>{quality.semantic_drift_events}</td></tr>"
         )
@@ -942,6 +998,7 @@ class ObservabilityDashboard:
                 relation_coverage=[],
                 audit_summary=audit_summary,
                 semantic_drift_events=drift_events,
+                relevancy_summary=None,
             )
 
         latest = runs[0]
@@ -990,6 +1047,8 @@ class ObservabilityDashboard:
             for relation, count in relation_counter.most_common(10)
         ]
 
+        relevancy_summary = self._summarise_relevancy(latest.run_id)
+
         return GraphQualitySummary(
             run_id=latest.run_id,
             pipeline_version=latest.pipeline_version,
@@ -1005,6 +1064,7 @@ class ObservabilityDashboard:
             relation_coverage=relation_coverage,
             audit_summary=audit_summary,
             semantic_drift_events=drift_events,
+            relevancy_summary=relevancy_summary,
         )
 
     def _summarise_audits(self, limit: int = 5) -> AuditSummary:
@@ -1080,6 +1140,68 @@ class ObservabilityDashboard:
             reviewers=sorted(reviewers),
             recent_findings=findings[:limit],
         )
+
+    def _summarise_relevancy(
+        self, run_id: Optional[str]
+    ) -> Optional[RelevancyDashboardSummary]:
+        if run_id is None:
+            return None
+        path = self._service.artifact_path("relevancy_metrics")
+        entries = _load_jsonl(path, None)
+        documents: List[RelevancyDocumentSummary] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            entry_run = str(entry.get("run_id", ""))
+            if entry_run != run_id:
+                continue
+            score_avg = _coerce_float(entry.get("score_avg"))
+            if score_avg is None:
+                continue
+            paper_id = str(entry.get("paper_id", "")).strip() or "unknown"
+            edge_count = int(_coerce_float(entry.get("edge_count")) or 0.0)
+            score_min = float(_coerce_float(entry.get("score_min")) or score_avg)
+            score_max = float(_coerce_float(entry.get("score_max")) or score_avg)
+            status = str(entry.get("status", "")).strip().lower() or "unknown"
+            documents.append(
+                RelevancyDocumentSummary(
+                    paper_id=paper_id,
+                    score=float(score_avg),
+                    status=status,
+                    edge_count=edge_count,
+                    minimum=score_min,
+                    maximum=score_max,
+                )
+            )
+        if not documents:
+            return None
+        documents.sort(key=lambda item: item.paper_id)
+        average_score = float(sum(doc.score for doc in documents) / len(documents))
+        overall_status = self._combine_status([doc.status for doc in documents])
+        return RelevancyDashboardSummary(
+            average_score=average_score,
+            status=overall_status,
+            documents=documents,
+        )
+
+    @staticmethod
+    def _combine_status(statuses: Sequence[str]) -> Optional[str]:
+        if not statuses:
+            return None
+        ranking = {"red": 0, "yellow": 1, "green": 2}
+        lowest_rank: Optional[int] = None
+        lowest_status: Optional[str] = None
+        for status in statuses:
+            key = (status or "").lower()
+            rank = ranking.get(key)
+            if rank is None:
+                continue
+            if lowest_rank is None or rank < lowest_rank:
+                lowest_rank = rank
+                lowest_status = key
+        if lowest_status is not None:
+            return lowest_status
+        return None
 
     def _count_semantic_drift(self) -> int:
         path = self._service.artifact_path("semantic_drift")

@@ -82,7 +82,7 @@ extraction:
   concurrent_workers: 3
   use_entity_inventory: false
   llm_provider: openai
-  fuzzy_match_threshold: 0.88
+  fuzzy_match_threshold: 0.87
   openai_model: gpt-4o-mini
   openai_base_url: https://api.openai.com/v1
   openai_timeout_seconds: 60
@@ -127,12 +127,27 @@ extraction:
     - framework
     - approach
     - technique
+    - resnet
+    - transformer
+    - cnn
+    - bert
+    - gpt
+    - encoder
+    - decoder
+    - classifier
     Dataset:
     - dataset
     - corpus
     - benchmark
     - data set
     - collection
+    - imagenet
+    - cifar
+    - mnist
+    - coco
+    - squad
+    - wmt
+    - pile
     Metric:
     - accuracy
     - score
@@ -141,6 +156,12 @@ extraction:
     - precision
     - recall
     - perplexity
+    - top-1
+    - top5
+    - error rate
+    - bleu
+    - rouge
+    - auc
     Task:
     - classification
     - detection
@@ -148,6 +169,8 @@ extraction:
     - translation
     - prediction
     - recognition
+    - pretraining
+    - captioning
     Material:
     - material
     - compound
@@ -273,6 +296,14 @@ canonicalization:
   embedding_batch_size: 16
   preload_embeddings: true
 relations:
+  semantic_matching:
+    enabled: true
+    embedding_model: intfloat/e5-base
+    embedding_device: null
+    acceptance_threshold: 0.75
+    review_threshold: null
+    auto_accept_log_filename: relation_auto_accepts.jsonl
+    review_queue_filename: relation_review_queue.jsonl
   normalization_patterns:
   - canonical: uses
     swap: false
@@ -281,6 +312,8 @@ relations:
     - utilizes
     - employs
     - leverages
+    - used
+    - makes use of
   - canonical: uses
     swap: true
     phrases:
@@ -299,6 +332,18 @@ relations:
     - fine tuned on
     - fine tuned to
     - fine tuned for
+    - finetuned on
+    - finetuned to
+    - finetuned for
+    - fine-tuned on
+    - fine-tuned to
+    - fine-tuned for
+    - trains on
+    - is trained with
+    - trained with
+    - learned on
+    - learns on
+    - learns from
   - canonical: evaluated-on
     swap: false
     phrases:
@@ -358,6 +403,10 @@ relations:
     - built upon
     - updates
     - refines
+    - initialized from
+    - initialized with
+    - initialised from
+    - initialised with
   - canonical: extends-architecture-of
     swap: false
     phrases:
@@ -459,6 +508,7 @@ relations:
     - emits
     - generates
     - yields
+    - makes
   - canonical: correlates-with
     swap: false
     phrases:
@@ -539,6 +589,7 @@ relations:
     - present in
     - expressed in
     - localized in
+    - occurs in
   - canonical: interacts-with
     swap: false
     phrases:
@@ -809,6 +860,7 @@ observability:
   audit_results_filename: edge_audits.jsonl
   semantic_drift_filename: semantic_drift.jsonl
   quality_alerts_filename: quality_alerts.jsonl
+  relevancy_metrics_filename: relevancy_metrics.jsonl
   quality:
     noise_control_target: 0.85
     noise_control_warning: 0.9
@@ -820,3 +872,15 @@ observability:
     pipeline_success_warning: 0.97
     semantic_drift_drop_threshold: 0.25
     semantic_drift_relation_threshold: 3
+  auto_audit:
+    enabled: true
+    reviewer_id: auto-verifier
+    min_edges: 10
+  relevancy:
+    enabled: true
+    embedding_model: hashing
+    embedding_device: null
+    embedding_batch_size: 16
+    target: 0.7
+    warning: 0.6
+    minimum_edges: 5

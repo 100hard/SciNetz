@@ -6,8 +6,15 @@ from datetime import datetime, timezone
 from math import isclose
 from typing import Sequence
 
-from backend.app.config import ObservabilityConfig, ObservabilityQualityConfig
+from backend.app.config import (
+    ObservabilityAutoAuditConfig,
+    ObservabilityConfig,
+    ObservabilityQualityConfig,
+    ObservabilityRelevancyConfig,
+)
+from backend.app.contracts import Evidence, TextSpan, Triplet
 from backend.app.observability import ObservabilityDashboard, ObservabilityService
+from backend.app.observability.relevancy import SemanticRelevancyEvaluator
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,7 @@ def _config() -> ObservabilityConfig:
         audit_results_filename="audits.jsonl",
         semantic_drift_filename="drift.jsonl",
         quality_alerts_filename="alerts.jsonl",
+        relevancy_metrics_filename="relevancy.jsonl",
         quality=ObservabilityQualityConfig(
             noise_control_target=0.85,
             noise_control_warning=0.9,
@@ -53,7 +61,55 @@ def _config() -> ObservabilityConfig:
             semantic_drift_drop_threshold=0.25,
             semantic_drift_relation_threshold=2,
         ),
+        auto_audit=ObservabilityAutoAuditConfig(
+            enabled=True,
+            reviewer_id="auto-bot",
+            min_edges=1,
+        ),
+        relevancy=ObservabilityRelevancyConfig(
+            enabled=True,
+            embedding_model="hashing",
+            embedding_device=None,
+            embedding_batch_size=4,
+            target=0.7,
+            warning=0.6,
+            minimum_edges=1,
+        ),
     )
+
+
+def test_semantic_relevancy_evaluator_scores() -> None:
+    config = ObservabilityRelevancyConfig(
+        enabled=True,
+        embedding_model="hashing",
+        embedding_device=None,
+        embedding_batch_size=4,
+        target=0.7,
+        warning=0.6,
+        minimum_edges=1,
+    )
+    evaluator = SemanticRelevancyEvaluator(config)
+    evidence = Evidence(
+        element_id="doc:0",
+        doc_id="doc",
+        text_span=TextSpan(start=0, end=42),
+        full_sentence="Model A uses Dataset X for image classification.",
+    )
+    triplet = Triplet(
+        subject="Model A",
+        predicate="uses",
+        object="Dataset X",
+        confidence=0.9,
+        evidence=evidence,
+        pipeline_version="1.0.0",
+    )
+    score = evaluator.score_triplet(triplet)
+    assert score is not None
+    summaries = evaluator.summaries({"doc": [score, score]})
+    assert "doc" in summaries
+    summary = summaries["doc"]
+    assert summary.count == 2
+    assert evaluator.classify(summary.average) in {"green", "yellow", "red"}
 
 
 def test_observability_run_persists_manifest(tmp_path) -> None:
@@ -249,6 +305,65 @@ def test_observability_artifact_path_resolves(tmp_path) -> None:
     assert alerts_path == (tmp_path / "observability" / "alerts.jsonl")
 
 
+def test_record_relation_auto_accept_writes_payload(tmp_path) -> None:
+    clock_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    service = ObservabilityService(
+        _config(),
+        root_dir=tmp_path,
+        clock=lambda: clock_time,
+        relation_auto_accepts_filename="auto.jsonl",
+        relation_review_queue_filename="review.jsonl",
+    )
+
+    payload = {
+        "doc_id": "paper-123",
+        "element_id": "paper-123:0",
+        "surface_relation": "finetuned-on",
+        "canonical_relation": "trained-on",
+        "score": 0.92,
+        "recorded_at": clock_time,
+    }
+
+    service.record_relation_auto_accept(payload)
+
+    auto_path = tmp_path / "observability" / "auto.jsonl"
+    entries = [json.loads(line) for line in auto_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["doc_id"] == "paper-123"
+    assert entry["surface_relation"] == "finetuned-on"
+    assert entry["canonical_relation"] == "trained-on"
+    assert entry["score"] == 0.92
+    assert entry["recorded_at"] == clock_time.isoformat()
+
+
+def test_enqueue_relation_review_writes_payload(tmp_path) -> None:
+    service = ObservabilityService(
+        _config(),
+        root_dir=tmp_path,
+        relation_auto_accepts_filename="auto.jsonl",
+        relation_review_queue_filename="review.jsonl",
+    )
+
+    payload = {
+        "doc_id": "paper-456",
+        "element_id": "paper-456:0",
+        "surface_relation": "retrained-on",
+        "canonical_relation": "trained-on",
+        "score": 0.84,
+    }
+
+    service.enqueue_relation_review(payload)
+
+    review_path = tmp_path / "observability" / "review.jsonl"
+    entries = [json.loads(line) for line in review_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["doc_id"] == "paper-456"
+    assert entry["surface_relation"] == "retrained-on"
+    assert entry["score"] == 0.84
+
+
 def test_dashboard_snapshot_and_render(tmp_path) -> None:
     clock_time = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
     service = ObservabilityService(_config(), root_dir=tmp_path, clock=lambda: clock_time)
@@ -304,7 +419,7 @@ def test_dashboard_snapshot_and_render(tmp_path) -> None:
         metric="noise_control",
         current_value=0.8,
         threshold=0.85,
-        context={"run_id": "run-demo"},
+        context={"run_id": run.run_id},
     )
     service.record_export_event(
         "create",
@@ -323,13 +438,25 @@ def test_dashboard_snapshot_and_render(tmp_path) -> None:
         },
     )
     service.record_edge_audit(
-        run_id="run-demo",
+        run_id=run.run_id,
         paper_id="paper-1",
         reviewer="auditor",
         total_edges=20,
         correct_edges=16,
         duplicate_edges=2,
         failure_reasons={"direction": 2},
+    )
+    service.record_relevancy_metrics(
+        {
+            "run_id": run.run_id,
+            "paper_id": "paper-1",
+            "pipeline_version": "1.0.0",
+            "edge_count": 20,
+            "score_avg": 0.72,
+            "score_min": 0.65,
+            "score_max": 0.79,
+            "status": "green",
+        }
     )
 
     registry = _StubRegistry(
@@ -367,9 +494,12 @@ def test_dashboard_snapshot_and_render(tmp_path) -> None:
     assert snapshot.quality.rejection_breakdown
     assert snapshot.quality.audit_summary.total_reviews == 1
     assert snapshot.quality.audit_summary.recent_findings
+    assert snapshot.quality.relevancy_summary is not None
+    assert snapshot.quality.relevancy_summary.average_score is not None
 
     html_content = dashboard.render_html(snapshot)
     assert "SciNetz Observability Dashboard" in html_content
     assert snapshot.runs[0].run_id in html_content
     assert "Extraction Queue" in html_content
     assert "Knowledge Graph Quality" in html_content
+    assert "Semantic relevancy" in html_content

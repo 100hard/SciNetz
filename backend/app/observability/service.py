@@ -11,7 +11,11 @@ from typing import Callable, Dict, Iterable, Mapping, MutableMapping, Optional, 
 from typing_extensions import Literal
 from uuid import uuid4
 
-from backend.app.config import ObservabilityConfig
+from backend.app.config import (
+    ObservabilityAutoAuditConfig,
+    ObservabilityConfig,
+    ObservabilityRelevancyConfig,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -135,9 +139,13 @@ class ObservabilityService:
         *,
         root_dir: Optional[Path] = None,
         clock: Optional[Callable[[], datetime]] = None,
+        relation_auto_accepts_filename: Optional[str] = None,
+        relation_review_queue_filename: Optional[str] = None,
     ) -> None:
         self._config = config
         self._quality = config.quality
+        self._auto_audit: ObservabilityAutoAuditConfig = config.auto_audit
+        self._relevancy_config = config.relevancy
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         base_root = root_dir or Path(__file__).resolve().parents[2]
         self._root = self._resolve_root(base_root, config.root_dir)
@@ -148,6 +156,13 @@ class ObservabilityService:
         self._audit_results_path = self._root / config.audit_results_filename
         self._semantic_drift_path = self._root / config.semantic_drift_filename
         self._quality_alerts_path = self._root / config.quality_alerts_filename
+        self._relevancy_metrics_path = self._root / config.relevancy_metrics_filename
+        self._relation_auto_accepts_path: Optional[Path] = None
+        self._relation_review_queue_path: Optional[Path] = None
+        if relation_auto_accepts_filename:
+            self._relation_auto_accepts_path = self._root / relation_auto_accepts_filename
+        if relation_review_queue_filename:
+            self._relation_review_queue_path = self._root / relation_review_queue_filename
         for path in (
             self._run_manifests_path,
             self._export_events_path,
@@ -156,6 +171,8 @@ class ObservabilityService:
             self._audit_results_path,
             self._semantic_drift_path,
             self._quality_alerts_path,
+            self._relevancy_metrics_path,
+            *(p for p in (self._relation_auto_accepts_path, self._relation_review_queue_path) if p),
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -169,6 +186,7 @@ class ObservabilityService:
             "audit_results",
             "semantic_drift",
             "quality_alerts",
+            "relevancy_metrics",
         ],
     ) -> Path:
         """Return the filesystem path for a named observability artifact."""
@@ -181,8 +199,21 @@ class ObservabilityService:
             "audit_results": self._audit_results_path,
             "semantic_drift": self._semantic_drift_path,
             "quality_alerts": self._quality_alerts_path,
+            "relevancy_metrics": self._relevancy_metrics_path,
         }
         return mapping[artifact]
+
+    @property
+    def auto_audit(self) -> ObservabilityAutoAuditConfig:
+        """Return the configured automated audit settings."""
+
+        return self._auto_audit
+
+    @property
+    def relevancy(self) -> ObservabilityRelevancyConfig:
+        """Return the configured semantic relevancy settings."""
+
+        return self._relevancy_config
 
     def now(self) -> datetime:
         """Return the current timestamp in UTC."""
@@ -216,6 +247,13 @@ class ObservabilityService:
         enriched = dict(payload)
         enriched.setdefault("timestamp", self.now())
         self._write_json_line(self._qa_metrics_path, enriched)
+
+    def record_relevancy_metrics(self, payload: Mapping[str, object]) -> None:
+        """Persist semantic relevancy metrics for dashboard visualisation."""
+
+        enriched = dict(payload)
+        enriched.setdefault("timestamp", self.now())
+        self._write_json_line(self._relevancy_metrics_path, enriched)
 
     def persist_kpi_snapshot(self, payload: Mapping[str, object]) -> None:
         """Append a KPI snapshot to the historical trend log."""
@@ -451,6 +489,20 @@ class ObservabilityService:
                 handle.write("\n")
         except Exception:  # pragma: no cover - writing failures logged
             LOGGER.exception("Failed to write observability payload to %s", path)
+
+    def record_relation_auto_accept(self, payload: Mapping[str, object]) -> None:
+        """Persist a semantic matcher acceptance event."""
+
+        if self._relation_auto_accepts_path is None:
+            return
+        self._write_json_line(self._relation_auto_accepts_path, payload)
+
+    def enqueue_relation_review(self, payload: Mapping[str, object]) -> None:
+        """Persist a relation phrase that requires manual review."""
+
+        if self._relation_review_queue_path is None:
+            return
+        self._write_json_line(self._relation_review_queue_path, payload)
 
     @staticmethod
     def _resolve_root(base_root: Path, configured: str) -> Path:

@@ -124,6 +124,7 @@ export default function PapersPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingExtraction, setPendingExtraction] = useState<Record<string, boolean>>({});
+  const [forceReprocess, setForceReprocess] = useState<Record<string, boolean>>({});
   const [titleQuery, setTitleQuery] = useState("");
   const [authorQuery, setAuthorQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -276,12 +277,12 @@ export default function PapersPage() {
   }, [fetchPapers]);
 
   const triggerExtraction = useCallback(
-    async (paper: PaperSummary) => {
+    async (paper: PaperSummary, force = false) => {
       const paperId = paper.paper_id;
       setPendingExtraction((prev) => ({ ...prev, [paperId]: true }));
       try {
         const response = await apiClient.post<ExtractionResponse>(
-          `/api/ui/papers/${encodeURIComponent(paperId)}/extract`,
+          `/api/ui/papers/${encodeURIComponent(paperId)}/extract${force ? "?force=true" : ""}`,
         );
         const data = response.data;
         const hasSnapshot =
@@ -290,7 +291,7 @@ export default function PapersPage() {
           typeof data.edges_written === "number";
 
         if (hasSnapshot) {
-          toast.success("Extraction complete", {
+          toast.success(force ? "Forced extraction complete" : "Extraction complete", {
             description: `${paper.filename} processed (${data.nodes_written ?? 0} nodes, ${data.edges_written ?? 0} edges).`,
           });
         } else {
@@ -299,7 +300,7 @@ export default function PapersPage() {
             statusLabel === "processing"
               ? `${paper.filename} is processing. Refresh shortly to monitor progress.`
               : `${paper.filename} queued (${statusLabel}). Refresh to monitor progress.`;
-          toast.success("Extraction started", { description });
+          toast.success(force ? "Forced extraction started" : "Extraction started", { description });
         }
         await fetchPapers("refresh");
       } catch (err) {
@@ -501,7 +502,7 @@ export default function PapersPage() {
                           <div className="flex justify-end">
                             <button
                               type="button"
-                              onClick={() => void triggerExtraction(paper)}
+                              onClick={() => void triggerExtraction(paper, Boolean(forceReprocess[paper.paper_id]))}
                               disabled={
                                 pendingExtraction[paper.paper_id] ||
                                 paper.status.toLowerCase() === "processing"
@@ -524,6 +525,21 @@ export default function PapersPage() {
                                 </>
                               )}
                             </button>
+                            <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                              <input
+                                type="checkbox"
+                                className="h-4 w-4 rounded border-muted bg-background text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                                checked={Boolean(forceReprocess[paper.paper_id])}
+                                disabled={pendingExtraction[paper.paper_id] || paper.status.toLowerCase() === "processing"}
+                                onChange={(event) =>
+                                  setForceReprocess((prev) => ({
+                                    ...prev,
+                                    [paper.paper_id]: event.target.checked,
+                                  }))
+                                }
+                              />
+                              Force reprocess
+                            </label>
                           </div>
                         </td>
                       </tr>

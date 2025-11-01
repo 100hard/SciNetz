@@ -36,7 +36,10 @@ except ModuleNotFoundError:  # pragma: no cover - tests rely on stub client inst
 
 json_module = json
 
+from typing_extensions import Literal
+
 from backend.app.config import AppConfig, OpenAIConfig, load_config
+from backend.app.extraction.relation_semantics import RelationSemanticMatch, SemanticRelationMatcher
 from backend.app.contracts import Evidence, PaperMetadata, ParsedElement, TextSpan, Triplet
 from backend.app.extraction.domain import DomainRouter, ExtractionDomain
 
@@ -143,6 +146,62 @@ class ExtractionResult:
     attempted_triples: int = 0
     rejected_triples: int = 0
     rejection_reasons: Dict[str, int] = field(default_factory=dict)
+    relation_events: List["RelationNormalizationEvent"] = field(default_factory=list)
+    relation_review_events: List["RelationNormalizationEvent"] = field(default_factory=list)
+
+
+class RelationReviewRequired(ValueError):
+    """Raised when a relation phrase requires manual review before acceptance."""
+
+
+@dataclass(frozen=True)
+class RelationNormalizationEvent:
+    """Telemetry describing how a relation phrase was normalised."""
+
+    surface: str
+    decision: Literal["pattern", "semantic_auto", "semantic_review", "rejected"]
+    canonical: Optional[str] = None
+    matched_phrase: Optional[str] = None
+    score: Optional[float] = None
+    swap: bool = False
+    acceptance_threshold: Optional[float] = None
+    review_threshold: Optional[float] = None
+
+
+class RelationNormalizationTelemetry:
+    """Container for capturing relation normalisation telemetry."""
+
+    def __init__(self, surface: str) -> None:
+        self._surface = surface
+        self.event: Optional[RelationNormalizationEvent] = None
+
+    def record(
+        self,
+        decision: Literal["pattern", "semantic_auto", "semantic_review", "rejected"],
+        *,
+        canonical: Optional[str] = None,
+        matched_phrase: Optional[str] = None,
+        score: Optional[float] = None,
+        swap: bool = False,
+        match: Optional[RelationSemanticMatch] = None,
+    ) -> None:
+        """Store a telemetry event for the current normalisation attempt."""
+
+        acceptance_threshold: Optional[float] = None
+        review_threshold: Optional[float] = None
+        if match is not None:
+            acceptance_threshold = match.acceptance_threshold
+            review_threshold = match.review_threshold
+        self.event = RelationNormalizationEvent(
+            surface=self._surface,
+            decision=decision,
+            canonical=canonical,
+            matched_phrase=matched_phrase,
+            score=score,
+            swap=swap,
+            acceptance_threshold=acceptance_threshold,
+            review_threshold=review_threshold,
+        )
 
 
 class _TruncationError(RuntimeError):
@@ -960,7 +1019,7 @@ class TwoPassTripletExtractor:
             List[Triplet]: Triples that passed span validation and normalization.
         """
 
-        triplets, _, _, _, _, _ = self._extract_internal(
+        triplets, _, _, _, _, _, _, _ = self._extract_internal(
             element,
             candidate_entities,
             metadata=metadata,
@@ -985,6 +1044,8 @@ class TwoPassTripletExtractor:
             type_votes,
             attempted_count,
             rejection_reasons,
+            relation_events,
+            review_candidates,
         ) = self._extract_internal(
             element,
             candidate_entities,
@@ -1000,6 +1061,8 @@ class TwoPassTripletExtractor:
             attempted_triples=attempted_count,
             rejected_triples=rejected_count,
             rejection_reasons=rejection_reasons,
+            relation_events=relation_events,
+            relation_review_events=review_candidates,
         )
 
     def _extract_internal(
@@ -1016,13 +1079,18 @@ class TwoPassTripletExtractor:
         Dict[str, Dict[str, int]],
         int,
         Dict[str, int],
+        List[RelationNormalizationEvent],
+        List[RelationNormalizationEvent],
     ]:
         """Run LLM extraction and span validation, returning metadata.
 
         Returns:
-            Tuple[List[Triplet], Dict[str, Dict[str, int]], List[str], Dict[str, Dict[str, int]]]:
-                Validated triplets, per-entity section counts, verbatim relations, and
-                aggregated entity type votes derived from the LLM output.
+            Tuple[List[Triplet], Dict[str, Dict[str, int]], List[str], Dict[str, Dict[str, int]],
+            int, Dict[str, int], List[RelationNormalizationEvent], List[RelationNormalizationEvent]]:
+                Validated triplets, per-entity section counts, verbatim relations, aggregated
+                entity type votes, attempted triple count, rejection breakdown, semantic
+                normalization telemetry for accepted triples, and relation phrases queued for
+                manual review.
         """
 
         context = domain or self._resolve_domain(metadata, element)
@@ -1043,13 +1111,29 @@ class TwoPassTripletExtractor:
         relation_verbatims: List[str] = []
         type_votes: Dict[str, Dict[str, int]] = {}
         rejection_reasons: Dict[str, int] = {}
+        relation_events: List[RelationNormalizationEvent] = []
+        review_candidates: List[RelationNormalizationEvent] = []
 
         def _record_rejection(reason: str) -> None:
             rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
         for raw in raw_triples:
+            telemetry = RelationNormalizationTelemetry(raw.relation_verbatim)
             try:
-                normalized_relation, swap = normalize_relation(raw.relation_verbatim)
+                normalized_relation, swap = normalize_relation(
+                    raw.relation_verbatim,
+                    telemetry=telemetry,
+                )
+            except RelationReviewRequired:
+                event = telemetry.event
+                if event is not None:
+                    review_candidates.append(event)
+                LOGGER.info("Routing relation for manual review: %s", raw.relation_verbatim)
+                _record_rejection("relation_needs_review")
+                continue
             except ValueError:
+                event = telemetry.event
+                if event is not None and event.decision == "semantic_review":
+                    review_candidates.append(event)
                 LOGGER.info("Dropping triple with unmapped relation: %s", raw.relation_verbatim)
                 _record_rejection("relation_unmapped")
                 continue
@@ -1151,6 +1235,17 @@ class TwoPassTripletExtractor:
             )
             accepted.append(triplet)
             relation_verbatims.append(raw.relation_verbatim)
+            if telemetry.event is not None:
+                relation_events.append(telemetry.event)
+            else:
+                relation_events.append(
+                    RelationNormalizationEvent(
+                        surface=raw.relation_verbatim,
+                        decision="pattern",
+                        canonical=normalized_relation,
+                        swap=swap,
+                    )
+                )
             if subject_type:
                 self._increment_type_vote(type_votes, subject_text, subject_type)
             elif raw.subject_type:
@@ -1175,6 +1270,8 @@ class TwoPassTripletExtractor:
             entity_type_votes,
             attempted_count,
             dict(sorted(rejection_reasons.items())),
+            relation_events,
+            review_candidates,
         )
 
     def _resolve_domain(
@@ -1520,31 +1617,126 @@ def _relation_patterns(config: Optional[AppConfig]) -> Sequence[Tuple[str, str, 
     return _default_relation_patterns()
 
 
-def normalize_relation(relation_text: str, *, config: Optional[AppConfig] = None) -> Tuple[str, bool]:
+_SEMANTIC_MATCHER_INITIALIZED = False
+_DEFAULT_SEMANTIC_MATCHER: Optional[SemanticRelationMatcher] = None
+
+
+def _get_semantic_matcher(config: Optional[AppConfig]) -> Optional[SemanticRelationMatcher]:
+    """Return a semantic relation matcher for the provided configuration.
+
+    Args:
+        config: Optional application configuration to derive matcher settings.
+
+    Returns:
+        Optional[SemanticRelationMatcher]: Semantic matcher when enabled, otherwise None.
+    """
+
+    global _SEMANTIC_MATCHER_INITIALIZED, _DEFAULT_SEMANTIC_MATCHER
+    if config is not None:
+        if not config.relations.semantic_matching.enabled:
+            return None
+        return SemanticRelationMatcher(config.relations)
+    if not _SEMANTIC_MATCHER_INITIALIZED:
+        _SEMANTIC_MATCHER_INITIALIZED = True
+        cfg = load_config()
+        if cfg.relations.semantic_matching.enabled:
+            _DEFAULT_SEMANTIC_MATCHER = SemanticRelationMatcher(cfg.relations)
+        else:
+            _DEFAULT_SEMANTIC_MATCHER = None
+    return _DEFAULT_SEMANTIC_MATCHER
+
+
+def normalize_relation(
+    relation_text: str,
+    *,
+    config: Optional[AppConfig] = None,
+    telemetry: Optional[RelationNormalizationTelemetry] = None,
+) -> Tuple[str, bool]:
     """Normalize a relation phrase to the canonical predicate name.
 
     Args:
         relation_text: Relation phrase returned by the LLM.
         config: Optional configuration overriding the global defaults.
+        telemetry: Optional telemetry collector used to persist normalization details.
 
     Returns:
         Tuple[str, bool]: Canonical predicate and whether subject/object should swap.
 
     Raises:
         ValueError: If the relation cannot be mapped to a canonical predicate.
+        RelationReviewRequired: If the relation requires manual review before acceptance.
     """
 
     cleaned = re.sub(r"[^a-z]+", " ", relation_text.lower()).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
     for phrase, normalized, swap in _relation_patterns(config):
         if phrase in cleaned:
+            if telemetry is not None:
+                telemetry.record(
+                    "pattern",
+                    canonical=normalized,
+                    matched_phrase=phrase,
+                    swap=swap,
+                )
             return normalized, swap
+    matcher = _get_semantic_matcher(config)
+    if matcher is not None:
+        match = matcher.match(relation_text)
+        if match is not None:
+            if match.accepted:
+                if telemetry is not None:
+                    telemetry.record(
+                        "semantic_auto",
+                        canonical=match.canonical,
+                        matched_phrase=match.matched_phrase,
+                        score=match.score,
+                        swap=match.swap,
+                        match=match,
+                    )
+                LOGGER.info(
+                    (
+                        "Mapped relation phrase %r to canonical %r via semantic match "
+                        "(score=%.3f, matched_phrase=%r)"
+                    ),
+                    relation_text,
+                    match.canonical,
+                    match.score,
+                    match.matched_phrase,
+                )
+                return match.canonical, match.swap
+            if match.needs_review:
+                if telemetry is not None:
+                    telemetry.record(
+                        "semantic_review",
+                        canonical=match.canonical,
+                        matched_phrase=match.matched_phrase,
+                        score=match.score,
+                        swap=match.swap,
+                        match=match,
+                    )
+                raise RelationReviewRequired(
+                    f"Relation phrase '{relation_text}' requires review (score={match.score:.3f})"
+                )
+            if telemetry is not None:
+                telemetry.record(
+                    "rejected",
+                    canonical=match.canonical,
+                    matched_phrase=match.matched_phrase,
+                    score=match.score,
+                    swap=match.swap,
+                    match=match,
+                )
+    if telemetry is not None and telemetry.event is None:
+        telemetry.record("rejected")
     raise ValueError(f"Unsupported relation phrase: {relation_text}")
 
 
 __all__ = [
     "RawLLMTriple",
     "ExtractionResult",
+    "RelationNormalizationEvent",
+    "RelationNormalizationTelemetry",
+    "RelationReviewRequired",
     "LLMExtractor",
     "OpenAIExtractor",
     "TwoPassTripletExtractor",
