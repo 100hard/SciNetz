@@ -93,10 +93,10 @@ const hashToUnit = (value: string, salt: string): number => {
 const computeWebLayout = (nodes: GraphNode[]): Map<string, { x: number; y: number }> => {
   const positions = new Map<string, { x: number; y: number }>();
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-  const baseRadius = 0.22;
-  const ringSpacing = 0.18;
-  const radiusJitter = 0.045;
-  const angleJitter = Math.PI / 18;
+  const baseRadius = 0.16;
+  const ringSpacing = 0.12;
+  const radiusJitter = 0.12;
+  const angleJitter = Math.PI / 6;
 
   const ringBuckets = new Map<number, GraphNode[]>();
   nodes.forEach((node) => {
@@ -109,11 +109,12 @@ const computeWebLayout = (nodes: GraphNode[]): Map<string, { x: number; y: numbe
 
   const sortedRings = Array.from(ringBuckets.entries()).sort((a, b) => a[0] - b[0]);
   sortedRings.forEach(([ring, ringNodes]) => {
+    const ringOffset = hashToUnit(String(ring), "ring-offset") * Math.PI * 2;
     ringNodes
       .slice()
       .sort((a, b) => a.id.localeCompare(b.id))
       .forEach((node, index) => {
-        const baseAngle = index * goldenAngle + ring * 0.45;
+        const baseAngle = ringOffset + index * goldenAngle;
         const jitteredAngle =
           baseAngle + (hashToUnit(node.id, "angle") - 0.5) * 2 * angleJitter;
         const jitteredRadius =
@@ -412,22 +413,24 @@ const GraphVisualization = ({ nodes, edges, isFullscreen = false }: GraphVisuali
       });
     });
 
-    const shouldRunLayout = !hasCoordinates && graph.order > 1 && graph.size > 0;
+    const shouldRunLayout = graph.order > 1 && graph.size > 0;
     if (shouldRunLayout) {
       try {
-        const iterations = Math.min(480, Math.max(120, nodes.length * 3));
+        const iterations = Math.min(600, Math.max(240, Math.round(nodes.length * 4)));
         const inferred = forceAtlas2.inferSettings(graph);
         forceAtlas2.assign(graph, {
           iterations,
           settings: {
             ...inferred,
             adjustSizes: true,
-            scalingRatio: 2.8,
-            gravity: 3.2,
+            scalingRatio: 10,
+            gravity: 1.6,
             strongGravityMode: true,
             linLogMode: true,
+            barnesHutOptimize: true,
+            barnesHutTheta: 0.6,
             outboundAttractionDistribution: true,
-            slowDown: 2.5,
+            slowDown: 2.1,
           },
         });
       } catch (error) {

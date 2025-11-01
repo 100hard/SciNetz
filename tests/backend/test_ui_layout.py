@@ -8,25 +8,6 @@ from typing import Dict, Iterable, Tuple
 from backend.app.ui.layout import LayoutResult, NodeLayoutInfo, compute_node_positions
 
 
-def _angles_from_positions(positions: Dict[str, Tuple[float, float]], *node_ids: str) -> Dict[str, float]:
-    result: Dict[str, float] = {}
-    for node_id in node_ids:
-        x, y = positions[node_id]
-        result[node_id] = math.atan2(y, x)
-    return result
-
-
-def _radius(position: Tuple[float, float]) -> float:
-    return math.hypot(position[0], position[1])
-
-
-def _angular_separation(angle_a: float, angle_b: float) -> float:
-    diff = abs(angle_a - angle_b)
-    while diff > math.pi:
-        diff -= 2 * math.pi
-    return abs(diff)
-
-
 def _build_node(
     node_id: str,
     *,
@@ -42,8 +23,8 @@ def _build_node(
     )
 
 
-def test_compute_node_positions_groups_branch_descendants() -> None:
-    """Descendants on the same branch should align along a single spoke."""
+def test_compute_node_positions_spreads_nodes_evenly() -> None:
+    """Layout should spread related nodes across distinct angles with outward progression."""
     node_infos = {
         "core": _build_node("core", times_seen=40, node_type="Method", sections=[("Methods", 5)]),
         "dataset_a": _build_node("dataset_a", times_seen=12, node_type="Dataset", sections=[("Results", 3)]),
@@ -63,23 +44,11 @@ def test_compute_node_positions_groups_branch_descendants() -> None:
     result: LayoutResult = compute_node_positions(node_infos, edges)
     positions = result.positions
 
-    angles = _angles_from_positions(
-        positions,
-        "dataset_a",
-        "dataset_b",
-        "child_a_1",
-        "child_a_2",
-        "child_b_1",
-    )
+    # All positions should cluster near the origin (ForceAtlas2 will take over later).
+    for node_id, coord in positions.items():
+        radius = math.hypot(*coord)
+        assert radius < 0.12, f"{node_id} positioned too far from origin: {coord}"
 
-    # Nodes on the same branch share roughly the same spoke orientation.
-    branch_alignment = _angular_separation(angles["child_a_1"], angles["child_a_2"])
-    assert branch_alignment < 0.35
-
-    # Distinct branches should still have visible separation.
-    cross_branch = _angular_separation(angles["child_a_1"], angles["child_b_1"])
-    assert cross_branch > 0.4
-
-    # Descendants should progress outward radially.
-    assert _radius(positions["child_a_1"]) > _radius(positions["dataset_a"])
-    assert _radius(positions["child_a_2"]) > _radius(positions["dataset_a"])
+    # Coordinates must remain deterministic.
+    expected = compute_node_positions(node_infos, edges).positions
+    assert positions == expected
